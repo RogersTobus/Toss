@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Orbit — 퀀트 투자 대시보드</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="Orbit 홈">
+        <span class="brand-mark"><i></i><i></i></span>
+        <span>ORBIT</span>
+      </a>
+
+      <nav class="primary-nav" aria-label="주요 메뉴">
+        <button class="nav-item active" data-page="overview">
+          <span class="nav-icon">⌁</span><span>Overview</span>
+        </button>
+        <button class="nav-item" data-page="portfolio">
+          <span class="nav-icon">◫</span><span>Portfolio</span>
+        </button>
+        <button class="nav-item" data-page="quant">
+          <span class="nav-icon">⌘</span><span>Quant Lab</span>
+        </button>
+        <button class="nav-item" data-page="orders">
+          <span class="nav-icon">↗</span><span>Orders</span>
+          <span class="nav-count">3</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <button class="nav-item"><span class="nav-icon">?</span><span>Help</span></button>
+        <button class="nav-item"><span class="nav-icon">⚙</span><span>Settings</span></button>
+        <div class="profile">
+          <div class="avatar">HJ</div>
+          <div><strong>투자자</strong><span>Personal account</span></div>
+          <button aria-label="프로필 메뉴">•••</button>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <button class="mobile-menu" aria-label="메뉴 열기">☰</button>
+        <div class="market-clock">
+          <span class="pulse"></span>
+          <strong>KR 장중</strong>
+          <span>15:24:08 KST</span>
+        </div>
+        <div class="top-actions">
+          <button class="icon-btn" aria-label="검색">⌕</button>
+          <button class="icon-btn notification" aria-label="알림">♢<i></i></button>
+          <button class="add-btn"><span>＋</span> 전략 추가</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="welcome">
+          <div>
+            <p class="eyebrow">THURSDAY, JUL 9</p>
+            <h1>좋은 오후예요.</h1>
+            <p>두 개의 투자 엔진이 계획대로 움직이고 있어요.</p>
+          </div>
+          <div class="connection" id="apiConnection"><span></span> Toss Securities API <b>연결 중</b></div>
+        </section>
+
+        <section class="summary-grid">
+          <article class="balance-card dark-card">
+            <div class="card-title"><span>총 투자자산</span><button aria-label="자산 숨기기">◉</button></div>
+            <div class="total-value" id="totalAssets">₩28,436,200</div>
+            <div class="gain"><span id="totalReturn">↗ 8.42%</span> 전체 기간</div>
+            <svg class="hero-chart" viewBox="0 0 560 112" preserveAspectRatio="none" aria-label="자산 추이">
+              <defs>
+                <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#b9ee4b" stop-opacity=".25"/>
+                  <stop offset="100%" stop-color="#b9ee4b" stop-opacity="0"/>
+                </linearGradient>
+              </defs>
+              <path class="area" d="M0 88 C38 80,52 92,82 73 S130 65,154 71 S201 46,230 54 S272 71,300 49 S341 60,372 41 S415 47,447 28 S505 36,560 12 L560 112 L0 112 Z"/>
+              <path class="line" d="M0 88 C38 80,52 92,82 73 S130 65,154 71 S201 46,230 54 S272 71,300 49 S341 60,372 41 S415 47,447 28 S505 36,560 12"/>
+            </svg>
+            <div class="chart-range">
+              <button>1D</button><button>1W</button><button class="selected">1M</button><button>3M</button><button>1Y</button><button>ALL</button>
+            </div>
+          </article>
+
+          <article class="metric-card">
+            <div class="card-title"><span>오늘의 손익</span><span class="status positive">● LIVE</span></div>
+            <div class="metric-value positive-text" id="dailyProfit">+₩42,840</div>
+            <div class="metric-sub"><b id="dailyReturn">+0.16%</b> <span>vs. 전일</span></div>
+            <div class="micro-bars" aria-hidden="true">
+              <i style="height:24%"></i><i style="height:39%"></i><i style="height:31%"></i><i style="height:58%"></i>
+              <i style="height:49%"></i><i style="height:71%"></i><i style="height:64%"></i><i style="height:84%"></i>
+              <i style="height:74%"></i><i style="height:92%"></i><i class="current" style="height:100%"></i>
+            </div>
+            <div class="metric-footer"><span>09:00</span><span>현재</span></div>
+          </article>
+
+          <article class="metric-card">
+            <div class="card-title"><span>현금 비중</span><button class="more">•••</button></div>
+            <div class="metric-value">₩1,842,600</div>
+            <div class="metric-sub">6.48% <span>전체 자산</span></div>
+            <div class="cash-meter">
+              <div class="donut"><span>6.5<small>%</small></span></div>
+              <div class="cash-copy"><b>가용 현금</b><span>단타 계정 ₩624,000</span><span>장기 계정 ₩1,218,600</span></div>
+            </div>
+          </article>
+        </section>
+
+        <section class="main-grid">
+          <article class="panel portfolio-panel">
+            <div class="panel-header">
+              <div><p class="eyebrow">CORE PORTFOLIO</p><h2>장기 지수투자</h2></div>
+              <button class="text-btn">상세 보기 →</button>
+            </div>
+            <div class="portfolio-total">
+              <div><span>평가 금액</span><strong id="portfolioValue">₩27,812,200</strong></div>
+              <div class="return-box"><span>누적 수익</span><strong id="portfolioProfit">+₩2,148,400</strong><em id="portfolioReturn">+8.37%</em></div>
+            </div>
+            <div class="allocation-bar" aria-label="자산 배분">
+              <i class="a" style="width:44%"></i><i class="b" style="width:28%"></i><i class="c" style="width:17%"></i><i class="d" style="width:11%"></i>
+            </div>
+            <div class="allocation-legend">
+              <div><i class="a"></i><span>미국 지수<small>S&P 500 · NASDAQ</small></span><b>44%</b></div>
+              <div><i class="b"></i><span>한국 지수<small>KOSPI 200</small></span><b>28%</b></div>
+              <div><i class="c"></i><span>채권<small>국고채 · 미국채</small></span><b>17%</b></div>
+              <div><i class="d"></i><span>기타<small>금 · 현금성</small></span><b>11%</b></div>
+            </div>
+            <div class="rebalance-note">
+              <span class="note-icon">◎</span>
+              <div><b>리밸런싱 상태가 좋아요</b><span>목표 비중에서 가장 큰 차이는 1.8%예요.</span></div>
+              <button>분석</button>
+            </div>
+          </article>
+
+          <article class="panel bot-panel">
+            <div class="panel-header">
+              <div><p class="eyebrow accent">ACTIVE STRATEGY</p><h2>단타 트레이딩</h2></div>
+              <label class="switch" title="자동매매 실행">
+                <input id="botToggle" type="checkbox" />
+                <span></span>
+              </label>
+            </div>
+            <div class="bot-mode">
+              <span class="bot-orb"><i></i></span>
+              <div><b id="botStatus">모의 운용 중</b><span>실제 주문은 전송되지 않습니다</span></div>
+              <em>PAPER</em>
+            </div>
+            <div class="bot-stats">
+              <div><span>운용 원금</span><strong>₩1,000,000</strong></div>
+              <div><span>오늘 손익</span><strong class="positive-text">+₩6,240</strong></div>
+              <div><span>승률</span><strong>62.5%</strong></div>
+            </div>
+            <div class="risk-row">
+              <div class="risk-head"><span>오늘의 손실 한도</span><b>₩7,800 / ₩30,000</b></div>
+              <div class="risk-track"><i></i></div>
+              <p>한도의 26%를 사용했어요. 도달 시 자동으로 중지됩니다.</p>
+            </div>
+            <div class="session-list">
+              <div class="session active"><i>KR</i><span><b>한국 시장</b><small>정규장 · NXT</small></span><em>운영 중</em></div>
+              <div class="session"><i>US</i><span><b>미국 데이마켓</b><small>10:00 — 17:50</small></span><em>대기</em></div>
+              <div class="session"><i>US</i><span><b>프리 · 정규장</b><small>17:00 — 05:00</small></span><em>오늘</em></div>
+            </div>
+            <button class="strategy-btn">전략 설정 열기 <span>→</span></button>
+          </article>
+        </section>
+
+        <section class="bottom-grid">
+          <article class="panel watch-panel">
+            <div class="panel-header">
+              <div><p class="eyebrow">LIVE MARKET</p><h2>관심 종목</h2></div>
+              <button class="text-btn">전체 보기 →</button>
+            </div>
+            <div class="watch-table" id="holdingsTable">
+              <div class="table-row table-head"><span>종목</span><span>현재가</span><span>등락</span><span>전략 신호</span></div>
+              <div class="table-row"><span><b class="ticker kr">삼</b><strong>삼성전자<small>005930 · KRX</small></strong></span><span>₩63,400</span><span class="positive-text">+1.28%</span><span><em class="signal buy">매수 관찰</em></span></div>
+              <div class="table-row"><span><b class="ticker nv">N</b><strong>NVIDIA<small>NVDA · NASDAQ</small></strong></span><span>$159.34</span><span class="negative-text">−0.42%</span><span><em class="signal neutral">중립</em></span></div>
+              <div class="table-row"><span><b class="ticker ap">A</b><strong>Apple<small>AAPL · NASDAQ</small></strong></span><span>$212.18</span><span class="positive-text">+0.86%</span><span><em class="signal hold">보유</em></span></div>
+            </div>
+          </article>
+
+          <article class="panel activity-panel">
+            <div class="panel-header">
+              <div><p class="eyebrow">TODAY</p><h2>최근 활동</h2></div>
+              <button class="more">•••</button>
+            </div>
+            <div class="timeline">
+              <div><i class="order">↗</i><span><b>삼성전자 매수 체결</b><small>5주 · ₩63,200</small></span><time>14:32</time></div>
+              <div><i class="alert">⌁</i><span><b>전략 신호 감지</b><small>005930 · 거래량 돌파</small></span><time>14:31</time></div>
+              <div><i class="safe">✓</i><span><b>리스크 점검 완료</b><small>모든 한도 정상</small></span><time>12:00</time></div>
+              <div><i class="sync">↻</i><span><b>계좌 동기화</b><small>토스증권 API</small></span><time>09:01</time></div>
+            </div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" role="status">메뉴 준비 중입니다.</div>
+  <script src="app.js"></script>
+</body>
+</html>
