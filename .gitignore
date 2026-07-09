@@ -1,6 +1,9 @@
 .env
 .env.*
 !.env.example
+# Protect the accidentally-created non-dot env file as well.
+env
+paper_state.json
 __pycache__/
 *.py[cod]
 .venv/
