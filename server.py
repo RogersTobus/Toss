@@ -23,6 +23,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 PAPER_PATH = ROOT / "paper_state.json"
 REPORT_PATH = ROOT / "report_state.json"
+STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
 BASE_URL = "https://openapi.tossinvest.com"
 KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
@@ -35,6 +36,13 @@ PAPER_STOP_RATE = -0.005
 PAPER_MAX_DAILY_ORDERS = 3
 PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
+DEFAULT_STRATEGY_CONFIG = {
+    "targetRate": PAPER_TARGET_RATE,
+    "stopRate": PAPER_STOP_RATE,
+    "maxDailyOrders": PAPER_MAX_DAILY_ORDERS,
+    "maxOpenPositions": PAPER_MAX_OPEN_POSITIONS,
+    "maxConsecutiveLosses": PAPER_MAX_CONSECUTIVE_LOSSES,
+}
 ANALYSIS_LOCK = threading.Lock()
 ANALYSIS: dict[str, Any] = {
     "enabled": True,
@@ -58,6 +66,47 @@ ANALYSIS: dict[str, Any] = {
 CALENDAR_CACHE: dict[str, Any] = {"expiresAt": 0.0, "KR": {}, "US": {}}
 
 
+
+def clamp(value: Any, low: float, high: float, fallback: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return max(low, min(high, number))
+
+
+def strategy_config() -> dict[str, Any]:
+    config = dict(DEFAULT_STRATEGY_CONFIG)
+    if STRATEGY_CONFIG_PATH.exists():
+        try:
+            stored = json.loads(STRATEGY_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(stored, dict):
+                config.update(stored)
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {
+        "targetRate": clamp(config.get("targetRate"), 0.001, 0.05, PAPER_TARGET_RATE),
+        "stopRate": clamp(config.get("stopRate"), -0.05, -0.001, PAPER_STOP_RATE),
+        "maxDailyOrders": int(clamp(config.get("maxDailyOrders"), 1, 20, PAPER_MAX_DAILY_ORDERS)),
+        "maxOpenPositions": int(clamp(config.get("maxOpenPositions"), 1, 20, PAPER_MAX_OPEN_POSITIONS)),
+        "maxConsecutiveLosses": int(clamp(config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
+    }
+
+
+def save_strategy_config(payload: dict[str, Any]) -> dict[str, Any]:
+    current = strategy_config()
+    if "targetRate" in payload:
+        current["targetRate"] = clamp(payload.get("targetRate"), 0.001, 0.05, current["targetRate"])
+    if "stopRate" in payload:
+        current["stopRate"] = clamp(payload.get("stopRate"), -0.05, -0.001, current["stopRate"])
+    if "maxDailyOrders" in payload:
+        current["maxDailyOrders"] = int(clamp(payload.get("maxDailyOrders"), 1, 20, current["maxDailyOrders"]))
+    if "maxOpenPositions" in payload:
+        current["maxOpenPositions"] = int(clamp(payload.get("maxOpenPositions"), 1, 20, current["maxOpenPositions"]))
+    if "maxConsecutiveLosses" in payload:
+        current["maxConsecutiveLosses"] = int(clamp(payload.get("maxConsecutiveLosses"), 1, 10, current["maxConsecutiveLosses"]))
+    STRATEGY_CONFIG_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    return current
 def load_env() -> dict[str, str]:
     values: dict[str, str] = {}
     path = ROOT / ".env"
@@ -630,14 +679,18 @@ def trading_decision(
     today_orders: int,
     locked: bool,
     lock_reason: str | None,
+    config: dict[str, Any],
 ) -> dict[str, Any]:
-    remaining_to_stop = average_return - PAPER_STOP_RATE
-    remaining_to_target = PAPER_TARGET_RATE - average_return
+    target_rate = decimal(config.get("targetRate"))
+    stop_rate = decimal(config.get("stopRate"))
+    max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
+    remaining_to_stop = average_return - stop_rate
+    remaining_to_target = target_rate - average_return
     stop_progress = 0.0
-    if PAPER_STOP_RATE < 0:
-        stop_progress = max(0.0, min(1.0, abs(min(average_return, 0.0)) / abs(PAPER_STOP_RATE)))
+    if stop_rate < 0:
+        stop_progress = max(0.0, min(1.0, abs(min(average_return, 0.0)) / abs(stop_rate)))
 
-    if locked and average_return >= PAPER_TARGET_RATE:
+    if locked and average_return >= target_rate:
         mode = "목표 달성"
         tone = "safe"
         action = "오늘 신규 진입 잠금, 수익 보존"
@@ -647,7 +700,7 @@ def trading_decision(
         tone = "danger"
         action = "신규 진입 금지, 보유 포지션 점검"
         reason = lock_reason or "손실 한도에 도달했습니다."
-    elif average_return <= PAPER_STOP_RATE * 0.8:
+    elif average_return <= stop_rate * 0.8:
         mode = "방어 모드"
         tone = "danger"
         action = "신규 진입 제한, 손절 기준 확인"
@@ -657,12 +710,12 @@ def trading_decision(
         tone = "caution"
         action = "추가 진입보다 기존 포지션 관찰"
         reason = "단타 평가손익이 마이너스 구간입니다."
-    elif open_positions >= 3:
+    elif open_positions >= max_open_positions:
         mode = "관망 모드"
         tone = "caution"
         action = "포지션 과밀, 신규 진입은 신중하게"
         reason = "오늘 허용 포지션을 대부분 사용했습니다."
-    elif average_return >= PAPER_TARGET_RATE * 0.5:
+    elif average_return >= target_rate * 0.5:
         mode = "공격 가능"
         tone = "safe"
         action = "추세 확인 후 선별 진입"
@@ -681,8 +734,8 @@ def trading_decision(
         "stopProgress": stop_progress,
         "remainingToStop": remaining_to_stop,
         "remainingToTarget": remaining_to_target,
-        "targetRate": PAPER_TARGET_RATE,
-        "stopRate": PAPER_STOP_RATE,
+        "targetRate": target_rate,
+        "stopRate": stop_rate,
         "currentRate": average_return,
         "openPositionCount": open_positions,
         "todayOrderCount": today_orders,
@@ -724,7 +777,12 @@ def safety_rules(
     position_returns: list[float],
     locked: bool,
     lock_reason: str | None,
+    config: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    stop_rate = decimal(config.get("stopRate"))
+    max_daily_orders = int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
+    max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
+    max_losses = int(config.get("maxConsecutiveLosses") or PAPER_MAX_CONSECUTIVE_LOSSES)
     consecutive_losses = 0
     for value in reversed(position_returns):
         if value < 0:
@@ -735,30 +793,30 @@ def safety_rules(
         {
             "key": "dailyLoss",
             "label": "일 손실 한도",
-            "status": "잠금" if average_return <= PAPER_STOP_RATE else "정상",
-            "tone": "danger" if average_return <= PAPER_STOP_RATE else "safe",
-            "detail": f"현재 {percent(average_return)} / 기준 {percent(PAPER_STOP_RATE)}",
+            "status": "잠금" if average_return <= stop_rate else "정상",
+            "tone": "danger" if average_return <= stop_rate else "safe",
+            "detail": f"현재 {percent(average_return)} / 기준 {percent(stop_rate)}",
         },
         {
             "key": "dailyOrders",
             "label": "일 진입 횟수",
-            "status": "상한" if today_order_count >= PAPER_MAX_DAILY_ORDERS else "여유",
-            "tone": "danger" if today_order_count >= PAPER_MAX_DAILY_ORDERS else "safe",
-            "detail": f"{today_order_count}/{PAPER_MAX_DAILY_ORDERS}건 사용",
+            "status": "상한" if today_order_count >= max_daily_orders else "여유",
+            "tone": "danger" if today_order_count >= max_daily_orders else "safe",
+            "detail": f"{today_order_count}/{max_daily_orders}건 사용",
         },
         {
             "key": "positionCap",
             "label": "포지션 수",
-            "status": "과밀" if open_positions >= PAPER_MAX_OPEN_POSITIONS else "정상",
-            "tone": "danger" if open_positions >= PAPER_MAX_OPEN_POSITIONS else "safe",
-            "detail": f"{open_positions}/{PAPER_MAX_OPEN_POSITIONS}개 보유",
+            "status": "과밀" if open_positions >= max_open_positions else "정상",
+            "tone": "danger" if open_positions >= max_open_positions else "safe",
+            "detail": f"{open_positions}/{max_open_positions}개 보유",
         },
         {
             "key": "lossStreak",
             "label": "연속 손실",
-            "status": "정지" if consecutive_losses >= PAPER_MAX_CONSECUTIVE_LOSSES else "정상",
-            "tone": "danger" if consecutive_losses >= PAPER_MAX_CONSECUTIVE_LOSSES else "safe",
-            "detail": f"최근 손실 {consecutive_losses}회 / 기준 {PAPER_MAX_CONSECUTIVE_LOSSES}회",
+            "status": "정지" if consecutive_losses >= max_losses else "정상",
+            "tone": "danger" if consecutive_losses >= max_losses else "safe",
+            "detail": f"최근 손실 {consecutive_losses}회 / 기준 {max_losses}회",
         },
         {
             "key": "paperMode",
@@ -782,7 +840,11 @@ def safety_gate(summary: dict[str, Any]) -> dict[str, Any]:
         "blockers": blockers,
     }
 
+
 def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, Any]:
+    config = strategy_config()
+    target_rate = decimal(config.get("targetRate"))
+    stop_rate = decimal(config.get("stopRate"))
     today = time.strftime("%Y-%m-%d")
     today_orders = [
         item for item in orders if str(item.get("createdAt", "")).startswith(today)
@@ -810,31 +872,31 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         sum(position_returns) / len(position_returns) if position_returns else 0.0
     )
     tech_review = technical_review(positions, results_by_symbol)
-    target_hit = average_return >= PAPER_TARGET_RATE
-    stop_hit = average_return <= PAPER_STOP_RATE
+    target_hit = average_return >= target_rate
+    stop_hit = average_return <= stop_rate
     locked = target_hit or stop_hit
     lock_reason = None
     if target_hit:
-        lock_reason = "일 목표 +1% 도달 · 신규 진입 잠금"
+        lock_reason = f"일 목표 {percent(target_rate)} 도달 · 신규 진입 잠금"
     elif stop_hit:
-        lock_reason = "손실폭 -0.5% 도달 · 신규 진입 중지"
+        lock_reason = f"손실폭 {percent(stop_rate)} 도달 · 신규 진입 중지"
 
     return {
-        "targetRate": PAPER_TARGET_RATE,
-        "stopRate": PAPER_STOP_RATE,
+        "targetRate": target_rate,
+        "stopRate": stop_rate,
+        "strategyConfig": config,
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(positions, results_by_symbol),
         "technicalReview": tech_review,
-        "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason),
+        "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason, config),
         "todayOrderCount": len(today_orders),
         "openPositionCount": len(positions),
         "locked": locked,
         "lockReason": lock_reason,
         "decision": trading_decision(
-            average_return, len(positions), len(today_orders), locked, lock_reason
+            average_return, len(positions), len(today_orders), locked, lock_reason, config
         ),
     }
-
 
 def paper_trade(
     results: list[dict[str, Any]], market: str
@@ -852,7 +914,8 @@ def paper_trade(
         if item.get("market") == market
         and str(item.get("createdAt", "")).startswith(today)
     ]
-    if len(todays_market_orders) >= PAPER_MAX_DAILY_ORDERS:
+    config = strategy_config()
+    if len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS):
         return orders[-20:], summary
     existing = {(item.get("market"), item.get("symbol")) for item in orders[-10:]}
     candidate = next(
@@ -1016,6 +1079,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+
+    def read_json_body(self) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length).decode("utf-8")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise TossApiError(400, "invalid-json", "요청 형식이 올바르지 않습니다.") from exc
+        if not isinstance(data, dict):
+            raise TossApiError(400, "invalid-json", "설정 값은 객체 형태여야 합니다.")
+        return data
     def do_GET(self) -> None:
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/dashboard":
@@ -1037,6 +1113,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/health":
             self.send_json(health_status())
+            return
+        if path == "/api/strategy/config":
+            self.send_json({"config": strategy_config()})
             return
         if path == "/api/kakao/auth-url":
             try:
@@ -1086,6 +1165,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/strategy/config":
+            try:
+                config = save_strategy_config(self.read_json_body())
+                orders = load_paper_orders()
+                with ANALYSIS_LOCK:
+                    results = list(ANALYSIS.get("results") or [])
+                    ANALYSIS["paperSummary"] = paper_summary(orders, results)
+                self.send_json({"config": config, "paperSummary": analysis_snapshot().get("paperSummary")})
+            except TossApiError as exc:
+                self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
+            return
         if path not in ("/api/analysis/start", "/api/analysis/stop"):
             self.send_json({"error": "지원하지 않는 요청입니다."}, status=404)
             return
@@ -1093,12 +1183,18 @@ class Handler(BaseHTTPRequestHandler):
             ANALYSIS["enabled"] = path.endswith("/start")
         self.send_json(analysis_snapshot())
 
-
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "4173"))
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://127.0.0.1:{port}")
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+
+
+
+
+
 
 
 

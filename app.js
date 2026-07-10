@@ -123,15 +123,77 @@ function renderSafetyRules(summary) {
   }
   list.replaceChildren();
   if (!rules.length) {
-    list.innerHTML = `<div class="safety-rule safe"><span>실주문 보호</span><b>PAPER</b><small>실제 주문 전송 없음</small></div>`;
+    list.innerHTML = `<span class="safety-chip safe"><b>실주문 보호</b><em>PAPER</em></span>`;
     return;
   }
   rules.forEach((rule) => {
-    const row = document.createElement("div");
-    row.className = `safety-rule ${rule.tone || "safe"}`;
-    row.innerHTML = `<span>${rule.label}</span><b>${rule.status}</b><small>${rule.detail}</small>`;
-    list.append(row);
+    const chip = document.createElement("span");
+    chip.className = `safety-chip ${rule.tone || "safe"}`;
+    chip.title = rule.detail || "";
+    chip.innerHTML = `<b>${rule.label}</b><em>${rule.status}</em>`;
+    list.append(chip);
   });
+}
+
+function percentInputValue(rate) {
+  return (Number(rate || 0) * 100).toFixed(1);
+}
+
+function renderStrategyConfig(config = {}) {
+  const pairs = [
+    ["#cfgTargetRate", percentInputValue(config.targetRate ?? 0.01)],
+    ["#cfgStopRate", percentInputValue(config.stopRate ?? -0.005)],
+    ["#cfgMaxDailyOrders", config.maxDailyOrders ?? 3],
+    ["#cfgMaxOpenPositions", config.maxOpenPositions ?? 3],
+    ["#cfgMaxLosses", config.maxConsecutiveLosses ?? 2],
+  ];
+  pairs.forEach(([selector, value]) => {
+    const input = document.querySelector(selector);
+    if (input && document.activeElement !== input) input.value = value;
+  });
+}
+
+function readStrategyConfigForm() {
+  const value = (selector) => Number(document.querySelector(selector)?.value || 0);
+  return {
+    targetRate: value("#cfgTargetRate") / 100,
+    stopRate: value("#cfgStopRate") / 100,
+    maxDailyOrders: value("#cfgMaxDailyOrders"),
+    maxOpenPositions: value("#cfgMaxOpenPositions"),
+    maxConsecutiveLosses: value("#cfgMaxLosses"),
+  };
+}
+
+async function saveStrategyConfig() {
+  const button = document.querySelector("#strategySaveBtn");
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/strategy/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(readStrategyConfigForm()),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "설정 저장 실패");
+    renderStrategyConfig(payload.config);
+    if (payload.paperSummary) renderPaperSummary({ paperSummary: payload.paperSummary });
+    showToast("전략 안전장치 설정을 저장했습니다.");
+    loadAnalysisStatus();
+  } catch (error) {
+    showToast(error.message || "설정 저장에 실패했습니다.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function loadStrategyConfig() {
+  try {
+    const response = await fetch("/api/strategy/config", { cache: "no-store" });
+    const payload = await response.json();
+    if (response.ok) renderStrategyConfig(payload.config);
+  } catch (_) {
+    // Analysis status also carries the latest strategy config.
+  }
 }
 function renderAnalysisLog(items) {
   const log = document.querySelector("#analysisLog");
@@ -363,6 +425,7 @@ function renderPaperSummary(state) {
   document.querySelector("#riskRemainingTarget").textContent = `목표까지 ${signedPercent(Number(decision.remainingToTarget ?? targetRate - averageReturn))}`;
 
   renderSafetyRules(summary);
+  renderStrategyConfig(summary.strategyConfig || { targetRate, stopRate });
 
   const periodReturns = summary.periodReturns || {};
   const profitTargets = [
@@ -555,16 +618,19 @@ document.querySelector(".mobile-menu").addEventListener("click", () => {
 });
 
 document.querySelector(".add-btn").addEventListener("click", () => showToast("전략 만들기 화면을 준비 중입니다."));
-document.querySelector(".strategy-btn").addEventListener("click", () => showToast("전략 설정 화면을 준비 중입니다."));
+document.querySelector(".strategy-btn").addEventListener("click", () => document.querySelector("#strategySettings")?.scrollIntoView({ behavior: "smooth", block: "center" }));
+document.querySelector("#strategySaveBtn")?.addEventListener("click", saveStrategyConfig);
 
 loadDashboard();
 loadAnalysisStatus();
 loadHealthStatus();
+loadStrategyConfig();
 updateMarketClock();
 window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
+
 
 
 

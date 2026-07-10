@@ -1057,3 +1057,112 @@ main::-webkit-scrollbar-thumb {
   .detail-metrics,
   .detail-checks { grid-template-columns: 1fr; }
 }
+
+/* Compact guardrail settings */
+.compact-guardrail {
+  margin-top: 10px !important;
+  padding: 10px 12px !important;
+}
+.guardrail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.mini-save-btn {
+  border: 1px solid #d6bd72;
+  border-radius: 999px;
+  background: #1b1309;
+  color: #f8e6ad;
+  padding: 6px 10px;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.mini-save-btn:disabled { opacity: .55; cursor: wait; }
+.safety-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+.safety-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 4px 8px;
+  border: 1px solid #eadfcd;
+  border-radius: 999px;
+  background: #fffaf0;
+  line-height: 1;
+}
+.safety-chip b {
+  color: #776d5f;
+  font-size: 9px;
+  font-weight: 800;
+}
+.safety-chip em {
+  color: var(--ink);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+}
+.safety-chip.safe {
+  border-color: rgba(95,122,70,.24);
+  background: #fbfff3;
+}
+.safety-chip.safe em { color: var(--green); }
+.safety-chip.danger {
+  border-color: rgba(190,90,73,.32);
+  background: #fff5ef;
+}
+.safety-chip.danger em { color: var(--red); }
+.strategy-settings-inline {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 9px;
+}
+.strategy-settings-inline label {
+  display: grid;
+  grid-template-columns: 1fr 46px auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 7px;
+  border: 1px solid #eadfcd;
+  border-radius: 9px;
+  background: rgba(255,255,255,.62);
+}
+.strategy-settings-inline span {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.strategy-settings-inline input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid #dbc79c;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 900;
+  text-align: right;
+  outline: none;
+}
+.strategy-settings-inline em {
+  color: #83796a;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+}
+@media (max-width: 1180px) {
+  .strategy-settings-inline { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .strategy-settings-inline { grid-template-columns: 1fr; }
+  .guardrail-head { align-items: flex-start; flex-direction: column; }
+}
