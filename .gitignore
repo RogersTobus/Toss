@@ -10,3 +10,6 @@ __pycache__/
 node_modules/
 logs/
 *.log
+
+report_state.json
+kakao_state.json

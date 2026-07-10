@@ -14,7 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -22,9 +22,14 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 PAPER_PATH = ROOT / "paper_state.json"
+REPORT_PATH = ROOT / "report_state.json"
 BASE_URL = "https://openapi.tossinvest.com"
+KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
+KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_LOCK = threading.Lock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
+STARTED_AT = time.time()
 PAPER_TARGET_RATE = 0.01
 PAPER_STOP_RATE = -0.005
 ANALYSIS_LOCK = threading.Lock()
@@ -44,6 +49,8 @@ ANALYSIS: dict[str, Any] = {
         "locked": False,
         "lockReason": None,
     },
+    "reports": [],
+    "reportStatus": {"enabled": False, "lastSentAt": None, "lastError": None},
 }
 CALENDAR_CACHE: dict[str, Any] = {"expiresAt": 0.0, "KR": {}, "US": {}}
 
@@ -118,6 +125,245 @@ class TossApiError(Exception):
         self.status = status
         self.code = code
         self.message = message
+
+
+def post_form_json(url: str, form: dict[str, str], headers: dict[str, str] | None = None) -> dict[str, Any]:
+    body = urllib.parse.urlencode(form).encode()
+    request_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+    }
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, data=body, headers=request_headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {"ok": True}
+    except urllib.error.HTTPError as exc:
+        payload: dict[str, Any] = {}
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+        message = str(
+            payload.get("error_description")
+            or payload.get("msg")
+            or payload.get("message")
+            or "외부 알림 요청에 실패했습니다."
+        )
+        code = str(payload.get("error") or payload.get("code") or "notify-error")
+        raise TossApiError(exc.code, code, message) from exc
+
+
+def load_report_state() -> dict[str, Any]:
+    if not REPORT_PATH.exists():
+        return {"sentKeys": [], "reports": [], "lastActiveMarket": None}
+    try:
+        data = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+        return {
+            "sentKeys": data.get("sentKeys") or [],
+            "reports": data.get("reports") or [],
+            "lastActiveMarket": data.get("lastActiveMarket"),
+        }
+    except (json.JSONDecodeError, OSError):
+        return {"sentKeys": [], "reports": [], "lastActiveMarket": None}
+
+
+def save_report_state(state: dict[str, Any]) -> None:
+    state["sentKeys"] = (state.get("sentKeys") or [])[-80:]
+    state["reports"] = (state.get("reports") or [])[-30:]
+    REPORT_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def money(value: Any) -> str:
+    amount = round(decimal(value))
+    sign = "+" if amount >= 0 else "-"
+    return f"{sign}{abs(amount):,}원"
+
+
+def percent(value: Any) -> str:
+    rate = decimal(value) * 100
+    sign = "+" if rate >= 0 else "-"
+    return f"{sign}{abs(rate):.2f}%"
+
+
+def build_market_close_report(market: str, orders: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now().astimezone()
+    date_key = now.strftime("%Y-%m-%d")
+    market_name = "한국장" if market == "KR" else "미국장" if market == "US" else market
+    period = summary.get("periodReturns") or {}
+    today = period.get("today") or {}
+    week = period.get("week") or {}
+    month = period.get("month") or {}
+    today_orders = [item for item in orders if str(item.get("createdAt", "")).startswith(date_key) and item.get("market") == market]
+    top_names = [str(item.get("name") or item.get("symbol") or "-") for item in today_orders[-5:]]
+    lines = [
+        "[Orbit 단타 장마감 리포트]",
+        f"시장: {market_name}",
+        f"일시: {now.strftime('%Y-%m-%d %H:%M')}",
+        "",
+        f"오늘 단타 수익: {money(today.get('profitKrw'))} ({percent(today.get('returnRate'))})",
+        f"이번주 단타 수익: {money(week.get('profitKrw'))} ({percent(week.get('returnRate'))})",
+        f"이번달 단타 수익: {money(month.get('profitKrw'))} ({percent(month.get('returnRate'))})",
+        "",
+        f"오늘 모의 진입: {len(today_orders)}건",
+        f"보유 포지션: {summary.get('openPositionCount', 0)}개",
+    ]
+    if top_names:
+        lines.append("대표 종목: " + ", ".join(top_names[:3]))
+    if summary.get("locked"):
+        lines.append("상태: " + str(summary.get("lockReason") or "오늘 거래 잠금"))
+    else:
+        lines.append("상태: 장마감 리포트 생성 완료")
+    return {
+        "id": f"{date_key}-{market}",
+        "market": market,
+        "marketName": market_name,
+        "createdAt": now.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "todayProfitKrw": today.get("profitKrw", 0),
+        "todayReturnRate": today.get("returnRate", 0),
+        "orderCount": len(today_orders),
+        "positionCount": summary.get("openPositionCount", 0),
+        "sent": False,
+        "message": "\n".join(lines),
+    }
+
+
+
+def update_env_values(updates: dict[str, str]) -> None:
+    path = ROOT / ".env"
+    existing = path.read_text(encoding="utf-8-sig").splitlines() if path.exists() else []
+    seen: set[str] = set()
+    lines: list[str] = []
+    for raw in existing:
+        if "=" not in raw or raw.strip().startswith("#"):
+            lines.append(raw)
+            continue
+        key = raw.split("=", 1)[0].strip()
+        if key in updates:
+            lines.append(f"{key}={updates[key]}")
+            seen.add(key)
+        else:
+            lines.append(raw)
+    for key, value in updates.items():
+        if key not in seen:
+            lines.append(f"{key}={value}")
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+
+def kakao_redirect_uri(env: dict[str, str]) -> str:
+    return env.get("KAKAO_REDIRECT_URI") or "http://127.0.0.1:4173/kakao/callback"
+
+
+def kakao_auth_url(env: dict[str, str]) -> str:
+    rest_key = env.get("KAKAO_REST_API_KEY", "")
+    if not rest_key:
+        raise TossApiError(400, "kakao-rest-key-missing", "KAKAO_REST_API_KEY가 .env에 없습니다.")
+    params = {
+        "response_type": "code",
+        "client_id": rest_key,
+        "redirect_uri": kakao_redirect_uri(env),
+        "scope": "talk_message",
+        "prompt": "consent",
+    }
+    return f"{KAKAO_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
+
+def exchange_kakao_code(env: dict[str, str], code: str) -> dict[str, Any]:
+    rest_key = env.get("KAKAO_REST_API_KEY", "")
+    if not rest_key:
+        raise TossApiError(400, "kakao-rest-key-missing", "KAKAO_REST_API_KEY가 .env에 없습니다.")
+    form = {
+        "grant_type": "authorization_code",
+        "client_id": rest_key,
+        "redirect_uri": kakao_redirect_uri(env),
+        "code": code,
+    }
+    client_secret = env.get("KAKAO_CLIENT_SECRET", "")
+    if client_secret:
+        form["client_secret"] = client_secret
+    return post_form_json(KAKAO_TOKEN_URL, form)
+
+
+def kakao_callback_page(title: str, body: str, ok: bool = True) -> bytes:
+    color = "#5c7f2f" if ok else "#9c3b32"
+    html = f"""<!doctype html>
+<html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<title>{title}</title>
+<style>body{{font-family:Arial,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f7f5ee;color:#171914;display:grid;place-items:center;min-height:100vh;margin:0}}main{{width:min(520px,92vw);background:#fff;border:1px solid #e6e0d0;border-radius:18px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.08)}}h1{{font-size:22px;margin:0 0 12px;color:{color}}}p{{line-height:1.6}}button{{border:0;border-radius:10px;background:#171914;color:#fff;padding:12px 16px;font-weight:800;cursor:pointer}}</style></head>
+<body><main><h1>{title}</h1><p>{body}</p><button onclick=\"location.href='/'\">Orbit으로 돌아가기</button></main></body></html>"""
+    return html.encode("utf-8")
+
+def kakao_enabled(env: dict[str, str]) -> bool:
+    return str(env.get("KAKAO_REPORT_ENABLED", "")).lower() in ("1", "true", "yes", "on")
+
+
+def send_kakao_memo(env: dict[str, str], text: str) -> None:
+    rest_key = env.get("KAKAO_REST_API_KEY", "")
+    refresh_token = env.get("KAKAO_REFRESH_TOKEN", "")
+    if not rest_key or not refresh_token:
+        raise TossApiError(400, "kakao-env-missing", "카카오 REST API 키 또는 refresh token이 없습니다.")
+    token_response = post_form_json(
+        KAKAO_TOKEN_URL,
+        {
+            "grant_type": "refresh_token",
+            "client_id": rest_key,
+            "refresh_token": refresh_token,
+        },
+    )
+    access_token = token_response.get("access_token")
+    if not access_token:
+        raise TossApiError(401, "kakao-token-missing", "카카오 access token을 발급받지 못했습니다.")
+    template = {
+        "object_type": "text",
+        "text": text[:900],
+        "link": {"web_url": "http://127.0.0.1:4173", "mobile_web_url": "http://127.0.0.1:4173"},
+        "button_title": "Orbit 열기",
+    }
+    post_form_json(
+        KAKAO_MEMO_URL,
+        {"template_object": json.dumps(template, ensure_ascii=False)},
+        {"Authorization": f"Bearer {access_token}"},
+    )
+
+
+def handle_market_close_report(
+    previous_market: str | None,
+    current_market: str | None,
+    env: dict[str, str],
+    orders: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    state = load_report_state()
+    reports = state.get("reports") or []
+    status = {
+        "enabled": kakao_enabled(env),
+        "lastSentAt": None,
+        "lastError": None,
+    }
+    if previous_market in ("KR", "US") and previous_market != current_market:
+        report = build_market_close_report(previous_market, orders, summary)
+        sent_keys = set(state.get("sentKeys") or [])
+        if report["id"] not in sent_keys:
+            try:
+                if status["enabled"]:
+                    send_kakao_memo(env, report["message"])
+                    report["sent"] = True
+                    status["lastSentAt"] = report["createdAt"]
+                else:
+                    status["lastError"] = "KAKAO_REPORT_ENABLED가 꺼져 있어 리포트만 저장했습니다."
+            except TossApiError as exc:
+                report["sent"] = False
+                report["error"] = exc.message
+                status["lastError"] = exc.message
+            reports.append(report)
+            sent_keys.add(report["id"])
+            state["sentKeys"] = list(sent_keys)
+    state["lastActiveMarket"] = current_market
+    state["reports"] = reports[-30:]
+    save_report_state(state)
+    return state["reports"], status
 
 
 def get_token(env: dict[str, str], force_refresh: bool = False) -> str:
@@ -317,13 +563,136 @@ def save_paper_orders(orders: list[dict[str, Any]]) -> None:
     )
 
 
+def parse_order_time(value: Any) -> datetime | None:
+    raw = str(value or "")
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def start_of_week(now: datetime) -> datetime:
+    start_day = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
+    return start_day - timedelta(days=now.weekday())
+
+
+def period_profit_summary(
+    positions: dict[str, dict[str, Any]], results_by_symbol: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    now = datetime.now().astimezone()
+    starts = {
+        "month": datetime(now.year, now.month, 1, tzinfo=now.tzinfo),
+        "week": start_of_week(now),
+        "today": datetime(now.year, now.month, now.day, tzinfo=now.tzinfo),
+    }
+    summary = {
+        key: {"profitKrw": 0, "investedKrw": 0, "returnRate": 0.0, "positionCount": 0}
+        for key in starts
+    }
+
+    for symbol, order in positions.items():
+        created_at = parse_order_time(order.get("createdAt"))
+        if created_at is None:
+            continue
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=now.tzinfo)
+        current = results_by_symbol.get(symbol)
+        entry = decimal(order.get("price"))
+        last = decimal((current or {}).get("lastPrice"))
+        quantity = decimal(order.get("quantity") or 1)
+        if not entry or not last:
+            continue
+        invested = entry * quantity
+        profit = (last - entry) * quantity
+        for key, start in starts.items():
+            if created_at >= start:
+                summary[key]["profitKrw"] += round(profit)
+                summary[key]["investedKrw"] += round(invested)
+                summary[key]["positionCount"] += 1
+
+    for item in summary.values():
+        invested = item["investedKrw"]
+        item["returnRate"] = item["profitKrw"] / invested if invested else 0.0
+    return summary
+
+
+
+def trading_decision(
+    average_return: float,
+    open_positions: int,
+    today_orders: int,
+    locked: bool,
+    lock_reason: str | None,
+) -> dict[str, Any]:
+    remaining_to_stop = average_return - PAPER_STOP_RATE
+    remaining_to_target = PAPER_TARGET_RATE - average_return
+    stop_progress = 0.0
+    if PAPER_STOP_RATE < 0:
+        stop_progress = max(0.0, min(1.0, abs(min(average_return, 0.0)) / abs(PAPER_STOP_RATE)))
+
+    if locked and average_return >= PAPER_TARGET_RATE:
+        mode = "목표 달성"
+        tone = "safe"
+        action = "오늘 신규 진입 잠금, 수익 보존"
+        reason = lock_reason or "일 목표 수익률을 달성했습니다."
+    elif locked:
+        mode = "거래 중지"
+        tone = "danger"
+        action = "신규 진입 금지, 보유 포지션 점검"
+        reason = lock_reason or "손실 한도에 도달했습니다."
+    elif average_return <= PAPER_STOP_RATE * 0.8:
+        mode = "방어 모드"
+        tone = "danger"
+        action = "신규 진입 제한, 손절 기준 확인"
+        reason = "손실선에 근접했습니다."
+    elif average_return < 0:
+        mode = "주의 모드"
+        tone = "caution"
+        action = "추가 진입보다 기존 포지션 관찰"
+        reason = "단타 평가손익이 마이너스 구간입니다."
+    elif open_positions >= 3:
+        mode = "관망 모드"
+        tone = "caution"
+        action = "포지션 과밀, 신규 진입은 신중하게"
+        reason = "오늘 허용 포지션을 대부분 사용했습니다."
+    elif average_return >= PAPER_TARGET_RATE * 0.5:
+        mode = "공격 가능"
+        tone = "safe"
+        action = "추세 확인 후 선별 진입"
+        reason = "일 목표의 절반 이상을 달성 중입니다."
+    else:
+        mode = "균형 모드"
+        tone = "neutral"
+        action = "시장 강도 확인 후 소량 진입"
+        reason = "손익과 리스크가 관리 가능한 범위입니다."
+
+    return {
+        "mode": mode,
+        "tone": tone,
+        "reason": reason,
+        "action": action,
+        "stopProgress": stop_progress,
+        "remainingToStop": remaining_to_stop,
+        "remainingToTarget": remaining_to_target,
+        "targetRate": PAPER_TARGET_RATE,
+        "stopRate": PAPER_STOP_RATE,
+        "currentRate": average_return,
+        "openPositionCount": open_positions,
+        "todayOrderCount": today_orders,
+    }
+
+
 def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, Any]:
     today = time.strftime("%Y-%m-%d")
     today_orders = [
         item for item in orders if str(item.get("createdAt", "")).startswith(today)
     ]
     positions: dict[str, dict[str, Any]] = {}
-    for order in today_orders:
+    for order in orders:
         symbol = str(order.get("symbol") or "")
         if not symbol:
             continue
@@ -351,16 +720,20 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     if target_hit:
         lock_reason = "일 목표 +1% 도달 · 신규 진입 잠금"
     elif stop_hit:
-        lock_reason = "일 손실선 -0.5% 도달 · 신규 진입 중지"
+        lock_reason = "손실폭 -0.5% 도달 · 신규 진입 중지"
 
     return {
         "targetRate": PAPER_TARGET_RATE,
         "stopRate": PAPER_STOP_RATE,
         "averageReturn": average_return,
+        "periodReturns": period_profit_summary(positions, results_by_symbol),
         "todayOrderCount": len(today_orders),
         "openPositionCount": len(positions),
         "locked": locked,
         "lockReason": lock_reason,
+        "decision": trading_decision(
+            average_return, len(positions), len(today_orders), locked, lock_reason
+        ),
     }
 
 
@@ -471,6 +844,12 @@ def analysis_loop() -> None:
                 else:
                     orders = load_paper_orders()
                     paper_stats = paper_summary(orders, results)
+                report_state = load_report_state()
+                previous_market = report_state.get("lastActiveMarket")
+                current_market = market if market in ("KR", "US") else None
+                reports, report_status = handle_market_close_report(
+                    previous_market, current_market, env, orders, paper_stats
+                )
                 with ANALYSIS_LOCK:
                     ANALYSIS["cycle"] += 1
                     ANALYSIS["lastRunAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -480,11 +859,43 @@ def analysis_loop() -> None:
                     ANALYSIS["activeSession"] = session
                     ANALYSIS["paperOrders"] = orders
                     ANALYSIS["paperSummary"] = paper_stats
+                    ANALYSIS["reports"] = reports[-5:]
+                    ANALYSIS["reportStatus"] = report_status
             except Exception as exc:
                 with ANALYSIS_LOCK:
                     ANALYSIS["lastError"] = str(exc)
         time.sleep(30)
 
+
+
+def health_status() -> dict[str, Any]:
+    env = load_env()
+    with ANALYSIS_LOCK:
+        analysis = dict(ANALYSIS)
+    uptime = max(0, int(time.time() - STARTED_AT))
+    return {
+        "ok": True,
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "uptimeSec": uptime,
+        "server": {"running": True, "port": int(os.environ.get("PORT", "4173"))},
+        "toss": {
+            "configured": bool(env.get("TOSS_CLIENT_ID") and env.get("TOSS_CLIENT_SECRET")),
+            "connected": analysis.get("lastError") is None,
+        },
+        "kakao": {
+            "configured": bool(env.get("KAKAO_REST_API_KEY") and env.get("KAKAO_REFRESH_TOKEN")),
+            "enabled": kakao_enabled(env),
+            "lastError": (analysis.get("reportStatus") or {}).get("lastError"),
+        },
+        "analysis": {
+            "enabled": bool(analysis.get("enabled")),
+            "cycle": analysis.get("cycle", 0),
+            "lastRunAt": analysis.get("lastRunAt"),
+            "activeMarket": analysis.get("activeMarket"),
+            "activeSession": analysis.get("activeSession"),
+            "lastError": analysis.get("lastError"),
+        },
+    }
 
 def analysis_snapshot() -> dict[str, Any]:
     with ANALYSIS_LOCK:
@@ -523,6 +934,37 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/analysis/status":
             self.send_json(analysis_snapshot())
+            return
+        if path == "/api/health":
+            self.send_json(health_status())
+            return
+        if path == "/api/kakao/auth-url":
+            try:
+                self.send_json({"url": kakao_auth_url(load_env())})
+            except TossApiError as exc:
+                self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
+            return
+        if path == "/kakao/callback":
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            code = (query.get("code") or [""])[0]
+            if not code:
+                content = kakao_callback_page("카카오 연결 실패", "카카오 인증 코드가 전달되지 않았습니다.", ok=False)
+            else:
+                try:
+                    token = exchange_kakao_code(load_env(), code)
+                    refresh_token = token.get("refresh_token")
+                    if refresh_token:
+                        update_env_values({"KAKAO_REFRESH_TOKEN": str(refresh_token), "KAKAO_REPORT_ENABLED": "true"})
+                        content = kakao_callback_page("카카오 연결 완료", "refresh token을 .env에 저장했습니다. 이제 장마감 리포트가 카카오톡 나에게 보내기로 발송됩니다.")
+                    else:
+                        content = kakao_callback_page("카카오 연결 확인 필요", "카카오가 refresh token을 새로 내려주지 않았습니다. 동의 화면에서 다시 연결하거나 기존 token을 확인해주세요.", ok=False)
+                except TossApiError as exc:
+                    content = kakao_callback_page("카카오 연결 실패", exc.message, ok=False)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
             return
 
         relative = "index.html" if path in ("", "/") else path.lstrip("/")

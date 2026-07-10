@@ -9,6 +9,10 @@ function signedWon(value) {
   return `${amount >= 0 ? "+" : "−"}${won.format(Math.abs(amount))}`;
 }
 
+function plainWon(value) {
+  return won.format(Math.abs(Number(value || 0)));
+}
+
 function signedPercent(value) {
   const rate = Number(value || 0) * 100;
   return `${rate >= 0 ? "+" : "−"}${Math.abs(rate).toFixed(2)}%`;
@@ -50,13 +54,11 @@ function analyzeHolding(item) {
 
 function renderAnalysisLog(items) {
   const log = document.querySelector("#analysisLog");
+  if (!log) return;
   log.replaceChildren();
-  const now = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
-  items.slice(0, 4).forEach((item) => {
-    const analysis = item.verdict
-      ? { verdict: item.verdict, reason: item.reason, icon: item.verdict === "진입 불가" ? "!" : "⌁" }
-      : analyzeHolding(item);
-    const entry = document.createElement("div");
+  (items || []).slice(0, 4).forEach((item) => {
+    const analysis = item.verdict;
+    const row = document.createElement("div");
     const icon = document.createElement("i");
     icon.className = analysis.verdict === "진입 불가" ? "alert" : "safe";
     icon.textContent = analysis.icon;
@@ -66,56 +68,23 @@ function renderAnalysisLog(items) {
     const detail = document.createElement("small");
     detail.textContent = `${analysis.reason} · ${signedPercent(item.dailyRate)}`;
     const time = document.createElement("time");
-    time.textContent = now;
+    time.textContent = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
     copy.append(title, detail);
-    entry.append(icon, copy, time);
-    log.append(entry);
+    row.append(icon, copy, time);
+    log.append(row);
   });
 }
 
 function renderLongTermHoldings(items) {
   const list = document.querySelector("#longTermHoldings");
+  if (!list) return;
   list.replaceChildren();
-  items.slice(0, 4).forEach((item) => {
-    const row = document.createElement("div");
-    const identity = document.createElement("span");
-    const name = document.createElement("b");
-    name.textContent = item.name || item.symbol;
-    const meta = document.createElement("small");
-    meta.textContent = `${item.symbol} · ${number.format(Number(item.quantity || 0))}주`;
-    identity.append(name, meta);
-    const rate = document.createElement("strong");
-    rate.textContent = signedPercent(item.profitRate);
-    applyTone(rate, item.profitRate);
-    row.append(identity, rate);
-    list.append(row);
-  });
 }
 
 function renderMarketPulse(summary, items) {
-  document.querySelector("#usdKrw").textContent = `₩${number.format(Number(summary.usdKrw || 0))}`;
-  const rates = (items || []).map((item) => Number(item.dailyRate || 0));
-  const average = rates.length ? rates.reduce((sum, rate) => sum + rate, 0) / rates.length : 0;
-  const positiveRatio = rates.length ? rates.filter((rate) => rate > 0).length / rates.length : 0;
-  const tone = document.querySelector("#marketTone");
-  const regime = document.querySelector("#marketRegime");
-  const detail = document.querySelector("#marketDetail");
-
-  tone.className = "status market-status";
-  if (average >= 0.01 && positiveRatio >= 0.6) {
-    tone.classList.add("bullish");
-    tone.textContent = "상승 우위";
-    regime.textContent = "매수세 우위";
-  } else if (average <= -0.01 && positiveRatio <= 0.4) {
-    tone.classList.add("bearish");
-    tone.textContent = "하락 우위";
-    regime.textContent = "방어적 접근";
-  } else {
-    tone.classList.add("mixed");
-    tone.textContent = "혼조";
-    regime.textContent = "방향성 탐색";
-  }
-  detail.textContent = `보유 종목 평균 ${signedPercent(average)} · 상승 비중 ${Math.round(positiveRatio * 100)}%`;
+  const exchange = document.querySelector("#usdKrw");
+  if (!exchange) return;
+  exchange.textContent = `₩${number.format(Number(summary.usdKrw || 0))}`;
 }
 
 function renderHoldings(items) {
@@ -233,6 +202,48 @@ function renderPaperOrders(orders, market) {
   }
 }
 
+function renderMarketReports(state) {
+  const list = document.querySelector("#marketReports");
+  const status = document.querySelector("#kakaoReportStatus");
+  const connectButton = document.querySelector("#kakaoConnectBtn");
+  const reportInsight = document.querySelector("#reportInsight");
+  if (!list || !status) return;
+
+  const reportStatus = state.reportStatus || {};
+  const connected = Boolean(reportStatus.enabled && !reportStatus.lastError);
+  status.textContent = reportStatus.enabled
+    ? (reportStatus.lastError ? "발송 확인 필요" : "카카오 연결")
+    : "발송 대기";
+  status.classList.toggle("negative-text", Boolean(reportStatus.lastError));
+  status.classList.toggle("positive-text", connected);
+  if (connectButton) {
+    connectButton.textContent = reportStatus.enabled ? "카카오 재연결" : "카카오톡 연결하기";
+  }
+  if (reportInsight) {
+    reportInsight.textContent = connected ? "자동 발송" : "대기";
+    applyTone(reportInsight, connected ? 1 : 0);
+  }
+
+  const reports = (state.reports || []).slice(-2).reverse();
+  list.replaceChildren();
+  if (!reports.length) {
+    const empty = document.createElement("p");
+    empty.textContent = reportStatus.lastError || "한국장/미국장 종료 후 자동 리포트를 준비합니다.";
+    list.append(empty);
+    return;
+  }
+
+  reports.forEach((report) => {
+    const row = document.createElement("div");
+    row.className = "report-item";
+    const created = report.createdAt ? new Date(report.createdAt).toLocaleString("ko-KR", {
+      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false
+    }) : "방금";
+    row.innerHTML = `<span>${report.marketName || report.market}</span><b>${signedWon(report.todayProfitKrw)} · ${signedPercent(report.todayReturnRate)}</b><small>${created} · ${report.sent ? "카카오 발송" : "저장됨"}</small>`;
+    list.append(row);
+  });
+}
+
 function renderPaperSummary(state) {
   const summary = state.paperSummary || {};
   const averageReturn = Number(summary.averageReturn || 0);
@@ -241,11 +252,54 @@ function renderPaperSummary(state) {
   const todayOrderCount = Number(summary.todayOrderCount || 0);
   const openPositionCount = Number(summary.openPositionCount || 0);
 
-  document.querySelector("#paperOrderCount").textContent = `${todayOrderCount}건`;
-  document.querySelector("#paperPositionCount").textContent = `${openPositionCount}개`;
-  const returnElement = document.querySelector("#paperReturn");
-  returnElement.textContent = signedPercent(averageReturn);
-  applyTone(returnElement, averageReturn);
+  const decision = summary.decision || {};
+  const decisionCard = document.querySelector("#decisionCard");
+  const decisionMode = document.querySelector("#decisionMode");
+  const decisionReason = document.querySelector("#decisionReason");
+  const decisionAction = document.querySelector("#decisionAction");
+  if (decisionCard) {
+    decisionCard.className = `decision-card ${decision.tone || "neutral"}`;
+    decisionMode.textContent = decision.mode || "균형 모드";
+    decisionReason.textContent = decision.reason || "손익과 리스크가 관리 가능한 범위입니다.";
+    decisionAction.textContent = decision.action || "시장 강도 확인 후 소량 진입";
+  }
+
+  const stopProgress = Number(decision.stopProgress || 0);
+  const riskLimitBar = document.querySelector("#riskLimitBar");
+  if (riskLimitBar) {
+    riskLimitBar.style.width = `${Math.max(4, Math.min(100, stopProgress * 100))}%`;
+    riskLimitBar.classList.toggle("danger", stopProgress >= 0.8);
+    riskLimitBar.classList.toggle("warning", stopProgress >= 0.5 && stopProgress < 0.8);
+  }
+  document.querySelector("#riskLimitLabel").textContent = `${signedPercent(averageReturn)} / ${signedPercent(stopRate)}`;
+  document.querySelector("#riskRemainingStop").textContent = `손실선까지 여유 ${signedPercent(Number(decision.remainingToStop ?? averageReturn - stopRate))}`;
+  document.querySelector("#riskRemainingTarget").textContent = `목표까지 ${signedPercent(Number(decision.remainingToTarget ?? targetRate - averageReturn))}`;
+
+  const periodReturns = summary.periodReturns || {};
+  const profitTargets = [
+    ["#paperMonthProfit", "#paperMonthMeta", periodReturns.month],
+    ["#paperWeekProfit", "#paperWeekMeta", periodReturns.week],
+    ["#paperTodayProfit", "#paperTodayMeta", periodReturns.today],
+  ];
+  profitTargets.forEach(([profitSelector, metaSelector, item]) => {
+    const profitElement = document.querySelector(profitSelector);
+    const metaElement = document.querySelector(metaSelector);
+    if (!profitElement) return;
+    const profit = Number((item || {}).profitKrw || 0);
+    const rate = Number((item || {}).returnRate || 0);
+    const invested = Number((item || {}).investedKrw || 0);
+    const count = Number((item || {}).positionCount || 0);
+    profitElement.textContent = `${signedWon(profit)} · ${signedPercent(rate)}`;
+    applyTone(profitElement, profit || rate);
+    if (metaElement) metaElement.textContent = `투입금 ${plainWon(invested)} · ${count}개`;
+  });
+
+  document.querySelector("#botStatus").textContent = `${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
+  document.querySelector("#positionInsight").textContent = `${openPositionCount}개`;
+  document.querySelector("#orderInsight").textContent = `${todayOrderCount}건`;
+  const avgInsight = document.querySelector("#avgReturnInsight");
+  avgInsight.textContent = signedPercent(averageReturn);
+  applyTone(avgInsight, averageReturn);
 
   const updatedAt = state.lastRunAt
     ? new Date(state.lastRunAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
@@ -254,9 +308,66 @@ function renderPaperSummary(state) {
 
   const progress = targetRate > 0 ? Math.max(0, Math.min(100, (averageReturn / targetRate) * 100)) : 0;
   document.querySelector("#analysisPulseBar").style.width = `${summary.locked && averageReturn < 0 ? 100 : Math.max(4, progress)}%`;
+  document.querySelector("#analysisPulseBar").classList.toggle("danger", averageReturn < 0);
   document.querySelector("#analysisCycleCopy").textContent = summary.locked
     ? summary.lockReason
     : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`;
+}
+
+function setHealthTone(element, ok, warning = false) {
+  if (!element) return;
+  element.classList.toggle("positive-text", Boolean(ok) && !warning);
+  element.classList.toggle("negative-text", !ok);
+  element.classList.toggle("warning-text", Boolean(ok) && warning);
+}
+
+function formatUptime(seconds) {
+  const total = Number(seconds || 0);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours > 0) return `${hours}시간 ${minutes}분`;
+  return `${minutes}분`;
+}
+
+async function loadHealthStatus() {
+  try {
+    const response = await fetch("/api/health", { cache: "no-store" });
+    const health = await response.json();
+    if (!response.ok) throw new Error(health.error || "운영 상태를 불러오지 못했습니다.");
+
+    const toss = document.querySelector("#healthToss");
+    const kakao = document.querySelector("#healthKakao");
+    const analysis = document.querySelector("#healthAnalysis");
+    const server = document.querySelector("#healthServer");
+    const updated = document.querySelector("#healthUpdated");
+
+    const tossOk = Boolean(health.toss?.configured && health.toss?.connected);
+    toss.textContent = tossOk ? "연결됨" : (health.toss?.configured ? "확인 필요" : "미설정");
+    setHealthTone(toss, tossOk);
+
+    const kakaoOk = Boolean(health.kakao?.configured && health.kakao?.enabled && !health.kakao?.lastError);
+    kakao.textContent = kakaoOk ? "자동 발송" : (health.kakao?.configured ? "대기/확인" : "미설정");
+    setHealthTone(kakao, Boolean(health.kakao?.configured), !kakaoOk);
+
+    const analysisOk = Boolean(health.analysis?.enabled && !health.analysis?.lastError);
+    analysis.textContent = analysisOk ? `${health.analysis?.activeSession || "분석 중"}` : "중지/오류";
+    setHealthTone(analysis, analysisOk);
+
+    server.textContent = `실행 ${formatUptime(health.uptimeSec)}`;
+    setHealthTone(server, Boolean(health.server?.running));
+
+    updated.textContent = health.updatedAt
+      ? new Date(health.updatedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "--:--";
+  } catch (error) {
+    ["#healthToss", "#healthKakao", "#healthAnalysis", "#healthServer"].forEach((selector) => {
+      const element = document.querySelector(selector);
+      if (element) {
+        element.textContent = "확인 실패";
+        setHealthTone(element, false);
+      }
+    });
+  }
 }
 
 async function loadDashboard() {
@@ -273,12 +384,14 @@ async function loadDashboard() {
     document.querySelector("#totalReturn").textContent = `${summary.profitRate >= 0 ? "↗" : "↘"} ${Math.abs(summary.profitRate * 100).toFixed(2)}%`;
     document.querySelector("#dailyProfit").textContent = signedWon(summary.dailyProfitKrw);
     document.querySelector("#dailyReturn").textContent = signedPercent(summary.dailyProfitRate);
-    document.querySelector("#portfolioValue").textContent = won.format(summary.totalKrw);
-    document.querySelector("#portfolioReturn").textContent = signedPercent(summary.profitRate);
+    const portfolioValue = document.querySelector("#portfolioValue");
+    const portfolioReturn = document.querySelector("#portfolioReturn");
+    if (portfolioValue) portfolioValue.textContent = won.format(summary.totalKrw);
+    if (portfolioReturn) portfolioReturn.textContent = signedPercent(summary.profitRate);
     renderMarketPulse(summary, data.holdings);
     applyTone(document.querySelector("#dailyProfit"), summary.dailyProfitKrw);
     applyTone(document.querySelector("#dailyReturn"), summary.dailyProfitRate);
-    applyTone(document.querySelector("#portfolioReturn"), summary.profitRate);
+    if (portfolioReturn) applyTone(portfolioReturn, summary.profitRate);
     renderHoldings(data.holdings);
   } catch (error) {
     badge.classList.add("offline");
@@ -341,6 +454,7 @@ async function loadAnalysisStatus() {
       renderScannerResults(state.results);
       renderPaperOrders(state.paperOrders, state.activeMarket);
       renderPaperSummary(state);
+      renderMarketReports(state);
     }
   } catch (_) {
     // Dashboard connection badge handles connectivity errors.
@@ -356,7 +470,9 @@ document.querySelector(".strategy-btn").addEventListener("click", () => showToas
 
 loadDashboard();
 loadAnalysisStatus();
+loadHealthStatus();
 updateMarketClock();
 window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
+window.setInterval(loadHealthStatus, 60_000);

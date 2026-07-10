@@ -69,16 +69,16 @@
           <div class="connection" id="apiConnection"><span></span> Toss Securities API <b>연결 중</b></div>
         </section>
 
-        <section class="summary-grid">
+        <section class="summary-grid compact-summary">
           <article class="balance-card dark-card">
-            <div class="card-title"><span>총 투자자산</span><button aria-label="자산 숨기기">◉</button></div>
-            <div class="total-value" id="totalAssets">₩28,436,200</div>
-            <div class="gain"><span id="totalReturn">↗ 8.42%</span> 전체 기간</div>
+            <div class="card-title"><span>총 투자자산</span><button aria-label="자산 숨기기">•••</button></div>
+            <div class="total-value" id="totalAssets">₩0</div>
+            <div class="gain"><span id="totalReturn">+0.00%</span> 전체 기간</div>
             <svg class="hero-chart" viewBox="0 0 560 112" preserveAspectRatio="none" aria-label="자산 추이">
               <defs>
                 <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#b9ee4b" stop-opacity=".25"/>
-                  <stop offset="100%" stop-color="#b9ee4b" stop-opacity="0"/>
+                  <stop offset="0%" stop-color="#f4d98a" stop-opacity=".26"/>
+                  <stop offset="100%" stop-color="#f4d98a" stop-opacity="0"/>
                 </linearGradient>
               </defs>
               <path class="area" d="M0 88 C38 80,52 92,82 73 S130 65,154 71 S201 46,230 54 S272 71,300 49 S341 60,372 41 S415 47,447 28 S505 36,560 12 L560 112 L0 112 Z"/>
@@ -89,10 +89,10 @@
             </div>
           </article>
 
-          <article class="metric-card">
-            <div class="card-title"><span>오늘의 손익</span><span class="status positive">● LIVE</span></div>
-            <div class="metric-value positive-text" id="dailyProfit">+₩42,840</div>
-            <div class="metric-sub"><b id="dailyReturn">+0.16%</b> <span>vs. 전일</span></div>
+          <article class="metric-card daily-card">
+            <div class="card-title"><span>오늘의 손익</span><span class="status positive">LIVE</span></div>
+            <div class="metric-value positive-text" id="dailyProfit">+₩0</div>
+            <div class="metric-sub"><b id="dailyReturn">+0.00%</b> <span>전일 대비</span></div>
             <div class="micro-bars" aria-hidden="true">
               <i style="height:24%"></i><i style="height:39%"></i><i style="height:31%"></i><i style="height:58%"></i>
               <i style="height:49%"></i><i style="height:71%"></i><i style="height:64%"></i><i style="height:84%"></i>
@@ -100,58 +100,90 @@
             </div>
             <div class="metric-footer"><span>09:00</span><span>현재</span></div>
           </article>
+        </section>
 
-          <article class="metric-card market-card">
-            <div class="card-title"><span>환율 · 시장 국면</span><span class="status market-status" id="marketTone">분석 중</span></div>
-            <div class="metric-value exchange-value" id="usdKrw">₩0.00</div>
-            <div class="metric-sub exchange-label">USD / KRW <span>실시간 기준</span></div>
-            <div class="market-regime">
-              <i></i>
-              <div><b id="marketRegime">시장 분석 중</b><span id="marketDetail">등락 분포를 계산하고 있어요.</span></div>
-            </div>
-          </article>
+        <section class="ops-status-strip" aria-label="운영 상태">
+          <div><span>토스 API</span><b id="healthToss">확인 중</b></div>
+          <div><span>카카오 리포트</span><b id="healthKakao">확인 중</b></div>
+          <div><span>라이브 분석</span><b id="healthAnalysis">확인 중</b></div>
+          <div><span>서버 실행</span><b id="healthServer">확인 중</b></div>
+          <div><span>최근 갱신</span><b id="healthUpdated">--:--</b></div>
         </section>
 
         <div class="operations-grid">
         <section class="main-grid">
-          <article class="panel portfolio-panel">
-            <div class="panel-header">
-              <div><p class="eyebrow">LONG-TERM INDEX</p><h2>장기 보유현황</h2></div>
-              <span class="status positive">● 적립식</span>
-            </div>
-            <div class="long-term-summary">
-              <span>총 평가금액</span>
-              <strong id="portfolioValue">₩27,812,200</strong>
-              <em id="portfolioReturn">+8.37%</em>
-            </div>
-            <div class="long-term-list" id="longTermHoldings"></div>
-          </article>
+          
 
           <article class="panel bot-panel">
             <div class="panel-header">
               <div><p class="eyebrow accent">ACTIVE STRATEGY</p><h2>단타 트레이딩</h2></div>
-              <label class="switch" title="자동매매 실행">
+              <label class="switch" title="라이브 분석 실행">
                 <input id="botToggle" type="checkbox" />
                 <span></span>
               </label>
             </div>
+
             <div class="bot-mode">
               <span class="bot-orb"><i></i></span>
               <div><b id="botStatus">모의 운용 중</b><span>실제 주문은 전송되지 않습니다</span></div>
               <em>PAPER</em>
             </div>
-            <div class="bot-stats">
-              <div><span>오늘 모의주문</span><strong id="paperOrderCount">0건</strong></div>
-              <div><span>평균 평가손익</span><strong id="paperReturn">0.00%</strong></div>
-              <div><span>보유 포지션</span><strong id="paperPositionCount">0개</strong></div>
+
+            <div class="decision-card" id="decisionCard">
+              <div class="decision-main">
+                <span>오늘의 운용 판단</span>
+                <strong id="decisionMode">균형 모드</strong>
+                <p id="decisionReason">손익과 리스크가 관리 가능한 범위입니다.</p>
+              </div>
+              <div class="decision-action">
+                <span>다음 행동</span>
+                <b id="decisionAction">시장 강도 확인 후 소량 진입</b>
+              </div>
             </div>
+
+            <div class="risk-limit-box">
+              <div class="risk-limit-head">
+                <span>손실 한도 진행률</span>
+                <b id="riskLimitLabel">0.00% / -0.50%</b>
+              </div>
+              <div class="risk-limit-track"><i id="riskLimitBar"></i></div>
+              <div class="risk-limit-meta">
+                <span id="riskRemainingStop">손실선까지 여유 +0.50%</span>
+                <span id="riskRemainingTarget">목표까지 +1.00%</span>
+              </div>
+            </div>
+
+            <div class="section-kicker"><span>단타 손익</span><b id="tradeProfitScope">평가손익 기준</b></div>
+            <div class="bot-stats trading-profit-stats">
+              <div class="stat-tile"><span>이번달</span><strong id="paperMonthProfit">+₩0 · +0.00%</strong><small id="paperMonthMeta">투입금 ₩0 · 0개</small></div>
+              <div class="stat-tile"><span>이번주</span><strong id="paperWeekProfit">+₩0 · +0.00%</strong><small id="paperWeekMeta">투입금 ₩0 · 0개</small></div>
+              <div class="stat-tile"><span>오늘</span><strong id="paperTodayProfit">+₩0 · +0.00%</strong><small id="paperTodayMeta">투입금 ₩0 · 0개</small></div>
+            </div>
+
+            <div class="bot-insights">
+              <div><span>보유 포지션</span><b id="positionInsight">0개</b></div>
+              <div><span>오늘 진입</span><b id="orderInsight">0건</b></div>
+              <div><span>평균 손익률</span><b id="avgReturnInsight">+0.00%</b></div>
+              <div><span>리포트</span><b id="reportInsight">대기</b></div>
+            </div>
+
             <div class="risk-row">
               <div class="risk-head"><span>일 목표 +1% / 손실선 -0.5%</span><b id="analysisUpdatedAt">대기 중</b></div>
               <div class="risk-track"><i id="analysisPulseBar"></i></div>
-              <p id="analysisCycleCopy">일 목표를 향해 30초 주기로 시장을 분석합니다.</p>
+              <p id="analysisCycleCopy">30초 주기로 시장을 분석하고 모의 진입을 기록합니다.</p>
             </div>
+
+            <div class="section-kicker compact"><span>최근 모의 진입</span><b>최대 3건</b></div>
             <div class="session-list" id="paperOrders">
               <div class="session active"><i>··</i><span><b>모의 주문 대기</b><small>분석 결과를 기다리고 있어요</small></span><em>PAPER</em></div>
+            </div>
+
+            <div class="report-box">
+              <div class="report-head"><span>장마감 리포트</span><b id="kakaoReportStatus">카카오 대기</b></div>
+              <button class="kakao-connect-btn" id="kakaoConnectBtn" type="button">카카오톡 연결하기</button>
+              <div class="report-list" id="marketReports">
+                <p>한국장/미국장 종료 후 자동 리포트를 준비합니다.</p>
+              </div>
             </div>
             <button class="strategy-btn">전략 설정 열기 <span>→</span></button>
           </article>
@@ -168,13 +200,7 @@
             </div>
           </article>
 
-          <article class="panel activity-panel">
-            <div class="panel-header">
-              <div><p class="eyebrow">ANALYSIS LOG</p><h2>분석 결과</h2></div>
-              <button class="more">•••</button>
-            </div>
-            <div class="timeline" id="analysisLog"></div>
-          </article>
+          
         </section>
         </div>
       </div>
