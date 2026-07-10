@@ -1,8 +1,9 @@
-const toast = document.querySelector(".toast");
+﻿const toast = document.querySelector(".toast");
 const won = new Intl.NumberFormat("ko-KR", { style: "currency", currency: "KRW", maximumFractionDigits: 0 });
 const number = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 let scannerEnabled = false;
 let liveMarketSession = null;
+let selectedAnalysisItem = null;
 
 function signedWon(value) {
   const amount = Number(value || 0);
@@ -52,6 +53,86 @@ function analyzeHolding(item) {
   return { verdict: "분석 중", reason: "전략 신호 대기", tone: "buy", icon: "⌁" };
 }
 
+
+function technicalDetail(item) {
+  const rate = Number(item?.dailyRate ?? item?.profitRate ?? item?.returnRate ?? 0);
+  const rank = Number(item?.rank || 0);
+  const tradingAmount = Number(item?.tradingAmount || 0);
+  const momentum = rate >= 0.03 ? "강한 상승" : rate >= 0.01 ? "상승 확인" : rate > -0.01 ? "중립" : "하락 경계";
+  const volatility = Math.abs(rate) >= 0.08 ? "과열" : Math.abs(rate) >= 0.035 ? "높음" : "보통";
+  const volume = rank > 0 && rank <= 5 ? "최상위" : rank > 0 && rank <= 15 ? "상위" : tradingAmount > 0 ? "관찰" : "데이터 대기";
+  const trendScore = (rate > 0.02 ? 35 : rate > 0 ? 20 : -15) + (rank > 0 && rank <= 10 ? 25 : 8) + (Math.abs(rate) < 0.08 ? 20 : -10);
+  const finalCall = item?.verdict === "정밀 분석" && trendScore >= 50
+    ? "진입 후보"
+    : item?.verdict === "진입 불가" || volatility === "과열"
+      ? "진입 보류"
+      : rate < 0
+        ? "손절/관망"
+        : "관찰 유지";
+  const tone = finalCall === "진입 후보" ? "safe" : finalCall === "진입 보류" || finalCall === "손절/관망" ? "danger" : "caution";
+  return {
+    momentum,
+    volatility,
+    volume,
+    trendScore: Math.max(0, Math.min(100, trendScore)),
+    finalCall,
+    tone,
+    note: item?.reason || "거래대금·가격 흐름을 추가 확인하세요.",
+  };
+}
+
+function renderSymbolDetail(item) {
+  const card = document.querySelector("#symbolDetailCard");
+  if (!card || !item) return;
+  selectedAnalysisItem = item;
+  const detail = technicalDetail(item);
+  const price = item.currency === "USD"
+    ? `$${number.format(Number(item.lastPrice || 0))}`
+    : won.format(Number(item.lastPrice || 0));
+  card.className = `symbol-detail-card ${detail.tone}`;
+  card.innerHTML = `
+    <div class="symbol-detail-head">
+      <div><span>자동 기술 분석</span><b>${item.name || item.symbol}</b><small>${item.symbol || "-"} · ${item.marketCountry || (item.currency === "USD" ? "US" : "KR")}</small></div>
+      <em>${detail.finalCall}</em>
+    </div>
+    <div class="detail-metrics">
+      <div><span>현재가</span><b>${price}</b></div>
+      <div><span>당일 흐름</span><b>${signedPercent(item.dailyRate || 0)}</b></div>
+      <div><span>거래대금 순위</span><b>${item.rank ? `${item.rank}위` : "대기"}</b></div>
+      <div><span>추세 점수</span><b>${detail.trendScore}점</b></div>
+    </div>
+    <div class="detail-checks">
+      <p><b>추세</b><span>${detail.momentum}</span></p>
+      <p><b>변동성</b><span>${detail.volatility}</span></p>
+      <p><b>수급</b><span>${detail.volume}</span></p>
+    </div>
+    <div class="detail-note">${detail.note}</div>
+  `;
+}
+
+function renderSafetyRules(summary) {
+  const list = document.querySelector("#safetyRules");
+  const label = document.querySelector("#safetyGateLabel");
+  if (!list) return;
+  const rules = summary.safetyRules || [];
+  const blockers = rules.filter((rule) => rule.tone === "danger");
+  if (label) {
+    label.textContent = blockers.length ? `${blockers.length}개 확인 필요` : "정상 범위";
+    label.classList.toggle("negative-text", Boolean(blockers.length));
+    label.classList.toggle("positive-text", !blockers.length);
+  }
+  list.replaceChildren();
+  if (!rules.length) {
+    list.innerHTML = `<div class="safety-rule safe"><span>실주문 보호</span><b>PAPER</b><small>실제 주문 전송 없음</small></div>`;
+    return;
+  }
+  rules.forEach((rule) => {
+    const row = document.createElement("div");
+    row.className = `safety-rule ${rule.tone || "safe"}`;
+    row.innerHTML = `<span>${rule.label}</span><b>${rule.status}</b><small>${rule.detail}</small>`;
+    list.append(row);
+  });
+}
 function renderAnalysisLog(items) {
   const log = document.querySelector("#analysisLog");
   if (!log) return;
@@ -124,6 +205,9 @@ function renderHoldings(items) {
     reason.textContent = analysis.reason;
 
     row.append(identity, price, stateWrap, reason);
+    row.tabIndex = 0;
+    row.classList.add("clickable-row");
+    row.addEventListener("click", () => renderSymbolDetail({ ...item, verdict: analysis.verdict, reason: analysis.reason }));
     return row;
   });
   table.querySelectorAll(".table-row:not(.table-head)").forEach((row) => row.remove());
@@ -166,6 +250,9 @@ function renderScannerResults(items) {
     reason.className = "analysis-reason";
     reason.textContent = item.reason;
     row.append(identity, price, stateWrap, reason);
+    row.tabIndex = 0;
+    row.classList.add("clickable-row");
+    row.addEventListener("click", () => renderSymbolDetail(item));
     return row;
   });
   table.querySelectorAll(".table-row:not(.table-head)").forEach((row) => row.remove());
@@ -274,6 +361,8 @@ function renderPaperSummary(state) {
   document.querySelector("#riskLimitLabel").textContent = `${signedPercent(averageReturn)} / ${signedPercent(stopRate)}`;
   document.querySelector("#riskRemainingStop").textContent = `손실선까지 여유 ${signedPercent(Number(decision.remainingToStop ?? averageReturn - stopRate))}`;
   document.querySelector("#riskRemainingTarget").textContent = `목표까지 ${signedPercent(Number(decision.remainingToTarget ?? targetRate - averageReturn))}`;
+
+  renderSafetyRules(summary);
 
   const periodReturns = summary.periodReturns || {};
   const profitTargets = [
@@ -476,3 +565,8 @@ window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
+
+
+
+
+

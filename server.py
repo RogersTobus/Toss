@@ -1,4 +1,4 @@
-"""Local dashboard server and Toss Securities Open API gateway.
+﻿"""Local dashboard server and Toss Securities Open API gateway.
 
 Secrets stay on the server in .env. The browser only receives normalized
 portfolio data and never receives the OAuth access token or account number.
@@ -32,6 +32,9 @@ TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 PAPER_TARGET_RATE = 0.01
 PAPER_STOP_RATE = -0.005
+PAPER_MAX_DAILY_ORDERS = 3
+PAPER_MAX_OPEN_POSITIONS = 3
+PAPER_MAX_CONSECUTIVE_LOSSES = 2
 ANALYSIS_LOCK = threading.Lock()
 ANALYSIS: dict[str, Any] = {
     "enabled": True,
@@ -686,6 +689,99 @@ def trading_decision(
     }
 
 
+def technical_review(positions: dict[str, dict[str, Any]], results_by_symbol: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    reviews: list[dict[str, Any]] = []
+    for symbol, order in positions.items():
+        current = results_by_symbol.get(symbol) or {}
+        entry = decimal(order.get("price"))
+        last = decimal(current.get("lastPrice"))
+        rate = (last - entry) / entry if entry and last else decimal(current.get("dailyRate"))
+        reviews.append(
+            {
+                "symbol": symbol,
+                "name": order.get("name") or current.get("name") or symbol,
+                "returnRate": rate,
+                "verdict": current.get("verdict") or "관찰",
+                "reason": current.get("reason") or order.get("reason") or "가격 흐름 확인",
+            }
+        )
+    if not reviews:
+        return {"winRate": 0.0, "best": None, "worst": None, "reviews": []}
+    wins = [item for item in reviews if decimal(item.get("returnRate")) > 0]
+    ranked = sorted(reviews, key=lambda item: decimal(item.get("returnRate")), reverse=True)
+    return {
+        "winRate": len(wins) / len(reviews),
+        "best": ranked[0],
+        "worst": ranked[-1],
+        "reviews": ranked,
+    }
+
+
+def safety_rules(
+    average_return: float,
+    open_positions: int,
+    today_order_count: int,
+    position_returns: list[float],
+    locked: bool,
+    lock_reason: str | None,
+) -> list[dict[str, Any]]:
+    consecutive_losses = 0
+    for value in reversed(position_returns):
+        if value < 0:
+            consecutive_losses += 1
+        else:
+            break
+    rules = [
+        {
+            "key": "dailyLoss",
+            "label": "일 손실 한도",
+            "status": "잠금" if average_return <= PAPER_STOP_RATE else "정상",
+            "tone": "danger" if average_return <= PAPER_STOP_RATE else "safe",
+            "detail": f"현재 {percent(average_return)} / 기준 {percent(PAPER_STOP_RATE)}",
+        },
+        {
+            "key": "dailyOrders",
+            "label": "일 진입 횟수",
+            "status": "상한" if today_order_count >= PAPER_MAX_DAILY_ORDERS else "여유",
+            "tone": "danger" if today_order_count >= PAPER_MAX_DAILY_ORDERS else "safe",
+            "detail": f"{today_order_count}/{PAPER_MAX_DAILY_ORDERS}건 사용",
+        },
+        {
+            "key": "positionCap",
+            "label": "포지션 수",
+            "status": "과밀" if open_positions >= PAPER_MAX_OPEN_POSITIONS else "정상",
+            "tone": "danger" if open_positions >= PAPER_MAX_OPEN_POSITIONS else "safe",
+            "detail": f"{open_positions}/{PAPER_MAX_OPEN_POSITIONS}개 보유",
+        },
+        {
+            "key": "lossStreak",
+            "label": "연속 손실",
+            "status": "정지" if consecutive_losses >= PAPER_MAX_CONSECUTIVE_LOSSES else "정상",
+            "tone": "danger" if consecutive_losses >= PAPER_MAX_CONSECUTIVE_LOSSES else "safe",
+            "detail": f"최근 손실 {consecutive_losses}회 / 기준 {PAPER_MAX_CONSECUTIVE_LOSSES}회",
+        },
+        {
+            "key": "paperMode",
+            "label": "실주문 보호",
+            "status": "PAPER",
+            "tone": "safe",
+            "detail": "실제 주문 전송 없음",
+        },
+    ]
+    if locked:
+        rules.insert(0, {"key": "lock", "label": "오늘 거래 잠금", "status": "ON", "tone": "danger", "detail": lock_reason or "운용 잠금"})
+    return rules
+
+
+def safety_gate(summary: dict[str, Any]) -> dict[str, Any]:
+    rules = summary.get("safetyRules") or []
+    blockers = [rule for rule in rules if rule.get("tone") == "danger" and rule.get("key") in {"lock", "dailyLoss", "dailyOrders", "positionCap", "lossStreak"}]
+    return {
+        "blocked": bool(blockers),
+        "reason": str(blockers[0].get("detail") or blockers[0].get("label")) if blockers else "신규 진입 가능",
+        "blockers": blockers,
+    }
+
 def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, Any]:
     today = time.strftime("%Y-%m-%d")
     today_orders = [
@@ -713,6 +809,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     average_return = (
         sum(position_returns) / len(position_returns) if position_returns else 0.0
     )
+    tech_review = technical_review(positions, results_by_symbol)
     target_hit = average_return >= PAPER_TARGET_RATE
     stop_hit = average_return <= PAPER_STOP_RATE
     locked = target_hit or stop_hit
@@ -727,6 +824,8 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "stopRate": PAPER_STOP_RATE,
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(positions, results_by_symbol),
+        "technicalReview": tech_review,
+        "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason),
         "todayOrderCount": len(today_orders),
         "openPositionCount": len(positions),
         "locked": locked,
@@ -742,7 +841,8 @@ def paper_trade(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     orders = load_paper_orders()
     summary = paper_summary(orders, results)
-    if summary["locked"]:
+    gate = safety_gate(summary)
+    if summary["locked"] or gate["blocked"]:
         return orders[-20:], summary
 
     today = time.strftime("%Y-%m-%d")
@@ -752,7 +852,7 @@ def paper_trade(
         if item.get("market") == market
         and str(item.get("createdAt", "")).startswith(today)
     ]
-    if len(todays_market_orders) >= 3:
+    if len(todays_market_orders) >= PAPER_MAX_DAILY_ORDERS:
         return orders[-20:], summary
     existing = {(item.get("market"), item.get("symbol")) for item in orders[-10:]}
     candidate = next(
@@ -999,3 +1099,9 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://127.0.0.1:{port}")
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+
+
+
+
