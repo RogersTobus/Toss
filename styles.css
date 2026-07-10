@@ -1253,3 +1253,82 @@ main::-webkit-scrollbar-thumb {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* Top summary hard fix v2: keep profit card contained and prevent overlap */
+.content > .summary-grid.compact-summary {
+  position: relative !important;
+  z-index: 1 !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1.65fr) minmax(220px, .7fr) !important;
+  gap: 14px !important;
+  align-items: stretch !important;
+  margin: 12px 0 0 !important;
+  overflow: visible !important;
+}
+.content > .summary-grid.compact-summary .balance-card,
+.content > .summary-grid.compact-summary .daily-card {
+  box-sizing: border-box !important;
+  height: 132px !important;
+  min-height: 132px !important;
+  max-height: 132px !important;
+  overflow: hidden !important;
+}
+.content > .summary-grid.compact-summary .daily-card {
+  display: grid !important;
+  grid-template-rows: auto 1fr auto auto !important;
+  padding: 16px 18px !important;
+  isolation: isolate !important;
+}
+.content > .summary-grid.compact-summary .daily-card .metric-value {
+  margin-top: 10px !important;
+  font-size: clamp(20px, 2.2vw, 27px) !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.content > .summary-grid.compact-summary .daily-card .metric-sub {
+  margin-top: 3px !important;
+  white-space: nowrap !important;
+}
+.content > .summary-grid.compact-summary .daily-card .micro-bars,
+.content > .summary-grid.compact-summary .daily-card .metric-footer {
+  display: none !important;
+}
+.metric-note {
+  align-self: end;
+  margin-top: 8px;
+  color: #817767;
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.content > .ops-status-strip {
+  position: relative !important;
+  z-index: 2 !important;
+  margin-top: 14px !important;
+  display: grid !important;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  clear: both !important;
+}
+.content > .ops-status-strip > div {
+  box-sizing: border-box !important;
+  min-height: 56px !important;
+  height: 56px !important;
+}
+@media (max-width: 980px) {
+  .content > .summary-grid.compact-summary {
+    grid-template-columns: minmax(0, 1.35fr) minmax(210px, .75fr) !important;
+  }
+  .content > .ops-status-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+@media (max-width: 720px) {
+  .content > .summary-grid.compact-summary,
+  .content > .ops-status-strip {
+    grid-template-columns: 1fr !important;
+  }
+}
