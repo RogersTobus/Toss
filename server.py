@@ -1185,10 +1185,11 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "4173"))
+    host = os.environ.get("HOST", "0.0.0.0")
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
-    print(f"Orbit dashboard: http://127.0.0.1:{port}")
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
-
+    print(f"Orbit dashboard: http://{display_host}:{port}")
+    ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
 
