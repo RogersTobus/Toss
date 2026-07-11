@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import subprocess
 import threading
 import time
 import urllib.error
@@ -1039,6 +1040,7 @@ def health_status() -> dict[str, Any]:
     return {
         "ok": True,
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "version": app_version(),
         "uptimeSec": uptime,
         "server": {"running": True, "port": int(os.environ.get("PORT", "4173"))},
         "toss": {
@@ -1059,6 +1061,19 @@ def health_status() -> dict[str, Any]:
             "lastError": analysis.get("lastError"),
         },
     }
+
+
+def app_version() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return str(int(Path(__file__).stat().st_mtime))
 
 def analysis_snapshot() -> dict[str, Any]:
     with ANALYSIS_LOCK:
@@ -1190,7 +1205,6 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
 
 
 

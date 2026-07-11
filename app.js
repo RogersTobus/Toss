@@ -4,6 +4,7 @@ const number = new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 4 });
 let scannerEnabled = false;
 let liveMarketSession = null;
 let selectedAnalysisItem = null;
+let appVersion = null;
 
 function signedWon(value) {
   const amount = Number(value || 0);
@@ -487,6 +488,14 @@ async function loadHealthStatus() {
     const health = await response.json();
     if (!response.ok) throw new Error(health.error || "운영 상태를 불러오지 못했습니다.");
 
+    if (health.version) {
+      if (appVersion && appVersion !== health.version) {
+        window.location.reload();
+        return;
+      }
+      appVersion = health.version;
+    }
+
     const toss = document.querySelector("#healthToss");
     const kakao = document.querySelector("#healthKakao");
     const analysis = document.querySelector("#healthAnalysis");
@@ -630,7 +639,6 @@ window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
-
 
 
 
