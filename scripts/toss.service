@@ -1,0 +1,17 @@
+[Unit]
+Description=Toss Orbit dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Toss
+Environment=HOST=0.0.0.0
+Environment=PORT=4173
+ExecStart=/usr/bin/python3 /home/ubuntu/Toss/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

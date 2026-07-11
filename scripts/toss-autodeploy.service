@@ -1,0 +1,9 @@
+[Unit]
+Description=Update Toss Orbit dashboard from GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/Toss
+ExecStart=/home/ubuntu/Toss/scripts/deploy.sh

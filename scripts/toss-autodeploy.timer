@@ -1,0 +1,11 @@
+[Unit]
+Description=Check GitHub for Toss updates every minute
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+AccuracySec=10
+Unit=toss-autodeploy.service
+
+[Install]
+WantedBy=timers.target
