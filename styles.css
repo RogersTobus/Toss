@@ -3181,3 +3181,86 @@ body[data-page="quant"] .strategy-control-page {
     grid-template-columns: minmax(0, 1fr) minmax(0, .9fr) minmax(64px, .55fr) !important;
   }
 }
+
+/* Layout lock v5: stop cards from stacking/overlapping on normal desktop widths. */
+.operations-grid {
+  display: grid !important;
+  grid-template-columns: minmax(0, .96fr) minmax(0, 1.04fr) !important;
+  grid-template-areas:
+    "bot analysis"
+    "bot longterm" !important;
+  gap: clamp(18px, 1.5vw, 26px) !important;
+  align-items: start !important;
+  margin-top: clamp(18px, 1.5vw, 26px) !important;
+}
+
+.bot-panel {
+  grid-area: bot !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  align-self: start !important;
+}
+
+.watch-panel {
+  grid-area: analysis !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  align-self: start !important;
+  min-height: clamp(360px, 32vw, 520px) !important;
+}
+
+.long-term-card {
+  grid-area: longterm !important;
+  grid-column: auto !important;
+  grid-row: auto !important;
+  align-self: start !important;
+}
+
+.main-grid,
+.bottom-grid {
+  display: contents !important;
+}
+
+.hero-layout {
+  align-items: start !important;
+}
+
+.hero-layout .connection-stack {
+  align-content: start !important;
+}
+
+@media (max-width: 1180px) {
+  .operations-grid {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "analysis"
+      "bot"
+      "longterm" !important;
+  }
+}
+
+@media (min-width: 1181px) and (max-width: 1440px) {
+  .operations-grid {
+    grid-template-columns: minmax(0, .98fr) minmax(0, 1.02fr) !important;
+    grid-template-areas:
+      "bot analysis"
+      "bot longterm" !important;
+  }
+
+  .bot-panel,
+  .watch-panel,
+  .long-term-card {
+    grid-column: auto !important;
+    grid-row: auto !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .operations-grid {
+    gap: 16px !important;
+  }
+
+  .watch-panel {
+    min-height: auto !important;
+  }
+}
