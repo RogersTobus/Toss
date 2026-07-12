@@ -362,12 +362,12 @@ function renderMarketReports(state) {
   const reportStatus = state.reportStatus || {};
   const connected = Boolean(reportStatus.enabled && !reportStatus.lastError);
   status.textContent = reportStatus.enabled
-    ? (reportStatus.lastError ? "발송 확인 필요" : "카카오 연결")
+    ? (reportStatus.lastError ? "발송 확인 필요" : "슬랙 연결")
     : "발송 대기";
   status.classList.toggle("negative-text", Boolean(reportStatus.lastError));
   status.classList.toggle("positive-text", connected);
   if (connectButton) {
-    connectButton.textContent = reportStatus.enabled ? "카카오 재연결" : "카카오톡 연결하기";
+    connectButton.textContent = reportStatus.enabled ? "리포트 채널 연결됨" : "리포트 채널 대기";
   }
   if (reportInsight) {
     reportInsight.textContent = connected ? "자동 발송" : "대기";
@@ -639,7 +639,6 @@ window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
-
 
 
 

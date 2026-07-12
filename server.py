@@ -209,6 +209,37 @@ def post_form_json(url: str, form: dict[str, str], headers: dict[str, str] | Non
         raise TossApiError(exc.code, code, message) from exc
 
 
+def post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request_headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+    }
+    if headers:
+        request_headers.update(headers)
+    request = urllib.request.Request(url, data=body, headers=request_headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            raw = response.read().decode("utf-8")
+            if not raw or raw == "ok":
+                return {"ok": True}
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return {"ok": True, "body": raw}
+    except urllib.error.HTTPError as exc:
+        raw = ""
+        try:
+            raw = exc.read().decode("utf-8")
+        except UnicodeDecodeError:
+            pass
+        raise TossApiError(
+            exc.code,
+            "webhook-error",
+            raw or "웹훅 발송에 실패했습니다.",
+        ) from exc
+
+
 def load_report_state() -> dict[str, Any]:
     if not REPORT_PATH.exists():
         return {"sentKeys": [], "reports": [], "lastActiveMarket": None}
@@ -352,6 +383,52 @@ def kakao_enabled(env: dict[str, str]) -> bool:
     return str(env.get("KAKAO_REPORT_ENABLED", "")).lower() in ("1", "true", "yes", "on")
 
 
+def slack_enabled(env: dict[str, str], channel: str) -> bool:
+    key = f"SLACK_{channel.upper()}_ENABLED"
+    if key not in env and env.get(f"SLACK_{channel.upper()}_WEBHOOK_URL"):
+        return True
+    return str(env.get(key, "")).lower() in ("1", "true", "yes", "on")
+
+
+def send_slack(channel: str, text: str) -> None:
+    env = load_env()
+    key = f"SLACK_{channel.upper()}_WEBHOOK_URL"
+    webhook_url = env.get(key, "")
+    if not webhook_url:
+        raise TossApiError(400, "slack-webhook-missing", f"{key}가 .env에 없습니다.")
+    post_json(webhook_url, {"text": text[:3500]})
+
+
+def handle_paper_alert(env: dict[str, str], market: str | None, summary: dict[str, Any]) -> None:
+    if not market or not summary.get("locked") or not slack_enabled(env, "alert"):
+        return
+    reason = str(summary.get("lockReason") or "오늘 거래 잠금")
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
+    key = f"paper-alert-{today}-{market}-{reason}"
+    state = load_report_state()
+    sent_keys = set(state.get("sentKeys") or [])
+    if key in sent_keys:
+        return
+    text = "\n".join(
+        [
+            ":rotating_light: *Orbit 긴급 알림*",
+            f"시장: {market}",
+            f"상태: {reason}",
+            f"평균 평가손익: {percent(summary.get('averageReturn'))}",
+            f"모의 주문: {summary.get('todayOrderCount', 0)}건",
+            f"보유 포지션: {summary.get('openPositionCount', 0)}개",
+        ]
+    )
+    try:
+        send_slack("alert", text)
+        sent_keys.add(key)
+        state["sentKeys"] = list(sent_keys)
+        save_report_state(state)
+    except TossApiError:
+        # Alert delivery must not stop the market analysis loop.
+        pass
+
+
 def send_kakao_memo(env: dict[str, str], text: str) -> None:
     rest_key = env.get("KAKAO_REST_API_KEY", "")
     refresh_token = env.get("KAKAO_REFRESH_TOKEN", "")
@@ -390,8 +467,14 @@ def handle_market_close_report(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     state = load_report_state()
     reports = state.get("reports") or []
+    slack_report_enabled = slack_enabled(env, "report")
+    kakao_report_enabled = kakao_enabled(env)
     status = {
-        "enabled": kakao_enabled(env),
+        "enabled": slack_report_enabled or kakao_report_enabled,
+        "channels": {
+            "slackReport": slack_report_enabled,
+            "kakao": kakao_report_enabled,
+        },
         "lastSentAt": None,
         "lastError": None,
     }
@@ -399,17 +482,26 @@ def handle_market_close_report(
         report = build_market_close_report(previous_market, orders, summary)
         sent_keys = set(state.get("sentKeys") or [])
         if report["id"] not in sent_keys:
+            sent_channels = []
+            errors = []
             try:
-                if status["enabled"]:
+                if slack_report_enabled:
+                    send_slack("report", report["message"])
+                    sent_channels.append("slack-report")
+                if kakao_report_enabled:
                     send_kakao_memo(env, report["message"])
-                    report["sent"] = True
-                    status["lastSentAt"] = report["createdAt"]
-                else:
-                    status["lastError"] = "KAKAO_REPORT_ENABLED가 꺼져 있어 리포트만 저장했습니다."
+                    sent_channels.append("kakao")
             except TossApiError as exc:
-                report["sent"] = False
-                report["error"] = exc.message
-                status["lastError"] = exc.message
+                errors.append(exc.message)
+            report["sent"] = bool(sent_channels)
+            report["sentChannels"] = sent_channels
+            if sent_channels:
+                status["lastSentAt"] = report["createdAt"]
+            if errors:
+                report["error"] = " / ".join(errors)
+                status["lastError"] = report["error"]
+            elif not sent_channels:
+                status["lastError"] = "리포트 웹훅이 꺼져 있어 리포트만 저장했습니다."
             reports.append(report)
             sent_keys.add(report["id"])
             state["sentKeys"] = list(sent_keys)
@@ -1008,6 +1100,7 @@ def analysis_loop() -> None:
                 else:
                     orders = load_paper_orders()
                     paper_stats = paper_summary(orders, results)
+                handle_paper_alert(env, market, paper_stats)
                 report_state = load_report_state()
                 previous_market = report_state.get("lastActiveMarket")
                 current_market = market if market in ("KR", "US") else None
@@ -1051,6 +1144,11 @@ def health_status() -> dict[str, Any]:
             "configured": bool(env.get("KAKAO_REST_API_KEY") and env.get("KAKAO_REFRESH_TOKEN")),
             "enabled": kakao_enabled(env),
             "lastError": (analysis.get("reportStatus") or {}).get("lastError"),
+        },
+        "slack": {
+            "alert": bool(env.get("SLACK_ALERT_WEBHOOK_URL")),
+            "report": bool(env.get("SLACK_REPORT_WEBHOOK_URL")),
+            "log": bool(env.get("SLACK_LOG_WEBHOOK_URL")),
         },
         "analysis": {
             "enabled": bool(analysis.get("enabled")),
@@ -1205,8 +1303,6 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
-
 
 
 
