@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent
 PAPER_PATH = ROOT / "paper_state.json"
 REPORT_PATH = ROOT / "report_state.json"
 STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
+DEPLOY_STATE_PATH = ROOT / ".deploy" / "last_sync.json"
 BASE_URL = "https://openapi.tossinvest.com"
 KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
@@ -1136,6 +1137,7 @@ def health_status() -> dict[str, Any]:
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "version": release["version"],
         "release": release,
+        "deploy": deploy_status(),
         "uptimeSec": uptime,
         "server": {"running": True, "port": int(os.environ.get("PORT", "4173"))},
         "toss": {
@@ -1187,6 +1189,19 @@ def app_release() -> dict[str, str]:
             "message": "로컬 파일 변경사항",
             "committedAt": "",
         }
+
+
+def deploy_status() -> dict[str, Any]:
+    if not DEPLOY_STATE_PATH.exists():
+        return {"available": False, "message": "배포 기록 없음"}
+    try:
+        data = json.loads(DEPLOY_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("invalid deploy status")
+        data["available"] = True
+        return data
+    except Exception:
+        return {"available": False, "message": "배포 기록 읽기 실패"}
 
 def analysis_snapshot() -> dict[str, Any]:
     with ANALYSIS_LOCK:
@@ -1318,7 +1333,6 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
 
 
 

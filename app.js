@@ -485,6 +485,36 @@ function renderSlackConnection(slack) {
   ].join(" · ");
 }
 
+function formatSyncTime(value) {
+  if (!value) return "기록 없음";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "기록 오류";
+  return date.toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function renderDeployConnection(deploy) {
+  const badge = document.querySelector("#deployConnection");
+  if (!badge) return;
+  const available = Boolean(deploy?.available);
+  const failed = available && deploy?.status === "failed";
+  const changed = available && Boolean(deploy?.deployed);
+  badge.classList.toggle("offline", !available || failed);
+  badge.classList.toggle("warning", available && !failed && !changed);
+  badge.querySelector("b").textContent = available ? formatSyncTime(deploy.checkedAt) : "기록 없음";
+  badge.title = available
+    ? [
+        `상태: ${deploy.status || "checked"}`,
+        `반영: ${changed ? "새 버전 적용" : "최신 상태 확인"}`,
+        `현재: ${deploy.localCommit ? String(deploy.localCommit).slice(0, 7) : "-"}`,
+        `원격: ${deploy.remoteCommit ? String(deploy.remoteCommit).slice(0, 7) : "-"}`,
+      ].join(" · ")
+    : "AWS 자동배포가 아직 기록을 남기지 않았습니다.";
+}
+
 function formatUptime(seconds) {
   const total = Number(seconds || 0);
   const hours = Math.floor(total / 3600);
@@ -515,6 +545,7 @@ async function loadHealthStatus() {
       showToast(`업데이트 반영: ${updatedMessage}`);
     }
     renderSlackConnection(health.slack || {});
+    renderDeployConnection(health.deploy || {});
 
     const toss = document.querySelector("#healthToss");
     const kakao = document.querySelector("#healthKakao");
@@ -543,6 +574,7 @@ async function loadHealthStatus() {
       : "";
   } catch (error) {
     renderSlackConnection({});
+    renderDeployConnection({});
     ["#healthToss", "#healthKakao", "#healthAnalysis", "#healthServer"].forEach((selector) => {
       const element = document.querySelector(selector);
       if (element) {
@@ -661,4 +693,3 @@ window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
-

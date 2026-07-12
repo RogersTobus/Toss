@@ -19,6 +19,32 @@ run_systemctl() {
   fi
 }
 
+write_deploy_stamp() {
+  local status="$1"
+  local deployed="$2"
+  local local_commit="${3:-}"
+  local remote_commit="${4:-}"
+  local message="${5:-}"
+  mkdir -p "$APP_DIR/.deploy"
+  python3 - "$APP_DIR/.deploy/last_sync.json" "$status" "$deployed" "$local_commit" "$remote_commit" "$message" <<'PY'
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+path, status, deployed, local_commit, remote_commit, message = sys.argv[1:7]
+payload = {
+    "checkedAt": datetime.now(timezone.utc).isoformat(),
+    "status": status,
+    "deployed": deployed.lower() == "true",
+    "localCommit": local_commit,
+    "remoteCommit": remote_commit,
+    "message": message,
+}
+Path(path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+}
+
 if [ "$(id -u)" -eq 0 ]; then
   git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
 else
@@ -38,17 +64,20 @@ log "Local commit:  $LOCAL_COMMIT"
 log "Remote commit: $REMOTE_COMMIT"
 
 if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
+  write_deploy_stamp "checked" "false" "$LOCAL_COMMIT" "$REMOTE_COMMIT" "already up to date"
   log "Toss is already up to date."
   exit 0
 fi
 
 if ! git diff --quiet || ! git diff --cached --quiet; then
+  write_deploy_stamp "failed" "false" "$LOCAL_COMMIT" "$REMOTE_COMMIT" "uncommitted changes"
   log "Local working tree has uncommitted changes. Auto deploy stopped to avoid overwriting local edits."
   git status --short
   exit 1
 fi
 
 if ! git merge-base --is-ancestor "$LOCAL_COMMIT" "$REMOTE_COMMIT"; then
+  write_deploy_stamp "failed" "false" "$LOCAL_COMMIT" "$REMOTE_COMMIT" "not fast-forward"
   log "Local branch cannot fast-forward to origin/$BRANCH. Manual review is required."
   exit 1
 fi
@@ -73,6 +102,7 @@ fi
 run_systemctl restart "$SERVICE_NAME"
 run_systemctl restart "$AUTODEPLOY_TIMER"
 
+write_deploy_stamp "deployed" "true" "$REMOTE_COMMIT" "$REMOTE_COMMIT" "updated from GitHub"
 log "Toss deployed: $REMOTE_COMMIT"
 
 python3 - "$LOCAL_COMMIT" "$REMOTE_COMMIT" <<'PY'
