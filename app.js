@@ -241,7 +241,25 @@ function renderAnalysisLog(items) {
 function renderLongTermHoldings(items) {
   const list = document.querySelector("#longTermHoldings");
   if (!list) return;
+  const targets = (items || []).filter((item) => {
+    const text = `${item.name || ""} ${item.symbol || ""}`.toLowerCase();
+    return /(s&p|snp|nasdaq|나스닥|다우|dow|500|100|미국)/i.test(text);
+  });
+  const fallback = [
+    { name: "나스닥", symbol: "NASDAQ", profitRate: 0, quantity: 0 },
+    { name: "에스앤피", symbol: "S&P 500", profitRate: 0, quantity: 0 },
+    { name: "다우존스", symbol: "DOW", profitRate: 0, quantity: 0 },
+  ];
+  const display = (targets.length ? targets : fallback).slice(0, 3);
   list.replaceChildren();
+  display.forEach((item) => {
+    const row = document.createElement("div");
+    const name = item.name || item.symbol || "장기 지수";
+    const quantity = Number(item.quantity || 0);
+    const rate = Number(item.profitRate ?? item.returnRate ?? item.dailyRate ?? 0);
+    row.innerHTML = `<b>${name}</b><small>${item.symbol || "장기 지수투자"}</small><strong>${quantity ? `${number.format(quantity)}주 · ${signedPercent(rate)}` : "적립 대기"}</strong>`;
+    list.append(row);
+  });
 }
 
 function renderMarketPulse(summary, items) {
@@ -369,6 +387,29 @@ function renderPaperOrders(orders, market) {
     empty.innerHTML = `<i>${market}</i><span><b>모의 주문 대기</b><small>시장 분석 중</small></span><em>PAPER</em>`;
     list.append(empty);
   }
+  renderDayTradeStatus(recent);
+}
+
+function renderDayTradeStatus(orders) {
+  const list = document.querySelector("#dayTradeStatus");
+  if (!list) return;
+  const rows = (orders || []).slice(0, 3);
+  list.replaceChildren();
+  if (!rows.length) {
+    ["종목", "종목", "종목"].forEach((name) => {
+      const row = document.createElement("div");
+      row.innerHTML = `<b>${name}</b><span>보유중 / 매도 완료</span><strong>현재 수익률</strong>`;
+      list.append(row);
+    });
+    return;
+  }
+  rows.forEach((order) => {
+    const row = document.createElement("div");
+    const status = order.side === "SELL" ? "매도 완료" : "보유중";
+    const rate = Number(order.returnRate ?? order.profitRate ?? 0);
+    row.innerHTML = `<b>${order.name || order.symbol || "종목"}</b><span>${status} / PAPER</span><strong>${signedPercent(rate)}</strong>`;
+    list.append(row);
+  });
 }
 
 function renderMarketReports(state) {

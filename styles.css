@@ -1357,6 +1357,369 @@ main::-webkit-scrollbar-thumb {
   }
 }
 
+/* Frame layout v1: top dashboard grid + trading control tower */
+.hero-layout {
+  display: grid !important;
+  grid-template-columns: minmax(300px, .95fr) minmax(460px, 1.05fr) minmax(300px, .78fr) minmax(250px, .58fr) !important;
+  gap: 18px !important;
+  align-items: stretch !important;
+  margin-bottom: 18px !important;
+}
+
+.hero-welcome {
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: center !important;
+  min-height: 210px !important;
+  margin: 0 !important;
+  padding: 26px 30px !important;
+  border: 1px solid rgba(142, 100, 23, .18) !important;
+  border-radius: 0 0 18px 18px !important;
+  background: rgba(255, 253, 247, .72) !important;
+  box-shadow: 0 14px 34px rgba(39, 25, 8, .04);
+}
+
+.hero-layout .balance-card,
+.hero-layout .daily-card {
+  height: 210px !important;
+  min-height: 210px !important;
+  margin: 0 !important;
+}
+
+.hero-layout .balance-card {
+  border-radius: 0 0 16px 16px !important;
+}
+
+.hero-layout .daily-card {
+  border-radius: 0 0 16px 16px !important;
+}
+
+.hero-layout .connection-stack {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  align-content: stretch !important;
+  gap: 14px !important;
+}
+
+.hero-layout .connection {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  min-height: 62px !important;
+  padding: 14px 18px !important;
+  border-radius: 15px !important;
+  font-size: 17px !important;
+}
+
+.hero-layout .connection b {
+  margin-left: 10px !important;
+  font-size: 17px !important;
+}
+
+.ops-status-strip {
+  display: none !important;
+}
+
+.operations-grid {
+  display: grid !important;
+  grid-template-columns: minmax(620px, 1.08fr) minmax(420px, .92fr) !important;
+  grid-template-rows: auto 1fr !important;
+  gap: 18px 24px !important;
+  align-items: stretch !important;
+}
+
+.main-grid,
+.bottom-grid {
+  display: contents !important;
+}
+
+.frame-card,
+.long-term-card {
+  border: 1px solid rgba(142, 100, 23, .18);
+  border-radius: 16px;
+  background: #d8d8d8;
+  color: #15120d;
+  padding: 28px 34px;
+}
+
+.long-term-card {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  min-height: 190px;
+}
+
+.long-term-card h2 {
+  margin: 0 0 22px;
+  font-size: 24px;
+  letter-spacing: -0.035em;
+}
+
+.long-term-card .long-term-list {
+  display: grid;
+  gap: 8px;
+}
+
+.long-term-card .long-term-list > div {
+  display: grid;
+  grid-template-columns: minmax(130px, 1fr) minmax(120px, auto);
+  gap: 10px;
+  align-items: center;
+  min-height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.long-term-card .long-term-list b {
+  max-width: none;
+  font-size: 22px !important;
+  font-weight: 700;
+  white-space: normal;
+}
+
+.long-term-card .long-term-list small {
+  display: none;
+}
+
+.long-term-card .long-term-list strong {
+  color: #4f6b3f;
+  font-size: 16px !important;
+  text-align: right;
+}
+
+.bot-panel {
+  grid-column: 1 !important;
+  grid-row: 1 / span 2 !important;
+  min-height: 720px !important;
+}
+
+.watch-panel {
+  grid-column: 2 !important;
+  grid-row: 2 !important;
+  min-height: 520px !important;
+}
+
+.bot-panel .panel-header {
+  padding-bottom: 22px;
+  border-bottom: 2px solid rgba(142, 100, 23, .16);
+}
+
+.bot-panel .panel-header h2 {
+  font-size: 36px !important;
+}
+
+.bot-mode {
+  display: none !important;
+}
+
+.risk-row {
+  margin-top: 14px !important;
+  padding: 0 0 18px !important;
+  border-bottom: 1px solid rgba(142, 100, 23, .14);
+}
+
+.risk-head {
+  font-size: 20px !important;
+}
+
+.risk-head b {
+  font-size: 18px !important;
+}
+
+.trading-workbench {
+  display: grid;
+  grid-template-columns: minmax(300px, .9fr) minmax(360px, 1.1fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.daytrade-status,
+.strategy-tower {
+  background: #d8d8d8;
+  padding: 24px;
+  min-height: 250px;
+}
+
+.daytrade-status h3,
+.strategy-tower h3 {
+  display: inline-block;
+  margin: 0 0 22px;
+  padding: 6px 12px;
+  background: #fff;
+  font-size: 32px;
+  line-height: 1.1;
+  letter-spacing: -0.045em;
+}
+
+.daytrade-table {
+  display: grid;
+  gap: 12px;
+}
+
+.daytrade-table > div {
+  display: grid;
+  grid-template-columns: 92px minmax(140px, 1fr) 130px;
+  gap: 14px;
+  align-items: center;
+}
+
+.daytrade-table b,
+.daytrade-table span,
+.daytrade-table strong {
+  display: block;
+  background: #fff;
+  padding: 6px 9px;
+  font-size: 20px;
+  line-height: 1.15;
+}
+
+.daytrade-table b {
+  font-size: 28px;
+}
+
+.strategy-tower-list {
+  display: grid;
+  gap: 12px;
+}
+
+.strategy-tower-list > div {
+  display: grid;
+  grid-template-columns: 40px minmax(150px, 1fr) minmax(170px, 1.2fr) minmax(130px, .75fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.strategy-tower-list b,
+.strategy-tower-list span,
+.strategy-tower-list em,
+.strategy-tower-list label {
+  display: block;
+  min-height: 36px;
+  background: #fff;
+  padding: 6px 8px;
+  color: #000;
+  font-style: normal;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.strategy-tower-list b {
+  font-size: 26px;
+  text-align: center;
+}
+
+.strategy-tower-list span {
+  font-size: 26px;
+  letter-spacing: -0.045em;
+}
+
+.strategy-tower-list label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.strategy-tower-list input {
+  accent-color: #bd8e25;
+}
+
+.safety-panel.compact-guardrail {
+  margin-top: 18px !important;
+}
+
+.bot-stats.trading-profit-stats {
+  grid-template-columns: 1fr !important;
+  max-width: 420px;
+  margin-left: auto !important;
+  margin-top: 18px !important;
+}
+
+.bot-stats.trading-profit-stats > div {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  padding: 6px 8px !important;
+  border-radius: 0 !important;
+  background: #fffaf0 !important;
+}
+
+.stat-tile span {
+  font-size: 20px !important;
+}
+
+.stat-tile strong {
+  font-size: 18px !important;
+  text-align: right;
+}
+
+.stat-tile small {
+  display: none !important;
+}
+
+.bot-insights,
+.session-list,
+.report-box,
+.strategy-btn {
+  margin-top: 18px !important;
+}
+
+.watch-panel {
+  border: 1px solid rgba(33, 23, 11, .65) !important;
+}
+
+@media (max-width: 1500px) {
+  .hero-layout {
+    grid-template-columns: minmax(320px, 1fr) minmax(420px, 1.2fr) !important;
+  }
+
+  .hero-layout .connection-stack {
+    grid-column: 2;
+    grid-row: 2;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .hero-layout .daily-card {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .operations-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .long-term-card,
+  .bot-panel,
+  .watch-panel {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .hero-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .hero-layout .connection-stack {
+    grid-column: auto;
+    grid-row: auto;
+    grid-template-columns: 1fr !important;
+  }
+
+  .trading-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .strategy-tower-list > div {
+    grid-template-columns: 40px 1fr;
+  }
+
+  .strategy-tower-list em,
+  .strategy-tower-list label {
+    grid-column: 2;
+  }
+}
+
 /* One-screen operations deck: desktop should read like a control room, not a page. */
 @media (min-width: 1180px) {
   html,
