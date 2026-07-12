@@ -3004,20 +3004,20 @@ body[data-page="quant"] .strategy-control-page {
 }
 
 .long-term-card {
-  min-height: 235px !important;
-  padding: 30px 34px !important;
+  min-height: auto !important;
+  padding: clamp(22px, 1.8vw, 28px) clamp(24px, 2vw, 32px) !important;
 }
 
 .long-term-card h2 {
-  margin: 0 0 24px !important;
-  font-size: clamp(22px, 1.45vw, 28px) !important;
+  margin: 0 0 20px !important;
+  font-size: clamp(21px, 1.35vw, 26px) !important;
   line-height: 1.2 !important;
   letter-spacing: -0.04em !important;
 }
 
 .long-term-card .long-term-list {
   display: grid !important;
-  gap: 13px !important;
+  gap: 10px !important;
 }
 
 .long-term-card .long-term-list > div {
@@ -3031,7 +3031,7 @@ body[data-page="quant"] .strategy-control-page {
 .long-term-card .long-term-list b {
   overflow: hidden !important;
   color: #1b1710 !important;
-  font-size: clamp(18px, 1.2vw, 23px) !important;
+  font-size: clamp(15px, 1vw, 19px) !important;
   font-weight: 900 !important;
   line-height: 1.2 !important;
   text-overflow: ellipsis !important;
@@ -3044,7 +3044,7 @@ body[data-page="quant"] .strategy-control-page {
 
 .long-term-card .long-term-list strong {
   color: #4f6b3f !important;
-  font-size: clamp(15px, 1vw, 18px) !important;
+  font-size: clamp(13px, .88vw, 16px) !important;
   font-weight: 900 !important;
   text-align: right !important;
   white-space: nowrap !important;
@@ -3064,5 +3064,120 @@ body[data-page="quant"] .strategy-control-page {
   .daytrade-table strong,
   .long-term-card .long-term-list strong {
     text-align: left !important;
+  }
+}
+
+/* Responsive hardening v4: every card must shrink before it overflows. */
+.content,
+.operations-grid,
+.main-grid,
+.bottom-grid,
+.bot-panel,
+.watch-panel,
+.long-term-card,
+.daytrade-status {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+}
+
+.content {
+  overflow-x: hidden !important;
+}
+
+.ops-status-strip,
+.content > .ops-status-strip {
+  display: none !important;
+}
+
+.operations-grid {
+  grid-template-columns: minmax(0, .98fr) minmax(0, 1.02fr) !important;
+  align-items: start !important;
+}
+
+.bot-panel {
+  overflow: hidden !important;
+}
+
+.daytrade-status {
+  overflow: hidden !important;
+  padding: clamp(22px, 2vw, 30px) clamp(22px, 2.2vw, 34px) !important;
+}
+
+.daytrade-head,
+.daytrade-table > div {
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.08fr) minmax(74px, .72fr) !important;
+  gap: clamp(8px, 1.1vw, 16px) !important;
+  width: 100% !important;
+}
+
+.daytrade-head span,
+.daytrade-table b,
+.daytrade-table span,
+.daytrade-table strong {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  overflow: hidden !important;
+}
+
+.daytrade-head span:last-child,
+.daytrade-table strong {
+  text-align: right !important;
+}
+
+.daytrade-table b {
+  font-size: clamp(16px, 1.05vw, 18px) !important;
+}
+
+.daytrade-table span {
+  font-size: clamp(13px, .9vw, 15px) !important;
+}
+
+.daytrade-table strong {
+  font-size: clamp(14px, .95vw, 17px) !important;
+}
+
+.long-term-card {
+  overflow: hidden !important;
+}
+
+.long-term-card .long-term-list > div {
+  grid-template-columns: minmax(0, 1fr) minmax(96px, auto) !important;
+  gap: clamp(10px, 1.2vw, 18px) !important;
+}
+
+.long-term-card .long-term-list b,
+.long-term-card .long-term-list strong {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+@media (max-width: 1440px) {
+  .operations-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .bot-panel,
+  .watch-panel,
+  .long-term-card {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+}
+
+@media (max-width: 860px) {
+  .daytrade-status .section-kicker {
+    display: grid !important;
+    gap: 10px !important;
+  }
+
+  .daytrade-status .section-kicker b {
+    justify-self: start !important;
+  }
+
+  .daytrade-head,
+  .daytrade-table > div {
+    grid-template-columns: minmax(0, 1fr) minmax(0, .9fr) minmax(64px, .55fr) !important;
   }
 }
