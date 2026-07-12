@@ -474,6 +474,21 @@ function setHealthTone(element, ok, warning = false) {
   element.classList.toggle("warning-text", Boolean(ok) && warning);
 }
 
+function renderSlackConnection(slack) {
+  const badge = document.querySelector("#slackConnection");
+  if (!badge) return;
+  const channels = ["alert", "report", "log"];
+  const connectedCount = channels.filter((channel) => Boolean(slack?.[channel])).length;
+  badge.classList.toggle("offline", connectedCount === 0);
+  badge.classList.toggle("warning", connectedCount > 0 && connectedCount < channels.length);
+  badge.querySelector("b").textContent = `${connectedCount}/${channels.length}`;
+  badge.title = [
+    `Alert: ${slack?.alert ? "연결" : "미설정"}`,
+    `Report: ${slack?.report ? "연결" : "미설정"}`,
+    `Log: ${slack?.log ? "연결" : "미설정"}`,
+  ].join(" · ");
+}
+
 function formatUptime(seconds) {
   const total = Number(seconds || 0);
   const hours = Math.floor(total / 3600);
@@ -495,6 +510,7 @@ async function loadHealthStatus() {
       }
       appVersion = health.version;
     }
+    renderSlackConnection(health.slack || {});
 
     const toss = document.querySelector("#healthToss");
     const kakao = document.querySelector("#healthKakao");
@@ -521,6 +537,7 @@ async function loadHealthStatus() {
       ? new Date(health.updatedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })
       : "--:--";
   } catch (error) {
+    renderSlackConnection({});
     ["#healthToss", "#healthKakao", "#healthAnalysis", "#healthServer"].forEach((selector) => {
       const element = document.querySelector(selector);
       if (element) {
@@ -639,7 +656,6 @@ window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
-
 
 
 

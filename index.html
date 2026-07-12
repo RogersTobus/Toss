@@ -66,7 +66,10 @@
             <h1>좋은 오후예요.</h1>
             <p>두 개의 투자 엔진이 계획대로 움직이고 있어요.</p>
           </div>
-          <div class="connection" id="apiConnection"><span></span> Toss Securities API <b>연결 중</b></div>
+          <div class="connection-stack">
+            <div class="connection" id="apiConnection"><span></span> Toss Securities API <b>연결 중</b></div>
+            <div class="connection" id="slackConnection"><span></span> Slack Webhooks <b>확인 중</b></div>
+          </div>
         </section>
 
         <section class="summary-grid compact-summary">
@@ -229,6 +232,5 @@
   <script src="app.js"></script>
 </body>
 </html>
-
 
 

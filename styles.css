@@ -72,11 +72,14 @@ main { min-width: 0; }
 .eyebrow { margin: 0 0 7px; color: #949990; font-size: 9px; letter-spacing: .13em; font-weight: 700; }
 .welcome h1 { margin: 0; font-size: 30px; letter-spacing: -.045em; font-weight: 600; }
 .welcome p:last-child { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+.connection-stack { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .connection { padding: 8px 11px; background: #e7e9e2; border: 1px solid #dde0d8; border-radius: 8px; color: #6d736c; font-size: 10px; }
 .connection span { display: inline-block; width: 6px; height: 6px; margin-right: 6px; background: var(--gold); border-radius: 50%; }
 .connection b { margin-left: 5px; color: #8a6818; }
 .connection.offline span { background: var(--red); }
 .connection.offline b { color: var(--red); }
+.connection.warning span { background: #e6a23c; }
+.connection.warning b { color: #a56300; }
 
 .summary-grid { display: grid; grid-template-columns: 1.75fr .82fr .9fr; gap: 14px; }
 .balance-card, .metric-card, .panel { border: 1px solid var(--line); border-radius: 11px; background: var(--surface); box-shadow: 0 1px 2px rgba(20,25,20,.02); }
