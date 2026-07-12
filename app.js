@@ -398,7 +398,7 @@ function renderDayTradeStatus(orders) {
   if (!rows.length) {
     ["종목", "종목", "종목"].forEach((name) => {
       const row = document.createElement("div");
-      row.innerHTML = `<b>${name}</b><span>보유중 / 매도 완료</span><strong>현재 수익률</strong>`;
+      row.innerHTML = `<b>${name}</b><span>현재 상태</span><strong>현재 수익률</strong>`;
       list.append(row);
     });
     return;
@@ -407,7 +407,7 @@ function renderDayTradeStatus(orders) {
     const row = document.createElement("div");
     const status = order.side === "SELL" ? "매도 완료" : "보유중";
     const rate = Number(order.returnRate ?? order.profitRate ?? 0);
-    row.innerHTML = `<b>${order.name || order.symbol || "종목"}</b><span>${status} / PAPER</span><strong>${signedPercent(rate)}</strong>`;
+    row.innerHTML = `<b>${order.name || order.symbol || "종목"}</b><span>${status}</span><strong>${signedPercent(rate)}</strong>`;
     list.append(row);
   });
 }
@@ -695,12 +695,32 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => toast.classList.remove("show"), 1800);
 }
 
+function openPage(page) {
+  const target = page === "quant" ? "quant" : "overview";
+  document.body.dataset.page = target;
+  document.querySelectorAll(".nav-item[data-page]").forEach((nav) => {
+    nav.classList.toggle("active", nav.dataset.page === target);
+  });
+  if (target === "quant") {
+    showToast("전략 설정 컨트롤타워를 열었습니다.");
+  }
+}
+
 document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
   item.addEventListener("click", () => {
+    if (["overview", "quant"].includes(item.dataset.page)) {
+      openPage(item.dataset.page);
+      return;
+    }
+    document.body.dataset.page = "overview";
     document.querySelectorAll(".nav-item[data-page]").forEach((nav) => nav.classList.remove("active"));
     item.classList.add("active");
-    if (item.dataset.page !== "overview") showToast("이 화면은 다음 단계에서 연결할게요.");
+    showToast("이 화면은 다음 단계에서 연결할게요.");
   });
+});
+
+document.querySelectorAll("[data-open-page]").forEach((button) => {
+  button.addEventListener("click", () => openPage(button.dataset.openPage));
 });
 
 document.querySelectorAll(".chart-range button").forEach((button) => {

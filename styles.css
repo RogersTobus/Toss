@@ -2518,3 +2518,384 @@ body {
     padding: 12px 0 !important;
   }
 }
+
+/* Layout direction v2: overview is live operations, Quant Lab is strategy control. */
+body:not([data-page="quant"]) .strategy-control-page {
+  display: none !important;
+}
+
+body[data-page="quant"] .hero-layout,
+body[data-page="quant"] .ops-status-strip,
+body[data-page="quant"] .operations-grid {
+  display: none !important;
+}
+
+body[data-page="quant"] .strategy-control-page {
+  display: block !important;
+}
+
+.hero-layout {
+  grid-template-columns: minmax(300px, .9fr) minmax(500px, 1.25fr) minmax(290px, .76fr) minmax(240px, .54fr) !important;
+  gap: 16px !important;
+  margin-bottom: 18px !important;
+}
+
+.hero-layout .balance-card {
+  min-width: 0 !important;
+}
+
+.hero-layout .connection {
+  min-height: 58px !important;
+  font-size: 15px !important;
+}
+
+.operations-grid {
+  grid-template-columns: minmax(560px, .95fr) minmax(620px, 1.05fr) !important;
+  grid-template-rows: auto auto !important;
+  gap: 20px 24px !important;
+  align-items: stretch !important;
+}
+
+.bot-panel {
+  grid-column: 1 !important;
+  grid-row: 1 / span 2 !important;
+  min-height: 0 !important;
+}
+
+.watch-panel {
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  min-height: 470px !important;
+  border: 1px solid rgba(142, 100, 23, .2) !important;
+  box-shadow: 0 18px 40px rgba(32, 24, 12, .06) !important;
+}
+
+.long-term-card {
+  grid-column: 2 !important;
+  grid-row: 2 !important;
+  min-height: 172px !important;
+  padding: 26px 30px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: #d8d8d8 !important;
+  box-shadow: none !important;
+}
+
+.long-term-card h2 {
+  margin-bottom: 20px !important;
+  font-size: 24px !important;
+  font-weight: 800 !important;
+}
+
+.long-term-card .long-term-list {
+  gap: 4px !important;
+}
+
+.long-term-card .long-term-list > div {
+  grid-template-columns: minmax(130px, .8fr) minmax(120px, .7fr) !important;
+}
+
+.long-term-card .long-term-list b {
+  font-size: 22px !important;
+  letter-spacing: -0.04em !important;
+}
+
+.long-term-card .long-term-list strong {
+  font-size: 15px !important;
+}
+
+.bot-panel .panel-header {
+  margin-bottom: 18px !important;
+}
+
+.bot-panel .panel-header h2 {
+  font-size: clamp(30px, 2.4vw, 42px) !important;
+}
+
+.decision-card {
+  margin-top: 14px !important;
+  background: #fff8e8 !important;
+}
+
+.risk-limit-box {
+  margin-top: 14px !important;
+}
+
+.safety-panel {
+  margin-top: 14px !important;
+}
+
+.bot-stats.trading-profit-stats,
+.bot-insights {
+  margin-top: 14px !important;
+}
+
+.risk-row {
+  margin-top: 14px !important;
+}
+
+.daytrade-status {
+  margin-top: 18px !important;
+  padding: 24px 26px !important;
+  min-height: 214px !important;
+  background: #d8d8d8 !important;
+  border-radius: 0 !important;
+}
+
+.daytrade-status .section-kicker {
+  display: flex !important;
+  justify-content: space-between !important;
+  margin-bottom: 20px !important;
+  color: #111 !important;
+}
+
+.daytrade-status .section-kicker span {
+  display: inline-block !important;
+  padding: 6px 12px !important;
+  background: #fff !important;
+  color: #111 !important;
+  font-size: 28px !important;
+  font-weight: 900 !important;
+  letter-spacing: -0.045em !important;
+}
+
+.daytrade-status .section-kicker b {
+  align-self: center !important;
+  color: #6b5a38 !important;
+  font-size: 13px !important;
+}
+
+.daytrade-table {
+  display: grid !important;
+  gap: 12px !important;
+}
+
+.daytrade-table > div {
+  display: grid !important;
+  grid-template-columns: minmax(72px, .7fr) minmax(140px, 1.35fr) minmax(120px, .95fr) !important;
+  gap: 14px !important;
+  align-items: center !important;
+}
+
+.daytrade-table b,
+.daytrade-table span,
+.daytrade-table strong {
+  display: block !important;
+  min-width: 0 !important;
+  padding: 7px 10px !important;
+  overflow: hidden !important;
+  background: #fff !important;
+  color: #111 !important;
+  line-height: 1.2 !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.daytrade-table b {
+  font-size: 22px !important;
+  font-weight: 900 !important;
+}
+
+.daytrade-table span {
+  font-size: 15px !important;
+}
+
+.daytrade-table strong {
+  font-size: 17px !important;
+  font-weight: 900 !important;
+  text-align: right !important;
+}
+
+.trading-workbench,
+.strategy-tower {
+  display: none !important;
+}
+
+.bot-panel > .section-kicker.compact,
+.bot-panel .session-list,
+.bot-panel .report-box {
+  display: none !important;
+}
+
+.strategy-btn {
+  margin-top: 18px !important;
+}
+
+.page-panel {
+  min-height: calc(100vh - 130px);
+}
+
+.strategy-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 10px 0 24px;
+}
+
+.strategy-page-head h1 {
+  margin: 0;
+  font-size: clamp(42px, 4.2vw, 72px);
+  line-height: 1.02;
+  letter-spacing: -0.06em;
+}
+
+.strategy-page-head p:last-child {
+  margin-top: 12px;
+  color: #746b5c;
+  font-size: 17px;
+}
+
+.back-btn {
+  flex: 0 0 auto;
+  max-width: 260px;
+}
+
+.strategy-control-board {
+  padding: 32px;
+  background: #d8d8d8;
+  color: #050505;
+}
+
+.active-strategy-label {
+  display: inline-block;
+  margin-bottom: 28px;
+  padding: 8px 12px;
+  background: #fff;
+  font-size: clamp(26px, 2.4vw, 42px);
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.05em;
+}
+
+.strategy-control-list {
+  display: grid;
+  gap: 20px;
+}
+
+.strategy-control-list > div {
+  display: grid;
+  grid-template-columns: 52px minmax(220px, .9fr) minmax(330px, 1.1fr) minmax(280px, 1fr) minmax(170px, .55fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.strategy-control-list b,
+.strategy-control-list strong,
+.strategy-control-list span,
+.strategy-control-list em,
+.strategy-control-list label {
+  display: block;
+  min-height: 46px;
+  padding: 8px 10px;
+  background: #fff;
+  color: #050505;
+  font-style: normal;
+  line-height: 1.28;
+}
+
+.strategy-control-list b {
+  font-size: 36px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.strategy-control-list strong {
+  font-size: clamp(24px, 2vw, 36px);
+  font-weight: 800;
+  letter-spacing: -0.05em;
+}
+
+.strategy-control-list span {
+  font-size: 18px;
+}
+
+.strategy-control-list em,
+.strategy-control-list label {
+  font-size: 20px;
+}
+
+.strategy-control-list label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: transparent;
+  font-weight: 800;
+}
+
+.strategy-control-list input {
+  width: 18px;
+  height: 18px;
+  accent-color: #c6932e;
+}
+
+@media (max-width: 1500px) {
+  .hero-layout {
+    grid-template-columns: minmax(300px, .8fr) minmax(440px, 1.15fr) minmax(270px, .72fr) !important;
+  }
+
+  .hero-layout .connection-stack {
+    grid-column: 1 / -1 !important;
+    grid-row: auto !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .operations-grid {
+    grid-template-columns: minmax(480px, .95fr) minmax(520px, 1.05fr) !important;
+  }
+
+  .strategy-control-list > div {
+    grid-template-columns: 46px minmax(190px, .8fr) minmax(260px, 1fr) minmax(220px, .9fr) minmax(150px, .55fr);
+  }
+}
+
+@media (max-width: 1180px) {
+  .hero-layout,
+  .operations-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .hero-layout .connection-stack {
+    grid-template-columns: 1fr !important;
+  }
+
+  .bot-panel,
+  .watch-panel,
+  .long-term-card {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+
+  .watch-panel {
+    min-height: auto !important;
+  }
+
+  .strategy-page-head {
+    display: grid;
+  }
+
+  .strategy-control-list > div {
+    grid-template-columns: 44px 1fr;
+    align-items: stretch;
+  }
+
+  .strategy-control-list span,
+  .strategy-control-list em,
+  .strategy-control-list label {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 720px) {
+  .daytrade-table > div {
+    grid-template-columns: 1fr !important;
+  }
+
+  .daytrade-table strong {
+    text-align: left !important;
+  }
+
+  .strategy-control-board {
+    padding: 20px;
+  }
+}

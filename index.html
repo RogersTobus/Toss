@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=layoutframe1" />
+  <link rel="stylesheet" href="styles.css?v=layoutframe2" />
 </head>
 <body>
   <div class="app-shell">
@@ -195,23 +195,12 @@
               <p id="analysisCycleCopy">30초 주기로 시장을 분석하고 모의 진입을 기록합니다.</p>
             </div>
 
-            <div class="trading-workbench">
-              <div class="daytrade-status">
-                <h3>단타 현황</h3>
-                <div class="daytrade-table" id="dayTradeStatus">
-                  <div><b>종목</b><span>보유중 / 매도 완료</span><strong>현재 수익률</strong></div>
-                  <div><b>종목</b><span>보유중 / 매도 완료</span><strong>현재 수익률</strong></div>
-                  <div><b>종목</b><span>보유중 / 매도 완료</span><strong>현재 수익률</strong></div>
-                </div>
-              </div>
-
-              <div class="strategy-tower">
-                <h3>전략 설정 컨트롤타워</h3>
-                <div class="strategy-tower-list" id="strategyTower">
-                  <div><b>1</b><span>단타 추세 추종</span><em>AI 조언 대기</em><label><input type="checkbox" checked> 활성화</label></div>
-                  <div><b>2</b><span>손실 제한 방어</span><em>AI 조언 대기</em><label><input type="checkbox" checked> 활성화</label></div>
-                  <div><b>3</b><span>장마감 결산</span><em>AI 조언 대기</em><label><input type="checkbox" checked> 활성화</label></div>
-                </div>
+            <div class="daytrade-status">
+              <div class="section-kicker compact"><span>단타 현황</span><b>실시간 포지션</b></div>
+              <div class="daytrade-table" id="dayTradeStatus">
+                <div><b>종목</b><span>현재 상태</span><strong>현재 수익률</strong></div>
+                <div><b>종목</b><span>현재 상태</span><strong>현재 수익률</strong></div>
+                <div><b>종목</b><span>현재 상태</span><strong>현재 수익률</strong></div>
               </div>
             </div>
 
@@ -231,7 +220,7 @@
                 <p>한국장/미국장 종료 후 자동 리포트를 준비합니다.</p>
               </div>
             </div>
-            <button class="strategy-btn">전략 설정 열기 <span>→</span></button>
+            <button class="strategy-btn" data-open-page="quant">전략 설정 컨트롤타워 열기 <span>→</span></button>
           </article>
         </section>
 
@@ -256,6 +245,51 @@
           
         </section>
         </div>
+
+        <section class="page-panel strategy-control-page" data-page-view="quant" aria-label="전략 설정 컨트롤타워">
+          <div class="strategy-page-head">
+            <div>
+              <p class="eyebrow accent">QUANT LAB</p>
+              <h1>전략 설정 컨트롤타워</h1>
+              <p>단타 전략을 어떻게 운용 중인지 정리하고, AI 조언을 보고 활성화 여부를 결정합니다.</p>
+            </div>
+            <button class="strategy-btn back-btn" data-open-page="overview">Overview로 돌아가기 <span>→</span></button>
+          </div>
+
+          <div class="strategy-control-board">
+            <div class="active-strategy-label">활성화된 전략</div>
+            <div class="strategy-control-list" id="strategyTower">
+              <div>
+                <b>1</b>
+                <strong>단타 추세 추종</strong>
+                <span>거래대금과 당일 추세가 동시에 붙는 종목만 후보로 올립니다.</span>
+                <em>AI 조언 대기</em>
+                <label><input type="checkbox" checked> 활성화</label>
+              </div>
+              <div>
+                <b>2</b>
+                <strong>손실 제한 방어</strong>
+                <span>일 손실선 -0.5%와 연속 손실 제한을 먼저 확인합니다.</span>
+                <em>AI 조언 대기</em>
+                <label><input type="checkbox" checked> 활성화</label>
+              </div>
+              <div>
+                <b>3</b>
+                <strong>장마감 결산</strong>
+                <span>한국장과 미국장 종료 후 진입/보류 판단을 슬랙 리포트로 정리합니다.</span>
+                <em>AI 조언 대기</em>
+                <label><input type="checkbox" checked> 활성화</label>
+              </div>
+              <div>
+                <b>4</b>
+                <strong>장 전환 감시</strong>
+                <span>시간에 맞춰 한국장 → 미국장 분석 대상으로 자동 전환합니다.</span>
+                <em>AI 조언 대기</em>
+                <label><input type="checkbox" checked> 활성화</label>
+              </div>
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   </div>
