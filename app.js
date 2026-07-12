@@ -477,9 +477,12 @@ function renderPaperSummary(state) {
     riskLimitBar.classList.toggle("danger", stopProgress >= 0.8);
     riskLimitBar.classList.toggle("warning", stopProgress >= 0.5 && stopProgress < 0.8);
   }
-  document.querySelector("#riskLimitLabel").textContent = `${signedPercent(averageReturn)} / ${signedPercent(stopRate)}`;
-  document.querySelector("#riskRemainingStop").textContent = `손실선까지 여유 ${signedPercent(Number(decision.remainingToStop ?? averageReturn - stopRate))}`;
-  document.querySelector("#riskRemainingTarget").textContent = `목표까지 ${signedPercent(Number(decision.remainingToTarget ?? targetRate - averageReturn))}`;
+  const riskLimitLabel = document.querySelector("#riskLimitLabel");
+  const riskRemainingStop = document.querySelector("#riskRemainingStop");
+  const riskRemainingTarget = document.querySelector("#riskRemainingTarget");
+  if (riskLimitLabel) riskLimitLabel.textContent = `${signedPercent(averageReturn)} / ${signedPercent(stopRate)}`;
+  if (riskRemainingStop) riskRemainingStop.textContent = `손실선까지 여유 ${signedPercent(Number(decision.remainingToStop ?? averageReturn - stopRate))}`;
+  if (riskRemainingTarget) riskRemainingTarget.textContent = `목표까지 ${signedPercent(Number(decision.remainingToTarget ?? targetRate - averageReturn))}`;
 
   renderSafetyRules(summary);
   renderStrategyConfig(summary.strategyConfig || { targetRate, stopRate });
@@ -504,11 +507,15 @@ function renderPaperSummary(state) {
   });
 
   document.querySelector("#botStatus").textContent = `${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
-  document.querySelector("#positionInsight").textContent = `${openPositionCount}개`;
-  document.querySelector("#orderInsight").textContent = `${todayOrderCount}건`;
+  const positionInsight = document.querySelector("#positionInsight");
+  const orderInsight = document.querySelector("#orderInsight");
+  if (positionInsight) positionInsight.textContent = `${openPositionCount}개`;
+  if (orderInsight) orderInsight.textContent = `${todayOrderCount}건`;
   const avgInsight = document.querySelector("#avgReturnInsight");
-  avgInsight.textContent = signedPercent(averageReturn);
-  applyTone(avgInsight, averageReturn);
+  if (avgInsight) {
+    avgInsight.textContent = signedPercent(averageReturn);
+    applyTone(avgInsight, averageReturn);
+  }
 
   const updatedAt = state.lastRunAt
     ? new Date(state.lastRunAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
