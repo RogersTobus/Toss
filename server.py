@@ -243,6 +243,63 @@ def strategy_ai_advice(strategy: dict[str, Any], analysis: dict[str, Any] | None
     return "현재 추세를 관찰하면서 한 번에 한 변수만 바꾸는 방식이 좋습니다."
 
 
+def overall_ai_analysis(analysis: dict[str, Any] | None = None, strategies: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    analysis = analysis or {}
+    strategies = strategies or []
+    summary = analysis.get("paperSummary") or {}
+    decision = summary.get("decision") or {}
+    results = analysis.get("results") or []
+    active_market = str(analysis.get("activeMarket") or "CLOSED")
+    active_session = str(analysis.get("activeSession") or "시장 확인 중")
+    avg = decimal(summary.get("averageReturn"))
+    target = decimal(summary.get("targetRate") or PAPER_TARGET_RATE)
+    stop = decimal(summary.get("stopRate") or PAPER_STOP_RATE)
+    open_positions = int(summary.get("openPositionCount") or 0)
+    today_orders = int(summary.get("todayOrderCount") or 0)
+    enabled_count = sum(1 for item in strategies if item.get("enabled"))
+    precision_count = sum(1 for item in results if item.get("verdict") == "정밀 분석")
+    blocked = bool((summary.get("decision") or {}).get("tone") == "danger" or summary.get("locked"))
+
+    if analysis.get("lastError"):
+        tone = "danger"
+        headline = "분석 상태 확인 필요"
+        advice = "전략 조정보다 API/서버 오류 해소가 먼저입니다. 오류가 사라진 뒤 전략 판단을 재개하세요."
+    elif active_market == "CLOSED":
+        tone = "neutral"
+        headline = "시장 휴장 · 전략 유지"
+        advice = "지금은 설정을 크게 바꾸기보다 내일 장중 데이터가 쌓이는지 확인하는 구간입니다."
+    elif blocked:
+        tone = "danger"
+        headline = "방어 우선 구간"
+        advice = "신규 진입을 줄이고 손실선·연속 손절 제한이 제대로 작동하는지 먼저 확인하세요."
+    elif precision_count >= 3 and avg >= 0:
+        tone = "safe"
+        headline = "선별 진입 가능"
+        advice = "후보가 충분하고 손익도 안정적입니다. 80점 이상 후보만 소량 진입하는 기준을 유지하세요."
+    elif avg < 0:
+        tone = "caution"
+        headline = "주의 관찰 구간"
+        advice = "평균 손익이 마이너스입니다. 필터를 완화하지 말고 기존 포지션과 손절 기준을 먼저 점검하세요."
+    else:
+        tone = "neutral"
+        headline = "균형 모드"
+        advice = "후보 품질을 확인하면서 거래대금과 추세가 동시에 붙는 종목만 좁혀보세요."
+
+    return {
+        "tone": tone,
+        "headline": headline,
+        "summary": f"{active_session} · 후보 {len(results)}개 · 정밀 분석 {precision_count}개 · 활성 전략 {enabled_count}개",
+        "advice": advice,
+        "metrics": [
+            {"label": "현재 손익", "value": percent(avg)},
+            {"label": "목표", "value": percent(target)},
+            {"label": "손실선", "value": percent(stop)},
+            {"label": "포지션", "value": f"{open_positions}개"},
+            {"label": "오늘 진입", "value": f"{today_orders}건"},
+        ],
+    }
+
+
 def strategy_payload() -> dict[str, Any]:
     config = strategy_config()
     analysis = analysis_snapshot()
@@ -251,7 +308,7 @@ def strategy_payload() -> dict[str, Any]:
         row = dict(item)
         row["aiAdvice"] = strategy_ai_advice(row, analysis)
         strategies.append(row)
-    return {"config": config, "strategies": strategies}
+    return {"config": config, "strategies": strategies, "overallAdvice": overall_ai_analysis(analysis, strategies)}
 def load_env() -> dict[str, str]:
     values: dict[str, str] = {}
     path = ROOT / ".env"

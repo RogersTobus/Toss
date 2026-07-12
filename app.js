@@ -173,7 +173,6 @@ function renderStrategyConfig(config = {}) {
     const input = document.querySelector(selector);
     if (input && document.activeElement !== input) input.value = value;
   });
-  if (Array.isArray(config.strategies)) renderStrategyTower(config.strategies);
 }
 
 function readStrategyConfigForm() {
@@ -239,6 +238,19 @@ function renderStrategyTower(strategies = []) {
     ai.className = "strat-ai";
     ai.textContent = strategy.aiAdvice || "AI 조언 대기";
 
+    const aiWrap = document.createElement("div");
+    aiWrap.className = "strat-ai-wrap";
+    const applyAdvice = document.createElement("button");
+    applyAdvice.type = "button";
+    applyAdvice.className = "apply-ai-btn";
+    applyAdvice.textContent = "AI 조언 반영";
+    applyAdvice.addEventListener("click", () => {
+      judge.value = strategy.aiAdvice || "";
+      judge.focus();
+      showToast("AI 조언을 이 전략의 판단 문구에 반영했습니다.");
+    });
+    aiWrap.append(ai, applyAdvice);
+
     const toggle = document.createElement("label");
     toggle.className = "switch small";
     const checkbox = document.createElement("input");
@@ -247,7 +259,7 @@ function renderStrategyTower(strategies = []) {
     const slider = document.createElement("span");
     toggle.append(checkbox, slider);
 
-    row.append(numberCell, titleWrap, judge, ai, toggle);
+    row.append(numberCell, titleWrap, judge, aiWrap, toggle);
     list.append(row);
   });
 }
@@ -267,6 +279,24 @@ function readStrategyTower() {
 function renderStrategyPayload(payload = {}) {
   renderStrategyConfig(payload.config || {});
   if (Array.isArray(payload.strategies)) renderStrategyTower(payload.strategies);
+  renderOverallAdvice(payload.overallAdvice || {});
+}
+
+function renderOverallAdvice(advice = {}) {
+  const card = document.querySelector("#aiOverviewCard");
+  if (!card) return;
+  card.className = `ai-overview-card ${advice.tone || "neutral"}`;
+  document.querySelector("#aiOverviewHeadline").textContent = advice.headline || "AI 현황 분석 대기";
+  document.querySelector("#aiOverviewSummary").textContent = advice.summary || "실시간 분석 상태를 불러오고 있습니다.";
+  document.querySelector("#aiOverviewAdvice").textContent = advice.advice || "시장 추세와 전략 상태를 확인한 뒤 조언을 표시합니다.";
+  const metrics = document.querySelector("#aiOverviewMetrics");
+  if (!metrics) return;
+  metrics.replaceChildren();
+  (advice.metrics || []).forEach((item) => {
+    const chip = document.createElement("span");
+    chip.innerHTML = `<b>${item.label || "-"}</b><em>${item.value || "-"}</em>`;
+    metrics.append(chip);
+  });
 }
 
 async function saveStrategyConfig() {

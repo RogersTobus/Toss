@@ -406,6 +406,23 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
 .slack-test-panel button:hover:not(:disabled) { background: var(--gold-tint); border-color: var(--gold-soft); }
 .slack-test-panel button:disabled { opacity: .45; cursor: not-allowed; }
 
+.ai-overview-card {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, .95fr) auto;
+  gap: 14px; align-items: stretch;
+  padding: clamp(13px, 1.6vh, 18px); border-radius: var(--radius); background: var(--panel);
+  border: 1px solid var(--line); box-shadow: var(--shadow-soft);
+}
+.ai-overview-card h2 { font-size: clamp(17px, 1.5vw, 22px); margin: 2px 0 5px; letter-spacing: -.03em; }
+.ai-overview-card p:not(.eyebrow) { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.ai-overview-card.safe { border-color: #dbe6cf; background: linear-gradient(135deg, var(--panel), var(--green-tint)); }
+.ai-overview-card.caution { border-color: var(--gold-soft); background: linear-gradient(135deg, var(--panel), var(--gold-tint)); }
+.ai-overview-card.danger { border-color: #eed7ce; background: linear-gradient(135deg, var(--panel), var(--red-tint)); }
+.ai-overview-advice { padding: 11px 13px; border-radius: var(--radius-sm); background: rgba(255,255,255,.55); color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.ai-overview-metrics { display: grid; grid-template-columns: repeat(2, minmax(80px, 1fr)); gap: 7px; min-width: 220px; }
+.ai-overview-metrics span { display: grid; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line-soft); }
+.ai-overview-metrics b { font-size: 9px; color: var(--muted); }
+.ai-overview-metrics em { font-style: normal; font-size: 12px; color: var(--ink); font-weight: 700; }
+
 .strategy-control-board {
   flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column;
   padding: clamp(14px, 1.8vh, 22px); border-radius: var(--radius); background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow-soft);
@@ -431,6 +448,12 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
 .strat-judge, .strat-ai { font-style: normal; font-size: 11px; padding: 8px 10px; border-radius: 7px; text-align: left; line-height: 1.45; }
 .strat-judge { background: var(--green-tint); color: var(--green); font-weight: 600; }
 .strat-ai { background: var(--panel); color: var(--muted); border: 1px dashed var(--line); }
+.strat-ai-wrap { display: grid; gap: 7px; min-width: 0; }
+.apply-ai-btn {
+  justify-self: start; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--gold-soft);
+  background: var(--gold-tint); color: var(--gold-deep); font-size: 10.5px; font-weight: 700;
+}
+.apply-ai-btn:hover { background: var(--gold-soft); }
 .strategy-empty { display: block !important; color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
 .strategy-board-actions {
   display: flex; align-items: center; justify-content: space-between; gap: 14px;
@@ -490,6 +513,8 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
     grid-template-rows: none;
     grid-template-areas: "bot" "analysis" "longterm";
   }
+  .ai-overview-card { grid-template-columns: 1fr; }
+  .ai-overview-metrics { min-width: 0; }
   .panel { overflow: visible; }
   .bot-panel { min-height: 0; }
   .watch-table, .daytrade-table, .long-term-list, .strategy-control-list { max-height: 340px; }
@@ -515,7 +540,8 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
   .strategy-control-list > div > b { grid-area: num; }
   .strat-title { grid-area: title; }
   .strat-judge { grid-area: judge; text-align: left; justify-self: start; }
-  .strat-ai { grid-area: ai; text-align: left; justify-self: start; }
+  .strat-ai-wrap { grid-area: ai; }
+  .strat-ai { text-align: left; justify-self: start; }
   .strategy-control-list > div > .switch { grid-area: toggle; }
 }
 
