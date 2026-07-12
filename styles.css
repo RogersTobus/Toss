@@ -1545,3 +1545,236 @@ main::-webkit-scrollbar-thumb {
     font-size: 9px !important;
   }
 }
+
+/* Responsive layout reset v3
+   Keep the dashboard readable at every browser width. Previous one-screen rules
+   were too aggressive and made cards overlap when the window was split. */
+html,
+body {
+  min-height: 100% !important;
+  height: auto !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+.app-shell {
+  min-height: 100vh !important;
+  height: auto !important;
+  grid-template-columns: clamp(72px, 10vw, 186px) minmax(0, 1fr) !important;
+}
+
+main {
+  min-width: 0 !important;
+  min-height: 100vh !important;
+  height: auto !important;
+  overflow: visible !important;
+}
+
+.content {
+  width: 100% !important;
+  max-width: 1760px !important;
+  height: auto !important;
+  min-height: 0 !important;
+  margin: 0 auto !important;
+  padding: clamp(18px, 2vw, 34px) clamp(18px, 2.3vw, 42px) 56px !important;
+  overflow: visible !important;
+}
+
+.welcome {
+  min-height: auto !important;
+  margin-bottom: clamp(16px, 1.8vw, 28px) !important;
+  gap: 16px !important;
+}
+
+.content > .summary-grid.compact-summary {
+  height: auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(520px, 1.65fr) minmax(280px, .65fr) !important;
+  gap: clamp(12px, 1.3vw, 18px) !important;
+  margin: 0 !important;
+  overflow: visible !important;
+}
+
+.content > .summary-grid.compact-summary .balance-card,
+.content > .summary-grid.compact-summary .daily-card,
+.content > .summary-grid.compact-summary .metric-card {
+  height: clamp(142px, 13vw, 210px) !important;
+  min-height: 142px !important;
+  max-height: none !important;
+  padding: clamp(16px, 1.5vw, 24px) !important;
+  overflow: hidden !important;
+}
+
+.content > .summary-grid.compact-summary .total-value {
+  font-size: clamp(28px, 2.5vw, 42px) !important;
+}
+
+.content > .summary-grid.compact-summary .hero-chart {
+  height: clamp(72px, 7vw, 120px) !important;
+}
+
+.content > .summary-grid.compact-summary .daily-card .metric-value {
+  font-size: clamp(24px, 2vw, 34px) !important;
+}
+
+.content > .ops-status-strip {
+  position: static !important;
+  z-index: auto !important;
+  height: auto !important;
+  display: grid !important;
+  grid-template-columns: repeat(5, minmax(150px, 1fr)) !important;
+  gap: clamp(10px, 1vw, 14px) !important;
+  margin: clamp(14px, 1.4vw, 22px) 0 !important;
+  overflow: visible !important;
+}
+
+.content > .ops-status-strip > div {
+  height: auto !important;
+  min-height: 58px !important;
+  padding: 11px 13px !important;
+  overflow: hidden !important;
+}
+
+.operations-grid {
+  height: auto !important;
+  min-height: 0 !important;
+  display: grid !important;
+  grid-template-columns: minmax(540px, 1.05fr) minmax(420px, .95fr) !important;
+  gap: clamp(14px, 1.4vw, 22px) !important;
+  margin-top: 0 !important;
+  align-items: start !important;
+  overflow: visible !important;
+}
+
+.main-grid,
+.bottom-grid {
+  display: contents !important;
+}
+
+.bot-panel,
+.watch-panel {
+  grid-row: auto !important;
+  min-height: 560px !important;
+  height: auto !important;
+  overflow: visible !important;
+}
+
+.bot-panel {
+  grid-column: 1 !important;
+}
+
+.watch-panel {
+  grid-column: 2 !important;
+}
+
+.panel {
+  padding: clamp(18px, 1.5vw, 26px) !important;
+  overflow: visible !important;
+}
+
+.watch-panel .watch-table {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.symbol-detail-card {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.session-list,
+.report-box {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.report-list {
+  display: block !important;
+}
+
+.risk-row {
+  display: block !important;
+}
+
+.strategy-btn {
+  display: flex !important;
+}
+
+@media (max-width: 1320px) {
+  .content > .ops-status-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .operations-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .bot-panel,
+  .watch-panel {
+    grid-column: 1 !important;
+    min-height: auto !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 72px minmax(0, 1fr) !important;
+  }
+
+  .content > .summary-grid.compact-summary {
+    grid-template-columns: 1fr !important;
+  }
+
+  .content > .ops-status-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .welcome {
+    align-items: flex-start !important;
+    flex-direction: column !important;
+  }
+
+  .connection-stack {
+    justify-content: flex-start !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    display: block !important;
+  }
+
+  .sidebar {
+    position: fixed !important;
+    left: -240px !important;
+    width: 224px !important;
+  }
+
+  .sidebar.open {
+    left: 0 !important;
+  }
+
+  .content {
+    padding: 18px 14px 44px !important;
+  }
+
+  .content > .ops-status-strip {
+    grid-template-columns: 1fr !important;
+  }
+
+  .decision-card,
+  .bot-insights,
+  .trading-profit-stats {
+    grid-template-columns: 1fr !important;
+  }
+
+  .watch-panel .table-row {
+    grid-template-columns: 1fr !important;
+    gap: 6px !important;
+    align-items: start !important;
+  }
+
+  .table-head {
+    display: none !important;
+  }
+}
