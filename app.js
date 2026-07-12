@@ -501,10 +501,18 @@ async function loadHealthStatus() {
 
     if (health.version) {
       if (appVersion && appVersion !== health.version) {
+        if (health.release?.message) {
+          window.sessionStorage.setItem("orbitUpdatedMessage", health.release.message);
+        }
         window.location.reload();
         return;
       }
       appVersion = health.version;
+    }
+    const updatedMessage = window.sessionStorage.getItem("orbitUpdatedMessage");
+    if (updatedMessage) {
+      window.sessionStorage.removeItem("orbitUpdatedMessage");
+      showToast(`업데이트 반영: ${updatedMessage}`);
     }
     renderSlackConnection(health.slack || {});
 
@@ -529,9 +537,10 @@ async function loadHealthStatus() {
     server.textContent = `실행 ${formatUptime(health.uptimeSec)}`;
     setHealthTone(server, Boolean(health.server?.running));
 
-    updated.textContent = health.updatedAt
-      ? new Date(health.updatedAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false })
-      : "--:--";
+    updated.textContent = health.release?.message || "변경 확인 중";
+    updated.title = health.release?.version
+      ? `${health.release.version} · ${health.release.committedAt || ""}`
+      : "";
   } catch (error) {
     renderSlackConnection({});
     ["#healthToss", "#healthKakao", "#healthAnalysis", "#healthServer"].forEach((selector) => {
@@ -652,5 +661,4 @@ window.setInterval(updateMarketClock, 1_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
-
 

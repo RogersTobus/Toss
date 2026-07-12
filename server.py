@@ -1130,10 +1130,12 @@ def health_status() -> dict[str, Any]:
     with ANALYSIS_LOCK:
         analysis = dict(ANALYSIS)
     uptime = max(0, int(time.time() - STARTED_AT))
+    release = app_release()
     return {
         "ok": True,
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "version": app_version(),
+        "version": release["version"],
+        "release": release,
         "uptimeSec": uptime,
         "server": {"running": True, "port": int(os.environ.get("PORT", "4173"))},
         "toss": {
@@ -1161,17 +1163,30 @@ def health_status() -> dict[str, Any]:
     }
 
 
-def app_version() -> str:
+def git_output(args: list[str]) -> str:
+    return subprocess.check_output(
+        ["git", *args],
+        cwd=ROOT,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=2,
+    ).strip()
+
+
+def app_release() -> dict[str, str]:
     try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=ROOT,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=2,
-        ).strip()
+        return {
+            "version": git_output(["rev-parse", "--short", "HEAD"]),
+            "message": git_output(["log", "-1", "--pretty=%s"]),
+            "committedAt": git_output(["log", "-1", "--pretty=%cI"]),
+        }
     except Exception:
-        return str(int(Path(__file__).stat().st_mtime))
+        version = str(int(Path(__file__).stat().st_mtime))
+        return {
+            "version": version,
+            "message": "로컬 파일 변경사항",
+            "committedAt": "",
+        }
 
 def analysis_snapshot() -> dict[str, Any]:
     with ANALYSIS_LOCK:
@@ -1303,7 +1318,6 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
 
 
 
