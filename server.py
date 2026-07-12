@@ -386,9 +386,12 @@ def kakao_enabled(env: dict[str, str]) -> bool:
 
 def slack_enabled(env: dict[str, str], channel: str) -> bool:
     key = f"SLACK_{channel.upper()}_ENABLED"
-    if key not in env and env.get(f"SLACK_{channel.upper()}_WEBHOOK_URL"):
+    if not env.get(f"SLACK_{channel.upper()}_WEBHOOK_URL"):
+        return False
+    value = str(env.get(key, "")).strip().lower()
+    if not value:
         return True
-    return str(env.get(key, "")).lower() in ("1", "true", "yes", "on")
+    return value not in ("0", "false", "no", "off")
 
 
 def send_slack(channel: str, text: str) -> None:
@@ -398,6 +401,38 @@ def send_slack(channel: str, text: str) -> None:
     if not webhook_url:
         raise TossApiError(400, "slack-webhook-missing", f"{key}가 .env에 없습니다.")
     post_json(webhook_url, {"text": text[:3500]})
+
+
+def slack_status(env: dict[str, str]) -> dict[str, dict[str, bool]]:
+    return {
+        channel: {
+            "configured": bool(env.get(f"SLACK_{channel.upper()}_WEBHOOK_URL")),
+            "enabled": slack_enabled(env, channel),
+        }
+        for channel in ("alert", "report", "log")
+    }
+
+
+def test_slack_channel(channel: str) -> dict[str, Any]:
+    if channel not in ("alert", "report", "log"):
+        raise TossApiError(400, "slack-channel-invalid", "지원하지 않는 슬랙 채널입니다.")
+    env = load_env()
+    if not slack_enabled(env, channel):
+        raise TossApiError(400, "slack-disabled", f"SLACK_{channel.upper()} 채널이 비활성화되어 있습니다.")
+    label = {"alert": "긴급알림", "report": "결산리포트", "log": "운영로그"}[channel]
+    now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    send_slack(
+        channel,
+        "\n".join(
+            [
+                ":satellite: *Orbit Slack 연결 테스트*",
+                f"채널: {label}",
+                f"시간: {now}",
+                "상태: 웹훅 연결 정상",
+            ]
+        ),
+    )
+    return {"ok": True, "channel": channel, "label": label, "sentAt": now}
 
 
 def handle_paper_alert(env: dict[str, str], market: str | None, summary: dict[str, Any]) -> None:
@@ -1149,11 +1184,7 @@ def health_status() -> dict[str, Any]:
             "enabled": kakao_enabled(env),
             "lastError": (analysis.get("reportStatus") or {}).get("lastError"),
         },
-        "slack": {
-            "alert": bool(env.get("SLACK_ALERT_WEBHOOK_URL")),
-            "report": bool(env.get("SLACK_REPORT_WEBHOOK_URL")),
-            "log": bool(env.get("SLACK_LOG_WEBHOOK_URL")),
-        },
+        "slack": slack_status(env),
         "analysis": {
             "enabled": bool(analysis.get("enabled")),
             "cycle": analysis.get("cycle", 0),
@@ -1308,6 +1339,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/slack/test":
+            try:
+                payload = self.read_json_body()
+                self.send_json(test_slack_channel(str(payload.get("channel", ""))))
+            except TossApiError as exc:
+                self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
+            return
         if path == "/api/strategy/config":
             try:
                 config = save_strategy_config(self.read_json_body())
@@ -1333,9 +1371,6 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
-
-
 
 
 

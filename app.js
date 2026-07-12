@@ -187,6 +187,25 @@ async function saveStrategyConfig() {
   }
 }
 
+async function testSlackChannel(channel, button) {
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/slack/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "슬랙 테스트 실패");
+    showToast(`${payload.label || "Slack"} 테스트 메시지를 보냈습니다.`);
+    loadHealthStatus();
+  } catch (error) {
+    showToast(error.message || "슬랙 테스트에 실패했습니다.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 async function loadStrategyConfig() {
   try {
     const response = await fetch("/api/strategy/config", { cache: "no-store" });
@@ -474,15 +493,28 @@ function renderSlackConnection(slack) {
   const badge = document.querySelector("#slackConnection");
   if (!badge) return;
   const channels = ["alert", "report", "log"];
-  const connectedCount = channels.filter((channel) => Boolean(slack?.[channel])).length;
+  const isConfigured = (channel) => Boolean(slack?.[channel]?.configured ?? slack?.[channel]);
+  const isEnabled = (channel) => Boolean(slack?.[channel]?.enabled ?? slack?.[channel]);
+  const connectedCount = channels.filter(isConfigured).length;
+  const enabledCount = channels.filter(isEnabled).length;
   badge.classList.toggle("offline", connectedCount === 0);
   badge.classList.toggle("warning", connectedCount > 0 && connectedCount < channels.length);
   badge.querySelector("b").textContent = `${connectedCount}/${channels.length}`;
   badge.title = [
-    `Alert: ${slack?.alert ? "연결" : "미설정"}`,
-    `Report: ${slack?.report ? "연결" : "미설정"}`,
-    `Log: ${slack?.log ? "연결" : "미설정"}`,
+    `Alert: ${isConfigured("alert") ? "연결" : "미설정"}`,
+    `Report: ${isConfigured("report") ? "연결" : "미설정"}`,
+    `Log: ${isConfigured("log") ? "연결" : "미설정"}`,
+    `Enabled: ${enabledCount}/${channels.length}`,
   ].join(" · ");
+  document.querySelectorAll("[data-slack-test]").forEach((button) => {
+    const channel = button.dataset.slackTest;
+    const configured = isConfigured(channel);
+    const enabled = isEnabled(channel);
+    button.disabled = !configured || !enabled;
+    button.title = configured
+      ? (enabled ? "테스트 메시지를 발송합니다." : "해당 슬랙 채널이 비활성화되어 있습니다.")
+      : "웹훅 URL이 .env에 없습니다.";
+  });
 }
 
 function formatSyncTime(value) {
@@ -683,6 +715,9 @@ document.querySelector(".mobile-menu").addEventListener("click", () => {
 document.querySelector(".add-btn").addEventListener("click", () => showToast("전략 만들기 화면을 준비 중입니다."));
 document.querySelector(".strategy-btn").addEventListener("click", () => document.querySelector("#strategySettings")?.scrollIntoView({ behavior: "smooth", block: "center" }));
 document.querySelector("#strategySaveBtn")?.addEventListener("click", saveStrategyConfig);
+document.querySelectorAll("[data-slack-test]").forEach((button) => {
+  button.addEventListener("click", () => testSlackChannel(button.dataset.slackTest, button));
+});
 
 loadDashboard();
 loadAnalysisStatus();

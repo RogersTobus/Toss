@@ -452,6 +452,27 @@ main { min-width: 0; }
 .risk-track i.danger { background: var(--red); }
 .report-box { background: #fbfaf5; border: 1px solid var(--line); border-radius: 10px; padding: 10px; }
 .report-head { margin-bottom: 7px; }
+.slack-test-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 8px 0 10px;
+}
+.slack-test-panel button {
+  border: 1px solid rgba(142, 100, 23, .25);
+  border-radius: 999px;
+  background: #fff7e1;
+  color: #6f4b12;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 7px 10px;
+}
+.slack-test-panel button:hover { background: #f1dfae; }
+.slack-test-panel button:disabled {
+  cursor: not-allowed;
+  opacity: .46;
+}
 .kakao-connect-btn { margin-bottom: 9px; }
 .report-item { grid-template-columns: 54px 1fr; }
 .strategy-btn { font-weight: 800; }
@@ -2026,6 +2047,10 @@ body {
 .strategy-btn {
   font-size: 13px !important;
   font-weight: 800 !important;
+}
+
+.slack-test-panel button {
+  font-size: 12px !important;
 }
 
 .bot-stats.trading-profit-stats > div,
