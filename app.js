@@ -42,6 +42,26 @@ function updateMarketClock() {
   document.querySelector("#marketClockTime").textContent = `${values.hour}:${values.minute}:${values.second} KST`;
 }
 
+function updateGreeting() {
+  const now = new Date();
+  const dateEl = document.querySelector("#greetingDate");
+  const titleEl = document.querySelector("#greetingTitle");
+  const dateParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Seoul", weekday: "long", month: "short", day: "numeric",
+  }).formatToParts(now);
+  const dp = Object.fromEntries(dateParts.map((p) => [p.type, p.value]));
+  if (dateEl) dateEl.textContent = `${dp.weekday}, ${dp.month} ${dp.day}`.toUpperCase();
+  const hour = Number(new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Seoul", hour: "2-digit", hour12: false,
+  }).format(now));
+  if (titleEl) {
+    titleEl.textContent = hour < 6 ? "편안한 새벽이에요."
+      : hour < 12 ? "좋은 아침이에요."
+      : hour < 18 ? "좋은 오후예요."
+      : "좋은 저녁이에요.";
+  }
+}
+
 function analyzeHolding(item) {
   const dailyRate = Number(item.dailyRate || 0);
   const quantity = Number(item.quantity || 0);
@@ -362,8 +382,9 @@ function renderScannerResults(items) {
 
 function renderPaperOrders(orders, market) {
   const list = document.querySelector("#paperOrders");
-  list.replaceChildren();
   const recent = (orders || []).slice(-3).reverse();
+  if (!list) { renderDayTradeStatus(recent); return; }
+  list.replaceChildren();
   recent.forEach((order) => {
     const row = document.createElement("div");
     row.className = "session active";
@@ -633,25 +654,29 @@ async function loadHealthStatus() {
     const server = document.querySelector("#healthServer");
     const updated = document.querySelector("#healthUpdated");
 
+    // Ops status strip was removed from the UI; guard each element so a missing
+    // node never throws and resets the connection badges above.
     const tossOk = Boolean(health.toss?.configured && health.toss?.connected);
-    toss.textContent = tossOk ? "연결됨" : (health.toss?.configured ? "확인 필요" : "미설정");
+    if (toss) toss.textContent = tossOk ? "연결됨" : (health.toss?.configured ? "확인 필요" : "미설정");
     setHealthTone(toss, tossOk);
 
     const kakaoOk = Boolean(health.kakao?.configured && health.kakao?.enabled && !health.kakao?.lastError);
-    kakao.textContent = kakaoOk ? "자동 발송" : (health.kakao?.configured ? "대기/확인" : "미설정");
+    if (kakao) kakao.textContent = kakaoOk ? "자동 발송" : (health.kakao?.configured ? "대기/확인" : "미설정");
     setHealthTone(kakao, Boolean(health.kakao?.configured), !kakaoOk);
 
     const analysisOk = Boolean(health.analysis?.enabled && !health.analysis?.lastError);
-    analysis.textContent = analysisOk ? `${health.analysis?.activeSession || "분석 중"}` : "중지/오류";
+    if (analysis) analysis.textContent = analysisOk ? `${health.analysis?.activeSession || "분석 중"}` : "중지/오류";
     setHealthTone(analysis, analysisOk);
 
-    server.textContent = `실행 ${formatUptime(health.uptimeSec)}`;
+    if (server) server.textContent = `실행 ${formatUptime(health.uptimeSec)}`;
     setHealthTone(server, Boolean(health.server?.running));
 
-    updated.textContent = health.release?.message || "변경 확인 중";
-    updated.title = health.release?.version
-      ? `${health.release.version} · ${health.release.committedAt || ""}`
-      : "";
+    if (updated) {
+      updated.textContent = health.release?.message || "변경 확인 중";
+      updated.title = health.release?.version
+        ? `${health.release.version} · ${health.release.committedAt || ""}`
+        : "";
+    }
   } catch (error) {
     renderSlackConnection({});
     renderDeployConnection({});
@@ -780,8 +805,8 @@ document.querySelector(".mobile-menu").addEventListener("click", () => {
   document.querySelector(".sidebar").classList.toggle("open");
 });
 
-document.querySelector(".add-btn").addEventListener("click", () => showToast("전략 만들기 화면을 준비 중입니다."));
-document.querySelector(".strategy-btn").addEventListener("click", () => document.querySelector("#strategySettings")?.scrollIntoView({ behavior: "smooth", block: "center" }));
+document.querySelector(".add-btn")?.addEventListener("click", () => showToast("전략 만들기 화면을 준비 중입니다."));
+// 전략 컨트롤타워 이동은 [data-open-page] 핸들러가 처리합니다.
 document.querySelector("#strategySaveBtn")?.addEventListener("click", saveStrategyConfig);
 document.querySelectorAll("[data-slack-test]").forEach((button) => {
   button.addEventListener("click", () => testSlackChannel(button.dataset.slackTest, button));
@@ -792,7 +817,9 @@ loadAnalysisStatus();
 loadHealthStatus();
 loadStrategyConfig();
 updateMarketClock();
+updateGreeting();
 window.setInterval(updateMarketClock, 1_000);
+window.setInterval(updateGreeting, 60_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);

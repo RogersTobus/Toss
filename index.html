@@ -1,16 +1,17 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Orbit — 퀀트 투자 대시보드</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=layoutframe4" />
+  <link rel="stylesheet" href="styles.css?v=orbit-redesign1" />
 </head>
-<body>
+<body data-page="overview">
   <div class="app-shell">
+    <!-- ============ SIDEBAR ============ -->
     <aside class="sidebar">
       <a class="brand" href="#" aria-label="Orbit 홈">
         <span class="brand-mark"><i></i><i></i></span>
@@ -38,12 +39,13 @@
         <button class="nav-item"><span class="nav-icon">⚙</span><span>Settings</span></button>
         <div class="profile">
           <div class="avatar">HJ</div>
-          <div><strong>투자자</strong><span>Personal account</span></div>
+          <div class="profile-copy"><strong>투자자</strong><span>Personal account</span></div>
           <button aria-label="프로필 메뉴">•••</button>
         </div>
       </div>
     </aside>
 
+    <!-- ============ MAIN ============ -->
     <main>
       <header class="topbar">
         <button class="mobile-menu" aria-label="메뉴 열기">☰</button>
@@ -60,55 +62,51 @@
       </header>
 
       <div class="content">
-        <section class="hero-layout">
-          <div class="welcome hero-welcome">
-            <p class="eyebrow">THURSDAY, JUL 9</p>
-            <h1>좋은 오후예요.</h1>
-            <p>두 개의 투자 엔진이 계획대로 움직이고 있어요.</p>
-          </div>
+        <!-- ---------- HERO (top row, 4 cells, one line) ---------- -->
+        <section class="hero-layout" aria-label="자산 요약">
+          <article class="card hero-welcome">
+            <p class="eyebrow" id="greetingDate">THURSDAY, JUL</p>
+            <h1 id="greetingTitle">좋은 하루예요.</h1>
+            <p class="hero-sub">두 개의 투자 엔진이 계획대로 움직이고 있어요.</p>
+          </article>
 
-          <article class="balance-card dark-card">
-            <div class="card-title"><span>총 투자자산</span><button aria-label="자산 숨기기">•••</button></div>
+          <article class="card balance-card">
+            <div class="card-title"><span>총 투자자산</span>
+              <div class="chart-range">
+                <button>1D</button><button>1W</button><button class="selected">1M</button><button>3M</button><button>1Y</button><button>ALL</button>
+              </div>
+            </div>
             <div class="total-value" id="totalAssets">₩0</div>
             <div class="gain"><span id="totalReturn">+0.00%</span> 전체 기간</div>
-            <svg class="hero-chart" viewBox="0 0 560 112" preserveAspectRatio="none" aria-label="자산 추이">
+            <svg class="hero-chart" viewBox="0 0 560 96" preserveAspectRatio="none" aria-hidden="true">
               <defs>
                 <linearGradient id="chartFill" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stop-color="#f4d98a" stop-opacity=".26"/>
                   <stop offset="100%" stop-color="#f4d98a" stop-opacity="0"/>
                 </linearGradient>
               </defs>
-              <path class="area" d="M0 88 C38 80,52 92,82 73 S130 65,154 71 S201 46,230 54 S272 71,300 49 S341 60,372 41 S415 47,447 28 S505 36,560 12 L560 112 L0 112 Z"/>
-              <path class="line" d="M0 88 C38 80,52 92,82 73 S130 65,154 71 S201 46,230 54 S272 71,300 49 S341 60,372 41 S415 47,447 28 S505 36,560 12"/>
+              <path class="area" d="M0 76 C38 68,52 80,82 62 S130 55,154 60 S201 39,230 46 S272 60,300 41 S341 51,372 35 S415 40,447 24 S505 30,560 10 L560 96 L0 96 Z"/>
+              <path class="line" d="M0 76 C38 68,52 80,82 62 S130 55,154 60 S201 39,230 46 S272 60,300 41 S341 51,372 35 S415 40,447 24 S505 30,560 10"/>
             </svg>
-            <div class="chart-range">
-              <button>1D</button><button>1W</button><button class="selected">1M</button><button>3M</button><button>1Y</button><button>ALL</button>
-            </div>
           </article>
 
-          <article class="metric-card daily-card">
+          <article class="card daily-card">
             <div class="card-title"><span>오늘의 손익</span><span class="status positive">LIVE</span></div>
             <div class="metric-value positive-text" id="dailyProfit">+₩0</div>
             <div class="metric-sub"><b id="dailyReturn">+0.00%</b> <span>전일 대비</span></div>
-            <div class="metric-note">실시간 기준 · 운영 상태는 아래에서 확인</div>
+            <div class="metric-note">실시간 평가 기준</div>
           </article>
 
           <div class="connection-stack">
-            <div class="connection" id="apiConnection"><span></span> Toss Securities API <b>연결 중</b></div>
-            <div class="connection" id="slackConnection"><span></span> Slack Webhooks <b>확인 중</b></div>
-            <div class="connection" id="deployConnection"><span></span> AWS Sync <b>확인 중</b></div>
+            <div class="connection" id="apiConnection"><span class="dot"></span><em>Toss Securities API</em><b>연결 중</b></div>
+            <div class="connection" id="slackConnection"><span class="dot"></span><em>Slack Webhooks</em><b>확인 중</b></div>
+            <div class="connection" id="deployConnection"><span class="dot"></span><em>AWS Sync</em><b>확인 중</b></div>
           </div>
         </section>
 
-        <section class="ops-status-strip" aria-label="운영 상태">
-          <div><span>토스 API</span><b id="healthToss">확인 중</b></div>
-          <div><span>Slack 리포트</span><b id="healthKakao">확인 중</b></div>
-          <div><span>라이브 분석</span><b id="healthAnalysis">확인 중</b></div>
-          <div><span>서버 실행</span><b id="healthServer">확인 중</b></div>
-          <div><span>최근 변경</span><b id="healthUpdated">확인 중</b></div>
-        </section>
-
+        <!-- ---------- OPERATIONS (bot | analysis / longterm) ---------- -->
         <div class="operations-grid">
+          <!-- LEFT: 단타 트레이딩 -->
           <article class="panel bot-panel">
             <div class="panel-header">
               <div><p class="eyebrow accent">ACTIVE STRATEGY</p><h2>단타 트레이딩</h2></div>
@@ -120,8 +118,14 @@
 
             <div class="bot-mode">
               <span class="bot-orb"><i></i></span>
-              <div><b id="botStatus">모의 운용 중</b><span>실제 주문은 전송되지 않습니다</span></div>
-              <em>PAPER</em>
+              <div class="bot-mode-copy"><b id="botStatus">모의 운용 중</b><span>실제 주문은 전송되지 않습니다</span></div>
+              <em class="paper-badge">PAPER</em>
+            </div>
+
+            <div class="risk-row">
+              <div class="risk-head"><span>일 목표 +1% · 손실선 −0.5%</span><b id="analysisUpdatedAt">대기 중</b></div>
+              <div class="risk-track"><i id="analysisPulseBar"></i></div>
+              <p id="analysisCycleCopy">30초 주기로 시장을 분석하고 모의 진입을 기록합니다.</p>
             </div>
 
             <div class="decision-card" id="decisionCard">
@@ -136,21 +140,15 @@
               </div>
             </div>
 
-            <div class="section-kicker"><span>단타 손익</span><b id="tradeProfitScope">평가손익 기준</b></div>
-            <div class="bot-stats trading-profit-stats">
-              <div class="stat-tile"><span>이번달</span><strong id="paperMonthProfit">+₩0 · +0.00%</strong><small id="paperMonthMeta">투입금 ₩0 · 0개</small></div>
-              <div class="stat-tile"><span>이번주</span><strong id="paperWeekProfit">+₩0 · +0.00%</strong><small id="paperWeekMeta">투입금 ₩0 · 0개</small></div>
-              <div class="stat-tile"><span>오늘</span><strong id="paperTodayProfit">+₩0 · +0.00%</strong><small id="paperTodayMeta">투입금 ₩0 · 0개</small></div>
-            </div>
-
-            <div class="risk-row">
-              <div class="risk-head"><span>일 목표 +1% / 손실선 -0.5%</span><b id="analysisUpdatedAt">대기 중</b></div>
-              <div class="risk-track"><i id="analysisPulseBar"></i></div>
-              <p id="analysisCycleCopy">30초 주기로 시장을 분석하고 모의 진입을 기록합니다.</p>
+            <div class="section-kicker"><span>단타 손익</span><b>평가손익 기준</b></div>
+            <div class="bot-stats">
+              <div class="stat-tile"><span>이번달</span><strong id="paperMonthProfit" class="positive-text">+₩0 · +0.00%</strong><small id="paperMonthMeta">투입금 ₩0 · 0개</small></div>
+              <div class="stat-tile"><span>이번주</span><strong id="paperWeekProfit" class="positive-text">+₩0 · +0.00%</strong><small id="paperWeekMeta">투입금 ₩0 · 0개</small></div>
+              <div class="stat-tile"><span>오늘</span><strong id="paperTodayProfit" class="positive-text">+₩0 · +0.00%</strong><small id="paperTodayMeta">투입금 ₩0 · 0개</small></div>
             </div>
 
             <div class="daytrade-status">
-              <div class="section-kicker compact"><span>단타 현황</span><b>실시간 포지션</b></div>
+              <div class="section-kicker"><span>단타 현황</span><b>실시간 포지션</b></div>
               <div class="daytrade-head"><span>종목</span><span>현재 상태</span><span>현재 수익률</span></div>
               <div class="daytrade-table" id="dayTradeStatus">
                 <div><b>대기</b><span>분석 대기</span><strong>-</strong></div>
@@ -159,34 +157,21 @@
               </div>
             </div>
 
-            <div class="section-kicker compact"><span>최근 모의 진입</span><b>최대 3건</b></div>
-            <div class="session-list" id="paperOrders">
-              <div class="session active"><i>··</i><span><b>모의 주문 대기</b><small>분석 결과를 기다리고 있어요</small></span><em>PAPER</em></div>
-            </div>
+            <!-- helper: renderPaperOrders가 참조. 화면 비노출, dayTradeStatus 갱신용 -->
+            <div class="session-list" id="paperOrders" hidden></div>
 
-            <div class="report-box">
-              <div class="report-head"><span>장마감 리포트</span><b id="kakaoReportStatus">리포트 대기</b></div>
-              <div class="slack-test-panel" aria-label="슬랙 연결 테스트">
-                <button type="button" data-slack-test="alert">긴급 테스트</button>
-                <button type="button" data-slack-test="report">리포트 테스트</button>
-                <button type="button" data-slack-test="log">운영로그 테스트</button>
-              </div>
-              <div class="report-list" id="marketReports">
-                <p>한국장/미국장 종료 후 자동 리포트를 준비합니다.</p>
-              </div>
-            </div>
             <button class="strategy-btn" data-open-page="quant">전략 설정 컨트롤타워 열기 <span>→</span></button>
           </article>
 
+          <!-- RIGHT-TOP: 실시간 분석현황 -->
           <article class="panel watch-panel">
             <div class="panel-header">
               <div><p class="eyebrow">LIVE ANALYSIS</p><h2>실시간 분석현황</h2></div>
-              <span class="status positive">● LIVE</span>
+              <span class="status live">● LIVE</span>
             </div>
             <div class="watch-table" id="holdingsTable">
               <div class="table-row table-head"><span>종목</span><span>현재가</span><span>분석 상태</span><span>판단 근거</span></div>
             </div>
-
             <div class="symbol-detail-card" id="symbolDetailCard">
               <div class="detail-empty">
                 <b>종목을 선택하면 기술적 분석이 열립니다</b>
@@ -195,8 +180,11 @@
             </div>
           </article>
 
-          <article class="long-term-card frame-card">
-            <h2>내 보유 장기투자 종목</h2>
+          <!-- RIGHT-BOTTOM: 장기투자 종목 -->
+          <article class="panel long-term-card">
+            <div class="panel-header compact">
+              <div><p class="eyebrow">LONG-TERM</p><h2>내 보유 장기투자 종목</h2></div>
+            </div>
             <div class="long-term-list" id="longTermHoldings">
               <div><b>나스닥</b><small>장기 지수투자</small><strong>보유 확인 중</strong></div>
               <div><b>에스앤피</b><small>장기 지수투자</small><strong>보유 확인 중</strong></div>
@@ -205,46 +193,57 @@
           </article>
         </div>
 
-        <section class="page-panel strategy-control-page" data-page-view="quant" aria-label="전략 설정 컨트롤타워">
+        <!-- ---------- QUANT LAB (page 2) ---------- -->
+        <section class="strategy-control-page" aria-label="전략 설정 컨트롤타워">
           <div class="strategy-page-head">
             <div>
               <p class="eyebrow accent">QUANT LAB</p>
               <h1>전략 설정 컨트롤타워</h1>
-              <p>단타 전략을 어떻게 운용 중인지 정리하고, AI 조언을 보고 활성화 여부를 결정합니다.</p>
+              <p>단타 전략 운용 상태를 정리하고, AI 조언을 보고 활성화 여부를 결정합니다.</p>
             </div>
-            <button class="strategy-btn back-btn" data-open-page="overview">Overview로 돌아가기 <span>→</span></button>
+            <button class="strategy-btn back-btn" data-open-page="overview"><span>←</span> Overview로 돌아가기</button>
+          </div>
+
+          <div class="slack-test-panel" aria-label="슬랙 연결 테스트">
+            <span class="slack-test-label">Slack 연결 테스트</span>
+            <button type="button" data-slack-test="alert">긴급 채널</button>
+            <button type="button" data-slack-test="report">리포트 채널</button>
+            <button type="button" data-slack-test="log">운영로그 채널</button>
           </div>
 
           <div class="strategy-control-board">
-            <div class="active-strategy-label">활성화된 전략</div>
+            <div class="strategy-board-head">
+              <span class="active-strategy-label">활성화된 전략</span>
+              <div class="strategy-col-labels"><span>전략</span><span>수익 유효성 판단</span><span>AI 조언</span><span>활성화</span></div>
+            </div>
             <div class="strategy-control-list" id="strategyTower">
               <div>
                 <b>1</b>
-                <strong>단타 추세 추종</strong>
-                <span>거래대금과 당일 추세가 동시에 붙는 종목만 후보로 올립니다.</span>
-                <em>AI 조언 대기</em>
-                <label><input type="checkbox" checked> 활성화</label>
+                <div class="strat-title"><strong>단타 추세 추종</strong><span>거래대금과 당일 추세가 동시에 붙는 종목만 후보로 올립니다.</span></div>
+                <em class="strat-judge">유효 · 신호 확인</em>
+                <em class="strat-ai">AI 조언 대기</em>
+                <label class="switch small"><input type="checkbox" checked><span></span></label>
               </div>
               <div>
                 <b>2</b>
-                <strong>손실 제한 방어</strong>
-                <span>일 손실선 -0.5%와 연속 손실 제한을 먼저 확인합니다.</span>
-                <em>AI 조언 대기</em>
-                <label><input type="checkbox" checked> 활성화</label>
+                <div class="strat-title"><strong>손실 제한 방어</strong><span>일 손실선 −0.5%와 연속 손실 제한을 먼저 확인합니다.</span></div>
+                <em class="strat-judge">유효 · 방어 정상</em>
+                <em class="strat-ai">AI 조언 대기</em>
+                <label class="switch small"><input type="checkbox" checked><span></span></label>
               </div>
               <div>
                 <b>3</b>
-                <strong>장마감 결산</strong>
-                <span>한국장과 미국장 종료 후 진입/보류 판단을 슬랙 리포트로 정리합니다.</span>
-                <em>AI 조언 대기</em>
-                <label><input type="checkbox" checked> 활성화</label>
+                <div class="strat-title"><strong>장마감 결산</strong><span>한국장·미국장 종료 후 진입/보류 판단을 슬랙 리포트로 정리합니다.</span></div>
+                <em class="strat-judge">유효 · 리포트 예약</em>
+                <em class="strat-ai">AI 조언 대기</em>
+                <label class="switch small"><input type="checkbox" checked><span></span></label>
               </div>
               <div>
                 <b>4</b>
-                <strong>장 전환 감시</strong>
-                <span>시간에 맞춰 한국장 → 미국장 분석 대상으로 자동 전환합니다.</span>
-                <em>AI 조언 대기</em>
-                <label><input type="checkbox" checked> 활성화</label>
+                <div class="strat-title"><strong>장 전환 감시</strong><span>시간에 맞춰 한국장 → 미국장 분석 대상으로 자동 전환합니다.</span></div>
+                <em class="strat-judge">유효 · 전환 대기</em>
+                <em class="strat-ai">AI 조언 대기</em>
+                <label class="switch small"><input type="checkbox" checked><span></span></label>
               </div>
             </div>
           </div>
