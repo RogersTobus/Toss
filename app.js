@@ -382,7 +382,7 @@ function renderScannerResults(items) {
 
 function renderPaperOrders(orders, market) {
   const list = document.querySelector("#paperOrders");
-  const recent = (orders || []).slice(-3).reverse();
+  const recent = (orders || []).slice(-5).reverse();
   if (!list) { renderDayTradeStatus(recent); return; }
   list.replaceChildren();
   recent.forEach((order) => {
@@ -414,10 +414,10 @@ function renderPaperOrders(orders, market) {
 function renderDayTradeStatus(orders) {
   const list = document.querySelector("#dayTradeStatus");
   if (!list) return;
-  const rows = (orders || []).slice(0, 3);
+  const rows = (orders || []).slice(0, 5);
   list.replaceChildren();
   if (!rows.length) {
-    ["대기", "대기", "대기"].forEach((name) => {
+    ["대기", "대기", "대기", "대기", "대기"].forEach((name) => {
       const row = document.createElement("div");
       row.innerHTML = `<b>${name}</b><span>분석 대기</span><strong>-</strong>`;
       list.append(row);
