@@ -1778,3 +1778,355 @@ main {
     display: none !important;
   }
 }
+
+/* Typography polish v4: make the control room feel calmer and easier to scan. */
+body {
+  font-size: 15px !important;
+  line-height: 1.5 !important;
+  letter-spacing: -0.012em;
+}
+
+.brand {
+  font-size: 16px !important;
+  letter-spacing: .18em !important;
+}
+
+.nav-item {
+  font-size: 15px !important;
+  font-weight: 700 !important;
+}
+
+.market-clock {
+  font-size: 14px !important;
+}
+
+.add-btn {
+  padding: 12px 18px !important;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+}
+
+.welcome h1 {
+  font-size: clamp(30px, 2.4vw, 40px) !important;
+  line-height: 1.08 !important;
+  letter-spacing: -0.055em !important;
+}
+
+.welcome p:last-child {
+  margin-top: 8px !important;
+  font-size: 15px !important;
+  line-height: 1.45 !important;
+}
+
+.eyebrow {
+  margin-bottom: 8px !important;
+  color: #95866c !important;
+  font-size: 11px !important;
+  letter-spacing: .18em !important;
+}
+
+.connection {
+  padding: 9px 13px !important;
+  border-radius: 10px !important;
+  font-size: 12px !important;
+  font-weight: 600 !important;
+}
+
+.connection b {
+  font-size: 12px !important;
+  font-weight: 800 !important;
+}
+
+.card-title {
+  font-size: 13px !important;
+  font-weight: 700 !important;
+}
+
+.content > .summary-grid.compact-summary .balance-card,
+.content > .summary-grid.compact-summary .daily-card,
+.content > .summary-grid.compact-summary .metric-card {
+  height: clamp(178px, 13.5vw, 230px) !important;
+  min-height: 178px !important;
+  padding: clamp(22px, 1.7vw, 30px) !important;
+  border-radius: 16px !important;
+}
+
+.content > .summary-grid.compact-summary .total-value {
+  margin-top: 14px !important;
+  font-size: clamp(42px, 3.6vw, 62px) !important;
+  line-height: .95 !important;
+}
+
+.gain {
+  font-size: 13px !important;
+}
+
+.gain span {
+  padding: 6px 10px !important;
+  border-radius: 7px !important;
+  font-size: 13px !important;
+  font-weight: 800 !important;
+}
+
+.content > .summary-grid.compact-summary .hero-chart {
+  height: clamp(94px, 7.4vw, 130px) !important;
+}
+
+.chart-range button {
+  font-size: 10px !important;
+  font-weight: 700 !important;
+}
+
+.content > .summary-grid.compact-summary .daily-card .metric-value {
+  margin-top: 18px !important;
+  font-size: clamp(36px, 2.8vw, 50px) !important;
+  line-height: 1 !important;
+}
+
+.metric-sub {
+  margin-top: 12px !important;
+  font-size: 14px !important;
+  font-weight: 800 !important;
+}
+
+.metric-note {
+  margin-top: 8px !important;
+  font-size: 12px !important;
+  line-height: 1.4 !important;
+}
+
+.status {
+  padding: 5px 9px !important;
+  border-radius: 7px !important;
+  font-size: 10px !important;
+  font-weight: 800 !important;
+}
+
+.content > .ops-status-strip {
+  gap: 14px !important;
+  margin: 18px 0 22px !important;
+}
+
+.content > .ops-status-strip > div {
+  min-height: 70px !important;
+  padding: 14px 16px !important;
+  border-radius: 14px !important;
+}
+
+.content > .ops-status-strip span {
+  font-size: 11px !important;
+  font-weight: 800 !important;
+}
+
+.content > .ops-status-strip b {
+  margin-top: 7px !important;
+  font-size: 15px !important;
+  font-weight: 800 !important;
+}
+
+.operations-grid {
+  gap: 24px !important;
+}
+
+.panel {
+  padding: clamp(24px, 1.8vw, 34px) !important;
+  border-radius: 18px !important;
+}
+
+.panel-header h2 {
+  font-size: clamp(22px, 1.6vw, 28px) !important;
+  line-height: 1.15 !important;
+  letter-spacing: -0.04em !important;
+}
+
+.bot-mode {
+  margin-top: 18px !important;
+  padding: 16px 18px !important;
+  border-radius: 14px !important;
+}
+
+.bot-mode b {
+  font-size: 16px !important;
+}
+
+.bot-mode span {
+  margin-top: 4px !important;
+  font-size: 13px !important;
+}
+
+.bot-mode em {
+  padding: 6px 9px !important;
+  border-radius: 7px !important;
+  font-size: 10px !important;
+  font-weight: 900 !important;
+}
+
+.decision-card {
+  padding: 18px !important;
+  border-radius: 15px !important;
+}
+
+.decision-card span,
+.risk-limit-head span,
+.section-kicker,
+.section-kicker b,
+.report-head span,
+.report-head b {
+  font-size: 12px !important;
+}
+
+.decision-card strong {
+  font-size: clamp(26px, 2vw, 34px) !important;
+}
+
+.decision-card p,
+.decision-action b {
+  font-size: 14px !important;
+  line-height: 1.5 !important;
+}
+
+.risk-limit-box,
+.safety-panel,
+.report-box,
+.symbol-detail-card {
+  padding: 16px !important;
+  border-radius: 15px !important;
+}
+
+.risk-limit-head b,
+.risk-limit-meta,
+.risk-head,
+.risk-row p {
+  font-size: 12px !important;
+}
+
+.safety-chip {
+  padding: 7px 10px !important;
+  border-radius: 999px !important;
+}
+
+.safety-chip b,
+.safety-chip em {
+  font-size: 12px !important;
+}
+
+.strategy-settings-inline label {
+  min-height: 38px !important;
+  padding: 8px 10px !important;
+  border-radius: 10px !important;
+}
+
+.strategy-settings-inline span,
+.strategy-settings-inline input,
+.strategy-settings-inline em {
+  font-size: 12px !important;
+}
+
+.mini-save-btn,
+.strategy-btn {
+  font-size: 13px !important;
+  font-weight: 800 !important;
+}
+
+.bot-stats.trading-profit-stats > div,
+.bot-insights > div {
+  padding: 14px 15px !important;
+  border-radius: 14px !important;
+}
+
+.stat-tile span,
+.bot-insights span {
+  font-size: 12px !important;
+}
+
+.stat-tile strong {
+  font-size: 18px !important;
+}
+
+.stat-tile small,
+.bot-insights b {
+  font-size: 13px !important;
+}
+
+.watch-panel .table-row {
+  min-height: 58px !important;
+  font-size: 14px !important;
+}
+
+.watch-panel .table-head {
+  min-height: 34px !important;
+  font-size: 12px !important;
+}
+
+.table-row small,
+.analysis-reason,
+.detail-empty span,
+.report-list p,
+.report-item small {
+  font-size: 12px !important;
+  line-height: 1.45 !important;
+}
+
+.ticker {
+  width: 34px !important;
+  height: 34px !important;
+  border-radius: 10px !important;
+  font-size: 14px !important;
+  font-weight: 800 !important;
+}
+
+.signal,
+.report-item span,
+.report-item b {
+  font-size: 13px !important;
+}
+
+.detail-empty b {
+  font-size: 18px !important;
+}
+
+@media (max-width: 1320px) {
+  .content > .summary-grid.compact-summary .total-value {
+    font-size: clamp(36px, 5vw, 54px) !important;
+  }
+
+  .content > .summary-grid.compact-summary .daily-card .metric-value {
+    font-size: clamp(30px, 4vw, 44px) !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .welcome h1 {
+    font-size: 30px !important;
+  }
+
+  .content > .summary-grid.compact-summary .balance-card,
+  .content > .summary-grid.compact-summary .daily-card,
+  .content > .summary-grid.compact-summary .metric-card {
+    height: auto !important;
+    min-height: 170px !important;
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    font-size: 14px !important;
+  }
+
+  .connection-stack {
+    gap: 8px !important;
+  }
+
+  .connection {
+    width: 100% !important;
+  }
+
+  .panel {
+    padding: 18px !important;
+  }
+
+  .watch-panel .table-row {
+    min-height: auto !important;
+    padding: 12px 0 !important;
+  }
+}
