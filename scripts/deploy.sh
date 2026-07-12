@@ -47,9 +47,11 @@ PY
 
 if [ "$(id -u)" -eq 0 ]; then
   git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+  git config --system --add safe.directory "$APP_DIR" 2>/dev/null || true
 else
   git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
   sudo git config --global --add safe.directory "$APP_DIR" 2>/dev/null || true
+  sudo git config --system --add safe.directory "$APP_DIR" 2>/dev/null || true
 fi
 
 cd "$APP_DIR"
