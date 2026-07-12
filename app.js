@@ -396,9 +396,9 @@ function renderDayTradeStatus(orders) {
   const rows = (orders || []).slice(0, 3);
   list.replaceChildren();
   if (!rows.length) {
-    ["종목", "종목", "종목"].forEach((name) => {
+    ["대기", "대기", "대기"].forEach((name) => {
       const row = document.createElement("div");
-      row.innerHTML = `<b>${name}</b><span>현재 상태</span><strong>현재 수익률</strong>`;
+      row.innerHTML = `<b>${name}</b><span>분석 대기</span><strong>-</strong>`;
       list.append(row);
     });
     return;
