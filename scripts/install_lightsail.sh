@@ -24,8 +24,11 @@ sudo cp "$APP_DIR/scripts/toss-autodeploy.service" /etc/systemd/system/toss-auto
 sudo cp "$APP_DIR/scripts/toss-autodeploy.timer" /etc/systemd/system/toss-autodeploy.timer
 
 sudo systemctl daemon-reload
+sudo systemctl reset-failed toss.service toss-autodeploy.service || true
 sudo systemctl enable --now toss.service
 sudo systemctl enable --now toss-autodeploy.timer
+sudo systemctl restart toss.service
+sudo systemctl restart toss-autodeploy.timer
 
 echo "Toss service is installed."
 echo "App:     sudo systemctl status toss.service"

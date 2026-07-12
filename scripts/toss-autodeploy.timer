@@ -3,8 +3,9 @@ Description=Check GitHub for Toss updates every minute
 
 [Timer]
 OnBootSec=30
-OnUnitActiveSec=60
+OnCalendar=*:0/1
 AccuracySec=10
+Persistent=true
 Unit=toss-autodeploy.service
 
 [Install]

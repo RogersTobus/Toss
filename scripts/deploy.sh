@@ -4,28 +4,69 @@ set -euo pipefail
 APP_DIR="${APP_DIR:-/home/ubuntu/Toss}"
 BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-toss.service}"
+AUTODEPLOY_SERVICE="${AUTODEPLOY_SERVICE:-toss-autodeploy.service}"
+AUTODEPLOY_TIMER="${AUTODEPLOY_TIMER:-toss-autodeploy.timer}"
+
+log() {
+  printf '[%s] %s\n' "$(date -Is)" "$*"
+}
+
+run_systemctl() {
+  if [ "$(id -u)" -eq 0 ]; then
+    systemctl "$@"
+  else
+    sudo systemctl "$@"
+  fi
+}
 
 cd "$APP_DIR"
 
+log "Checking GitHub updates in $APP_DIR on branch $BRANCH"
 git fetch origin "$BRANCH"
 
 LOCAL_COMMIT="$(git rev-parse HEAD)"
 REMOTE_COMMIT="$(git rev-parse "origin/$BRANCH")"
 
+log "Local commit:  $LOCAL_COMMIT"
+log "Remote commit: $REMOTE_COMMIT"
+
 if [ "$LOCAL_COMMIT" = "$REMOTE_COMMIT" ]; then
-  echo "Toss is already up to date: $LOCAL_COMMIT"
+  log "Toss is already up to date."
   exit 0
+fi
+
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  log "Local working tree has uncommitted changes. Auto deploy stopped to avoid overwriting local edits."
+  git status --short
+  exit 1
+fi
+
+if ! git merge-base --is-ancestor "$LOCAL_COMMIT" "$REMOTE_COMMIT"; then
+  log "Local branch cannot fast-forward to origin/$BRANCH. Manual review is required."
+  exit 1
 fi
 
 git pull --ff-only origin "$BRANCH"
 
-if [ "$(id -u)" -eq 0 ]; then
-  systemctl restart "$SERVICE_NAME"
-else
-  sudo systemctl restart "$SERVICE_NAME"
+if [ -f "$APP_DIR/scripts/toss.service" ] && [ -f "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" ] && [ -f "$APP_DIR/scripts/$AUTODEPLOY_TIMER" ]; then
+  log "Refreshing systemd unit files."
+  if [ "$(id -u)" -eq 0 ]; then
+    cp "$APP_DIR/scripts/toss.service" /etc/systemd/system/toss.service
+    cp "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" "/etc/systemd/system/$AUTODEPLOY_SERVICE"
+    cp "$APP_DIR/scripts/$AUTODEPLOY_TIMER" "/etc/systemd/system/$AUTODEPLOY_TIMER"
+  else
+    sudo cp "$APP_DIR/scripts/toss.service" /etc/systemd/system/toss.service
+    sudo cp "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" "/etc/systemd/system/$AUTODEPLOY_SERVICE"
+    sudo cp "$APP_DIR/scripts/$AUTODEPLOY_TIMER" "/etc/systemd/system/$AUTODEPLOY_TIMER"
+  fi
+  run_systemctl daemon-reload
+  run_systemctl enable "$AUTODEPLOY_TIMER"
 fi
 
-echo "Toss deployed: $REMOTE_COMMIT"
+run_systemctl restart "$SERVICE_NAME"
+run_systemctl restart "$AUTODEPLOY_TIMER"
+
+log "Toss deployed: $REMOTE_COMMIT"
 
 python3 - "$LOCAL_COMMIT" "$REMOTE_COMMIT" <<'PY'
 import json
