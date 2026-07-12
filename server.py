@@ -7,6 +7,7 @@ portfolio data and never receives the OAuth access token or account number.
 from __future__ import annotations
 
 import json
+import hashlib
 import mimetypes
 import os
 import subprocess
@@ -243,16 +244,17 @@ def post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None 
 
 def load_report_state() -> dict[str, Any]:
     if not REPORT_PATH.exists():
-        return {"sentKeys": [], "reports": [], "lastActiveMarket": None}
+        return {"sentKeys": [], "reports": [], "lastActiveMarket": None, "lastOperationReportKey": None}
     try:
         data = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
         return {
             "sentKeys": data.get("sentKeys") or [],
             "reports": data.get("reports") or [],
             "lastActiveMarket": data.get("lastActiveMarket"),
+            "lastOperationReportKey": data.get("lastOperationReportKey"),
         }
     except (json.JSONDecodeError, OSError):
-        return {"sentKeys": [], "reports": [], "lastActiveMarket": None}
+        return {"sentKeys": [], "reports": [], "lastActiveMarket": None, "lastOperationReportKey": None}
 
 
 def save_report_state(state: dict[str, Any]) -> None:
@@ -438,7 +440,11 @@ def test_slack_channel(channel: str) -> dict[str, Any]:
 def handle_paper_alert(env: dict[str, str], market: str | None, summary: dict[str, Any]) -> None:
     if not market or not summary.get("locked") or not slack_enabled(env, "alert"):
         return
+    stop_rate = decimal(summary.get("stopRate"))
+    current_rate = decimal(summary.get("averageReturn"))
     reason = str(summary.get("lockReason") or "오늘 거래 잠금")
+    if not (current_rate <= stop_rate or "손실" in reason or "중지" in reason):
+        return
     today = datetime.now().astimezone().strftime("%Y-%m-%d")
     key = f"paper-alert-{today}-{market}-{reason}"
     state = load_report_state()
@@ -462,6 +468,36 @@ def handle_paper_alert(env: dict[str, str], market: str | None, summary: dict[st
         save_report_state(state)
     except TossApiError:
         # Alert delivery must not stop the market analysis loop.
+        pass
+
+
+def handle_problem_alert(env: dict[str, str], error: Exception) -> None:
+    if not slack_enabled(env, "alert"):
+        return
+    now = datetime.now().astimezone()
+    message = str(error) or error.__class__.__name__
+    digest = hashlib.sha1(message.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    minute_slot = (now.minute // 10) * 10
+    key = f"problem-alert-{now.strftime('%Y-%m-%d')}-{now.hour:02d}{minute_slot:02d}-{digest}"
+    state = load_report_state()
+    sent_keys = set(state.get("sentKeys") or [])
+    if key in sent_keys:
+        return
+    text = "\n".join(
+        [
+            ":rotating_light: *Orbit 문제 발생*",
+            f"시간: {now.strftime('%Y-%m-%d %H:%M %Z')}",
+            "영향: 실시간 분석/모의 단타 판단이 지연될 수 있음",
+            f"오류: {message[:500]}",
+            "자동 조치: 다음 루프에서 재시도",
+        ]
+    )
+    try:
+        send_slack("alert", text)
+        sent_keys.add(key)
+        state["sentKeys"] = list(sent_keys)
+        save_report_state(state)
+    except TossApiError:
         pass
 
 
@@ -545,6 +581,86 @@ def handle_market_close_report(
     state["reports"] = reports[-30:]
     save_report_state(state)
     return state["reports"], status
+
+
+def operation_report_interval_minutes(env: dict[str, str]) -> int:
+    try:
+        minutes = int(str(env.get("SLACK_OPERATION_REPORT_INTERVAL_MINUTES", "30")).strip() or "30")
+    except ValueError:
+        minutes = 30
+    return max(5, min(60, minutes))
+
+
+def build_operation_report(
+    market: str,
+    session: str,
+    results: list[dict[str, Any]],
+    orders: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> str:
+    now = datetime.now().astimezone()
+    market_name = "한국장" if market == "KR" else "미국장" if market == "US" else market
+    period = summary.get("periodReturns") or {}
+    today = period.get("today") or {}
+    decision = summary.get("decision") or {}
+    top_candidates = [
+        item for item in results
+        if str(item.get("verdict") or "").strip()
+    ][:3]
+    candidate_lines = []
+    for item in top_candidates:
+        name = str(item.get("name") or item.get("symbol") or "-")
+        verdict = str(item.get("verdict") or "분석 중")
+        reason = str(item.get("reason") or "근거 수집 중")
+        candidate_lines.append(f"- {name}: {verdict} · {reason}")
+    if not candidate_lines:
+        candidate_lines.append("- 후보 없음: 현재는 관망 구간")
+
+    return "\n".join(
+        [
+            ":bar_chart: *Orbit 30분 운영 중간보고*",
+            f"시장: {market_name} · {session}",
+            f"시간: {now.strftime('%Y-%m-%d %H:%M %Z')}",
+            "",
+            f"오늘 단타 손익: {money(today.get('profitKrw'))} ({percent(today.get('returnRate'))})",
+            f"보유 포지션: {summary.get('openPositionCount', 0)}개",
+            f"오늘 진입: {summary.get('todayOrderCount', 0)}건",
+            f"운용 판단: {decision.get('mode') or '분석 중'}",
+            f"다음 행동: {decision.get('action') or '시장 강도 확인'}",
+            "",
+            "실시간 분석 요약:",
+            *candidate_lines,
+            "",
+            f"서버 상태: 정상 · 분석 루프 {len(results)}개 후보 확인",
+        ]
+    )
+
+
+def handle_operation_report(
+    env: dict[str, str],
+    market: str | None,
+    session: str,
+    results: list[dict[str, Any]],
+    orders: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> None:
+    if market not in ("KR", "US") or not slack_enabled(env, "log"):
+        return
+    interval = operation_report_interval_minutes(env)
+    now = datetime.now().astimezone()
+    minute_slot = (now.minute // interval) * interval if interval < 60 else 0
+    hour_slot = now.hour
+    key = f"operation-{now.strftime('%Y-%m-%d')}-{market}-{hour_slot:02d}{minute_slot:02d}"
+    state = load_report_state()
+    if state.get("lastOperationReportKey") == key:
+        return
+    try:
+        send_slack("log", build_operation_report(market, session, results, orders, summary))
+        state["lastOperationReportKey"] = key
+        save_report_state(state)
+    except TossApiError:
+        # Operational reporting must never interrupt analysis or paper trading.
+        pass
 
 
 def get_token(env: dict[str, str], force_refresh: bool = False) -> str:
@@ -1143,6 +1259,7 @@ def analysis_loop() -> None:
                 reports, report_status = handle_market_close_report(
                     previous_market, current_market, env, orders, paper_stats
                 )
+                handle_operation_report(env, current_market, session, results, orders, paper_stats)
                 with ANALYSIS_LOCK:
                     ANALYSIS["cycle"] += 1
                     ANALYSIS["lastRunAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -1155,6 +1272,10 @@ def analysis_loop() -> None:
                     ANALYSIS["reports"] = reports[-5:]
                     ANALYSIS["reportStatus"] = report_status
             except Exception as exc:
+                try:
+                    handle_problem_alert(load_env(), exc)
+                except Exception:
+                    pass
                 with ANALYSIS_LOCK:
                     ANALYSIS["lastError"] = str(exc)
         time.sleep(30)
@@ -1371,7 +1492,3 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
-
-
-
