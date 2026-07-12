@@ -46,6 +46,64 @@ DEFAULT_STRATEGY_CONFIG = {
     "maxOpenPositions": PAPER_MAX_OPEN_POSITIONS,
     "maxConsecutiveLosses": PAPER_MAX_CONSECUTIVE_LOSSES,
 }
+DEFAULT_STRATEGIES = [
+    {
+        "id": "liquidity-momentum-filter",
+        "title": "유동성·모멘텀 후보 필터",
+        "description": "한국·미국 주식/ETF/ADR 중 거래대금, 당일 상승률, 최소 가격, 스프레드, 상대 거래량, 돌파 유지 조건을 통과한 종목만 후보로 올립니다.",
+        "judge": "필수조건 통과 전에는 진입 금지",
+        "enabled": True,
+    },
+    {
+        "id": "score-entry-80",
+        "title": "100점 평가·80점 이상 진입",
+        "description": "필수조건 통과 종목을 거래대금 강도, 상대 거래량, 돌파 유지, 시장 상태, 호가 품질로 점수화하고 80점 이상만 점수순으로 진입합니다.",
+        "judge": "점수 높은 종목 우선",
+        "enabled": True,
+    },
+    {
+        "id": "hard-stop-loss",
+        "title": "−0.5% 절대 손절",
+        "description": "평균 체결가 대비 −0.5%에 닿으면 즉시 전량 청산하고 손절선을 불리한 방향으로 옮기거나 물타기하지 않습니다.",
+        "judge": "자본 보호 최우선",
+        "enabled": True,
+    },
+    {
+        "id": "profit-trailing",
+        "title": "+1% 부분익절·추적손절",
+        "description": "+1% 도달 시 50%를 익절하고, 잔여 물량은 고점 대비 −0.5% 추적손절로 관리합니다.",
+        "judge": "정상 수익은 +1% 이상",
+        "enabled": True,
+    },
+    {
+        "id": "three-minute-exit",
+        "title": "3분 시간청산",
+        "description": "진입 후 3분 안에 의미 있는 상승이 없거나 돌파·VWAP·거래량 논리가 무너지면 청산합니다.",
+        "judge": "기회비용 관리",
+        "enabled": True,
+    },
+    {
+        "id": "daily-risk-kill-switch",
+        "title": "일일 통합 리스크 차단",
+        "description": "통합계좌 손실 −0.8%에서 신규 진입을 멈추고, −1.0% 도달 시 미체결 취소 및 포지션 정리를 우선합니다.",
+        "judge": "한국·미국 손실 예산 통합",
+        "enabled": True,
+    },
+    {
+        "id": "reentry-cooldown",
+        "title": "재진입·연속 손절 제한",
+        "description": "동일 종목 재진입은 당일 1회로 제한하고, 2회 연속 손절 시 10분간 해당 시장 신규 진입을 중단합니다.",
+        "judge": "복수 손실 방지",
+        "enabled": True,
+    },
+    {
+        "id": "overnight-extended-session",
+        "title": "익일 보유·시간외 분리",
+        "description": "익일 보유와 미국 시간외 전략은 정규장 검증 후 별도 전략으로 관리하며, 초기에는 보수적으로 비활성/관찰합니다.",
+        "judge": "검증 후 단계적 활성화",
+        "enabled": False,
+    },
+]
 ANALYSIS_LOCK = threading.Lock()
 ANALYSIS: dict[str, Any] = {
     "enabled": True,
@@ -78,13 +136,43 @@ def clamp(value: Any, low: float, high: float, fallback: float) -> float:
     return max(low, min(high, number))
 
 
+def clean_text(value: Any, fallback: str, limit: int = 260) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return fallback
+    return text[:limit]
+
+
+def normalize_strategies(raw: Any = None) -> list[dict[str, Any]]:
+    stored_by_id = {}
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and item.get("id"):
+                stored_by_id[str(item.get("id"))] = item
+    strategies: list[dict[str, Any]] = []
+    for base in DEFAULT_STRATEGIES:
+        stored = stored_by_id.get(str(base["id"]), {})
+        strategies.append(
+            {
+                "id": base["id"],
+                "title": clean_text(stored.get("title"), str(base["title"]), 80),
+                "description": clean_text(stored.get("description"), str(base["description"]), 360),
+                "judge": clean_text(stored.get("judge"), str(base["judge"]), 120),
+                "enabled": bool(stored.get("enabled", base["enabled"])),
+            }
+        )
+    return strategies
+
+
 def strategy_config() -> dict[str, Any]:
     config = dict(DEFAULT_STRATEGY_CONFIG)
+    stored_strategies = None
     if STRATEGY_CONFIG_PATH.exists():
         try:
             stored = json.loads(STRATEGY_CONFIG_PATH.read_text(encoding="utf-8"))
             if isinstance(stored, dict):
                 config.update(stored)
+                stored_strategies = stored.get("strategies")
         except (OSError, json.JSONDecodeError):
             pass
     return {
@@ -93,6 +181,7 @@ def strategy_config() -> dict[str, Any]:
         "maxDailyOrders": int(clamp(config.get("maxDailyOrders"), 1, 20, PAPER_MAX_DAILY_ORDERS)),
         "maxOpenPositions": int(clamp(config.get("maxOpenPositions"), 1, 20, PAPER_MAX_OPEN_POSITIONS)),
         "maxConsecutiveLosses": int(clamp(config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
+        "strategies": normalize_strategies(stored_strategies),
     }
 
 
@@ -108,8 +197,61 @@ def save_strategy_config(payload: dict[str, Any]) -> dict[str, Any]:
         current["maxOpenPositions"] = int(clamp(payload.get("maxOpenPositions"), 1, 20, current["maxOpenPositions"]))
     if "maxConsecutiveLosses" in payload:
         current["maxConsecutiveLosses"] = int(clamp(payload.get("maxConsecutiveLosses"), 1, 10, current["maxConsecutiveLosses"]))
+    if isinstance(payload.get("strategies"), list):
+        current["strategies"] = normalize_strategies(payload.get("strategies"))
     STRATEGY_CONFIG_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
     return current
+
+
+def strategy_ai_advice(strategy: dict[str, Any], analysis: dict[str, Any] | None = None) -> str:
+    analysis = analysis or {}
+    summary = analysis.get("paperSummary") or {}
+    decision = summary.get("decision") or {}
+    results = analysis.get("results") or []
+    verdict_counts: dict[str, int] = {}
+    for item in results:
+        verdict = str(item.get("verdict") or "분석 중")
+        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+    active_market = str(analysis.get("activeMarket") or "CLOSED")
+    avg = decimal(summary.get("averageReturn"))
+    open_positions = int(summary.get("openPositionCount") or 0)
+    today_orders = int(summary.get("todayOrderCount") or 0)
+    sid = str(strategy.get("id"))
+
+    if not strategy.get("enabled"):
+        return "비활성 상태입니다. 검증 결과가 충분할 때만 다시 켜세요."
+    if analysis.get("lastError"):
+        return "분석 오류가 있어 전략 변경보다 API/서버 상태 확인이 먼저입니다."
+    if active_market == "CLOSED":
+        return "현재 시장 휴장입니다. 다음 장에서는 기존 기준을 유지하고 결과만 관찰하세요."
+    if sid == "liquidity-momentum-filter":
+        return f"후보 {len(results)}개 중 정밀 분석 {verdict_counts.get('정밀 분석', 0)}개입니다. 후보가 적으면 필터 완화보다 거래대금 품질 유지가 우선입니다."
+    if sid == "score-entry-80":
+        return "장중 추세가 강한 종목만 선별하세요. 100건 검증 전에는 80점 기준을 낮추지 않는 편이 안전합니다."
+    if sid == "hard-stop-loss":
+        return f"현재 평균 손익 {percent(avg)}입니다. 손실선은 전략의 안전벨트라 완화하지 않는 게 좋습니다."
+    if sid == "profit-trailing":
+        return "수익은 +1%부터 확인하고, 잔여 물량은 추적손절로 시장에 맡기는 흐름이 좋습니다."
+    if sid == "three-minute-exit":
+        return f"오늘 진입 {today_orders}건입니다. 진입 후 힘이 없으면 빨리 회수해 다음 후보로 넘기는 구조를 유지하세요."
+    if sid == "daily-risk-kill-switch":
+        return str(decision.get("action") or "일일 손실 예산을 넘기지 않는 것이 내일도 매매할 권리를 지킵니다.")
+    if sid == "reentry-cooldown":
+        return f"보유 {open_positions}개입니다. 손절 후 즉시 재진입보다 10분 대기가 과매매를 줄입니다."
+    if sid == "overnight-extended-session":
+        return "시간외·익일 보유는 스프레드와 유동성 리스크가 커서 정규장 모의 100건 이후 분리 검증하세요."
+    return "현재 추세를 관찰하면서 한 번에 한 변수만 바꾸는 방식이 좋습니다."
+
+
+def strategy_payload() -> dict[str, Any]:
+    config = strategy_config()
+    analysis = analysis_snapshot()
+    strategies = []
+    for item in config.get("strategies") or []:
+        row = dict(item)
+        row["aiAdvice"] = strategy_ai_advice(row, analysis)
+        strategies.append(row)
+    return {"config": config, "strategies": strategies}
 def load_env() -> dict[str, str]:
     values: dict[str, str] = {}
     path = ROOT / ".env"
@@ -1214,14 +1356,26 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
     for row in rows:
         price = row.get("price") or {}
         rate = decimal(price.get("changeRate"))
-        if rate >= 0.12 or rate <= -0.08:
-            verdict, reason = "진입 불가", "급등락 추격 위험"
-        elif 0.02 <= rate < 0.12:
-            verdict, reason = "정밀 분석", "거래대금·상승 추세"
-        elif -0.03 < rate < 0.02:
-            verdict, reason = "관찰", "방향성 확인 필요"
+        rank = int(row.get("rank") or 30)
+        liquidity_score = max(0, 40 - ((rank - 1) * 1.2))
+        if 0.02 <= rate < 0.12:
+            momentum_score = 35
+        elif 0 <= rate < 0.02:
+            momentum_score = 20
+        elif rate >= 0.12:
+            momentum_score = 10
         else:
-            verdict, reason = "진입 보류", "하락 추세"
+            momentum_score = 5
+        stability_score = 25 if -0.03 < rate < 0.12 else 8
+        score = round(min(100, liquidity_score + momentum_score + stability_score))
+        if rate >= 0.12 or rate <= -0.08:
+            verdict, reason = "진입 불가", f"급등락 추격 위험 · 평가 {score}점"
+        elif score >= 80:
+            verdict, reason = "정밀 분석", f"80점 이상 · 거래대금·상승 추세 평가 {score}점"
+        elif score >= 60:
+            verdict, reason = "관찰", f"방향성 확인 필요 · 평가 {score}점"
+        else:
+            verdict, reason = "진입 보류", f"전략 기준 미달 · 평가 {score}점"
         results.append(
             {
                 "rank": row.get("rank"),
@@ -1231,6 +1385,7 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
                 "lastPrice": price.get("lastPrice"),
                 "dailyRate": rate,
                 "tradingAmount": row.get("tradingAmount"),
+                "score": score,
                 "verdict": verdict,
                 "reason": reason,
             }
@@ -1410,7 +1565,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(health_status())
             return
         if path == "/api/strategy/config":
-            self.send_json({"config": strategy_config()})
+            self.send_json(strategy_payload())
             return
         if path == "/api/kakao/auth-url":
             try:
@@ -1474,7 +1629,9 @@ class Handler(BaseHTTPRequestHandler):
                 with ANALYSIS_LOCK:
                     results = list(ANALYSIS.get("results") or [])
                     ANALYSIS["paperSummary"] = paper_summary(orders, results)
-                self.send_json({"config": config, "paperSummary": analysis_snapshot().get("paperSummary")})
+                payload = strategy_payload()
+                payload["paperSummary"] = analysis_snapshot().get("paperSummary")
+                self.send_json(payload)
             except TossApiError as exc:
                 self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
             return

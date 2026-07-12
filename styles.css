@@ -421,11 +421,23 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
 }
 .strategy-control-list > div > b { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 8px; background: var(--gold-tint); color: var(--gold-deep); font-size: 13px; font-weight: 700; }
 .strat-title { display: grid; gap: 3px; min-width: 0; }
-.strat-title strong { font-size: 14px; font-weight: 600; }
-.strat-title span { font-size: 11px; color: var(--muted); line-height: 1.4; }
-.strat-judge, .strat-ai { font-style: normal; font-size: 11px; padding: 6px 10px; border-radius: 7px; text-align: center; }
+.strat-title-input, .strat-desc-input, .strat-judge {
+  width: 100%; min-width: 0; resize: vertical; border: 1px solid transparent; outline: none;
+  border-radius: 8px; background: transparent; color: var(--ink); font-family: inherit;
+}
+.strat-title-input { min-height: 28px; font-size: 14px; font-weight: 700; letter-spacing: -.02em; padding: 4px 6px; }
+.strat-desc-input { min-height: 44px; font-size: 11px; color: var(--muted); line-height: 1.45; padding: 4px 6px; }
+.strat-title-input:focus, .strat-desc-input:focus, .strat-judge:focus { background: var(--panel); border-color: var(--gold-soft); }
+.strat-judge, .strat-ai { font-style: normal; font-size: 11px; padding: 8px 10px; border-radius: 7px; text-align: left; line-height: 1.45; }
 .strat-judge { background: var(--green-tint); color: var(--green); font-weight: 600; }
 .strat-ai { background: var(--panel); color: var(--muted); border: 1px dashed var(--line); }
+.strategy-empty { display: block !important; color: var(--muted); font-size: 13px; padding: 20px; text-align: center; }
+.strategy-board-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line);
+}
+.strategy-board-actions small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+.strategy-board-actions .strategy-btn { margin: 0; white-space: nowrap; }
 
 /* ---------- 13. Controls (switch / toast) ---------- */
 .switch { position: relative; display: inline-block; width: 44px; height: 26px; flex: 0 0 auto; }

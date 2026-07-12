@@ -219,34 +219,11 @@
               <div class="strategy-col-labels"><span>전략</span><span>수익 유효성 판단</span><span>AI 조언</span><span>활성화</span></div>
             </div>
             <div class="strategy-control-list" id="strategyTower">
-              <div>
-                <b>1</b>
-                <div class="strat-title"><strong>단타 추세 추종</strong><span>거래대금과 당일 추세가 동시에 붙는 종목만 후보로 올립니다.</span></div>
-                <em class="strat-judge">유효 · 신호 확인</em>
-                <em class="strat-ai">AI 조언 대기</em>
-                <label class="switch small"><input type="checkbox" checked><span></span></label>
-              </div>
-              <div>
-                <b>2</b>
-                <div class="strat-title"><strong>손실 제한 방어</strong><span>일 손실선 −0.5%와 연속 손실 제한을 먼저 확인합니다.</span></div>
-                <em class="strat-judge">유효 · 방어 정상</em>
-                <em class="strat-ai">AI 조언 대기</em>
-                <label class="switch small"><input type="checkbox" checked><span></span></label>
-              </div>
-              <div>
-                <b>3</b>
-                <div class="strat-title"><strong>장마감 결산</strong><span>한국장·미국장 종료 후 진입/보류 판단을 슬랙 리포트로 정리합니다.</span></div>
-                <em class="strat-judge">유효 · 리포트 예약</em>
-                <em class="strat-ai">AI 조언 대기</em>
-                <label class="switch small"><input type="checkbox" checked><span></span></label>
-              </div>
-              <div>
-                <b>4</b>
-                <div class="strat-title"><strong>장 전환 감시</strong><span>시간에 맞춰 한국장 → 미국장 분석 대상으로 자동 전환합니다.</span></div>
-                <em class="strat-judge">유효 · 전환 대기</em>
-                <em class="strat-ai">AI 조언 대기</em>
-                <label class="switch small"><input type="checkbox" checked><span></span></label>
-              </div>
+              <div class="strategy-empty">전략 설정을 불러오는 중입니다.</div>
+            </div>
+            <div class="strategy-board-actions">
+              <small>텍스트를 수정하고 저장하면 다음 분석부터 이 문구를 기준으로 관리합니다.</small>
+              <button type="button" class="strategy-btn" id="strategySaveBtn">전략 저장 <span>→</span></button>
             </div>
           </div>
         </section>

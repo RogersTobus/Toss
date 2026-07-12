@@ -5,6 +5,7 @@ let scannerEnabled = false;
 let liveMarketSession = null;
 let selectedAnalysisItem = null;
 let appVersion = null;
+let currentStrategies = [];
 
 function signedWon(value) {
   const amount = Number(value || 0);
@@ -172,17 +173,100 @@ function renderStrategyConfig(config = {}) {
     const input = document.querySelector(selector);
     if (input && document.activeElement !== input) input.value = value;
   });
+  if (Array.isArray(config.strategies)) renderStrategyTower(config.strategies);
 }
 
 function readStrategyConfigForm() {
-  const value = (selector) => Number(document.querySelector(selector)?.value || 0);
-  return {
-    targetRate: value("#cfgTargetRate") / 100,
-    stopRate: value("#cfgStopRate") / 100,
-    maxDailyOrders: value("#cfgMaxDailyOrders"),
-    maxOpenPositions: value("#cfgMaxOpenPositions"),
-    maxConsecutiveLosses: value("#cfgMaxLosses"),
+  const payload = { strategies: readStrategyTower() };
+  const value = (selector) => {
+    const input = document.querySelector(selector);
+    return input ? Number(input.value || 0) : null;
   };
+  const targetRate = value("#cfgTargetRate");
+  const stopRate = value("#cfgStopRate");
+  const maxDailyOrders = value("#cfgMaxDailyOrders");
+  const maxOpenPositions = value("#cfgMaxOpenPositions");
+  const maxLosses = value("#cfgMaxLosses");
+  if (targetRate !== null) payload.targetRate = targetRate / 100;
+  if (stopRate !== null) payload.stopRate = stopRate / 100;
+  if (maxDailyOrders !== null) payload.maxDailyOrders = maxDailyOrders;
+  if (maxOpenPositions !== null) payload.maxOpenPositions = maxOpenPositions;
+  if (maxLosses !== null) payload.maxConsecutiveLosses = maxLosses;
+  return payload;
+}
+
+function renderStrategyTower(strategies = []) {
+  const list = document.querySelector("#strategyTower");
+  if (!list) return;
+  currentStrategies = strategies.map((item) => ({ ...item }));
+  list.replaceChildren();
+  if (!currentStrategies.length) {
+    const empty = document.createElement("div");
+    empty.className = "strategy-empty";
+    empty.textContent = "전략 설정을 불러오지 못했습니다.";
+    list.append(empty);
+    return;
+  }
+  currentStrategies.forEach((strategy, index) => {
+    const row = document.createElement("div");
+    row.className = "strategy-row";
+    row.dataset.strategyId = strategy.id;
+
+    const numberCell = document.createElement("b");
+    numberCell.textContent = String(index + 1);
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "strat-title";
+    const title = document.createElement("textarea");
+    title.className = "strat-title-input";
+    title.rows = 1;
+    title.value = strategy.title || "";
+    title.setAttribute("aria-label", "전략 제목");
+    const description = document.createElement("textarea");
+    description.className = "strat-desc-input";
+    description.rows = 2;
+    description.value = strategy.description || "";
+    description.setAttribute("aria-label", "전략 설명");
+    titleWrap.append(title, description);
+
+    const judge = document.createElement("textarea");
+    judge.className = "strat-judge";
+    judge.rows = 2;
+    judge.value = strategy.judge || "";
+    judge.setAttribute("aria-label", "수익 유효성 판단");
+
+    const ai = document.createElement("em");
+    ai.className = "strat-ai";
+    ai.textContent = strategy.aiAdvice || "AI 조언 대기";
+
+    const toggle = document.createElement("label");
+    toggle.className = "switch small";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = strategy.enabled !== false;
+    const slider = document.createElement("span");
+    toggle.append(checkbox, slider);
+
+    row.append(numberCell, titleWrap, judge, ai, toggle);
+    list.append(row);
+  });
+}
+
+function readStrategyTower() {
+  const rows = [...document.querySelectorAll("#strategyTower .strategy-row")];
+  if (!rows.length) return currentStrategies;
+  return rows.map((row) => ({
+    id: row.dataset.strategyId,
+    title: row.querySelector(".strat-title-input")?.value || "",
+    description: row.querySelector(".strat-desc-input")?.value || "",
+    judge: row.querySelector(".strat-judge")?.value || "",
+    enabled: Boolean(row.querySelector(".switch input")?.checked),
+  }));
+}
+
+function renderStrategyPayload(payload = {}) {
+  renderStrategyConfig(payload.config || {});
+  if (Array.isArray(payload.strategies)) renderStrategyTower(payload.strategies);
 }
 
 async function saveStrategyConfig() {
@@ -196,9 +280,9 @@ async function saveStrategyConfig() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "설정 저장 실패");
-    renderStrategyConfig(payload.config);
+    renderStrategyPayload(payload);
     if (payload.paperSummary) renderPaperSummary({ paperSummary: payload.paperSummary });
-    showToast("전략 안전장치 설정을 저장했습니다.");
+    showToast("전략 컨트롤타워 설정을 저장했습니다.");
     loadAnalysisStatus();
   } catch (error) {
     showToast(error.message || "설정 저장에 실패했습니다.");
@@ -230,7 +314,7 @@ async function loadStrategyConfig() {
   try {
     const response = await fetch("/api/strategy/config", { cache: "no-store" });
     const payload = await response.json();
-    if (response.ok) renderStrategyConfig(payload.config);
+    if (response.ok) renderStrategyPayload(payload);
   } catch (_) {
     // Analysis status also carries the latest strategy config.
   }
@@ -795,6 +879,9 @@ async function loadAnalysisStatus() {
       renderPaperOrders(state.paperOrders, state.activeMarket);
       renderPaperSummary(state);
       renderMarketReports(state);
+      if (document.body.dataset.page === "quant" && !document.activeElement?.closest?.("#strategyTower")) {
+        loadStrategyConfig();
+      }
     }
   } catch (_) {
     // Dashboard connection badge handles connectivity errors.
