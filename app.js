@@ -617,14 +617,15 @@ function createJournalRow(entry, compact = false) {
 
 function renderJournalSummary(target, summary = {}, page = false) {
   if (!target) return;
+  const today = summary.periodReturns?.today || {};
   const summaryItems = page
     ? [["전체 기록", `${Number(summary.count || 0)}건`], ["보유/청산", `${Number(summary.openCount || 0)} / ${Number(summary.closedCount || 0)}`], ["누적 손익", signedWon(summary.totalProfit || 0)], ["승률", signedPercent(summary.winRate || 0)]]
-    : [["기록", `${Number(summary.count || 0)}건`], ["승률", signedPercent(summary.winRate || 0)], ["누적 손익", signedWon(summary.totalProfit || 0)], ["평균 수익률", signedPercent(summary.averageReturn || 0)]];
+    : [["기록", `${Number(summary.count || 0)}건`], ["보유/청산", `${Number(summary.openCount || 0)} / ${Number(summary.closedCount || 0)}`], ["오늘 손익", signedWon(today.profitKrw || 0)], ["오늘 수익률", signedPercent(today.returnRate || 0)]];
   target.replaceChildren();
   summaryItems.forEach(([label, value], index) => {
     const box = document.createElement("div");
     box.innerHTML = `<span>${label}</span><b>${value}</b>`;
-    if ((page && index === 2) || (!page && index >= 2)) applyTone(box.querySelector("b"), page ? summary.totalProfit : (index === 2 ? summary.totalProfit : summary.averageReturn));
+    if ((page && index === 2) || (!page && index >= 2)) applyTone(box.querySelector("b"), page ? summary.totalProfit : (index === 2 ? today.profitKrw : today.returnRate));
     target.append(box);
   });
 }
@@ -1080,5 +1081,4 @@ window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
 window.setInterval(loadTradingJournal, 60_000);
-
 

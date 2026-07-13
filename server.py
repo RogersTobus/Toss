@@ -1086,9 +1086,104 @@ def start_of_week(now: datetime) -> datetime:
     return start_day - timedelta(days=now.weekday())
 
 
-def period_profit_summary(
-    positions: dict[str, dict[str, Any]], results_by_symbol: dict[str, dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
+def paper_trade_ledger(
+    orders: list[dict[str, Any]], results_by_symbol: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Build one P&L record per paper trade, pairing each BUY with its SELL."""
+    buys_by_id: dict[str, dict[str, Any]] = {}
+    open_by_symbol: dict[tuple[str, str], dict[str, Any]] = {}
+    closed_entry_ids: set[str] = set()
+    trades: list[dict[str, Any]] = []
+
+    for order in sorted(orders, key=lambda item: str(item.get("createdAt") or "")):
+        symbol = str(order.get("symbol") or "")
+        if not symbol:
+            continue
+        side = str(order.get("side") or "").upper()
+        market = str(order.get("market") or "")
+        key = (market, symbol)
+        if side == "BUY":
+            order_id = str(order.get("id") or "")
+            if order_id:
+                buys_by_id[order_id] = order
+            open_by_symbol[key] = order
+            continue
+        if side != "SELL":
+            continue
+
+        entry_id = str(order.get("entryOrderId") or "")
+        entry = buys_by_id.get(entry_id) if entry_id else open_by_symbol.get(key)
+        if not entry:
+            continue
+        resolved_entry_id = str(entry.get("id") or entry_id)
+        if resolved_entry_id in closed_entry_ids:
+            continue
+        quantity = decimal(order.get("quantity") or entry.get("quantity") or 1)
+        entry_price = decimal(order.get("entryPrice") or entry.get("price"))
+        exit_price = decimal(order.get("price"))
+        invested = entry_price * quantity
+        profit = (
+            decimal(order.get("profit"))
+            if order.get("profit") is not None
+            else (exit_price - entry_price) * quantity
+        )
+        return_rate = (
+            decimal(order.get("returnRate"))
+            if order.get("returnRate") is not None
+            else (profit / invested if invested else 0.0)
+        )
+        trades.append(
+            {
+                "entryOrderId": resolved_entry_id,
+                "exitOrderId": str(order.get("id") or ""),
+                "market": market or entry.get("market"),
+                "symbol": symbol,
+                "openedAt": str(entry.get("createdAt") or ""),
+                "closedAt": str(order.get("createdAt") or ""),
+                "status": "CLOSED",
+                "quantity": quantity,
+                "entryPrice": entry_price,
+                "lastPrice": exit_price,
+                "invested": invested,
+                "profit": profit,
+                "returnRate": return_rate,
+            }
+        )
+        closed_entry_ids.add(resolved_entry_id)
+        if open_by_symbol.get(key) is entry:
+            open_by_symbol.pop(key, None)
+
+    for (market, symbol), entry in open_by_symbol.items():
+        entry_id = str(entry.get("id") or "")
+        if entry_id in closed_entry_ids:
+            continue
+        current = results_by_symbol.get(symbol) or {}
+        quantity = decimal(entry.get("quantity") or 1)
+        entry_price = decimal(entry.get("price"))
+        last_price = decimal(current.get("lastPrice") or entry.get("lastPrice") or entry_price)
+        invested = entry_price * quantity
+        profit = (last_price - entry_price) * quantity if entry_price and last_price else 0.0
+        trades.append(
+            {
+                "entryOrderId": entry_id,
+                "exitOrderId": "",
+                "market": market,
+                "symbol": symbol,
+                "openedAt": str(entry.get("createdAt") or ""),
+                "closedAt": "",
+                "status": "OPEN",
+                "quantity": quantity,
+                "entryPrice": entry_price,
+                "lastPrice": last_price,
+                "invested": invested,
+                "profit": profit,
+                "returnRate": profit / invested if invested else 0.0,
+            }
+        )
+    return trades
+
+
+def period_profit_summary(trades: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     now = datetime.now().astimezone()
     starts = {
         "month": datetime(now.year, now.month, 1, tzinfo=now.tzinfo),
@@ -1100,24 +1195,19 @@ def period_profit_summary(
         for key in starts
     }
 
-    for symbol, order in positions.items():
-        created_at = parse_order_time(order.get("createdAt"))
+    for trade in trades:
+        occurred_at = trade.get("closedAt") or trade.get("openedAt")
+        created_at = parse_order_time(occurred_at)
         if created_at is None:
             continue
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=now.tzinfo)
-        current = results_by_symbol.get(symbol)
-        entry = decimal(order.get("price"))
-        last = decimal((current or {}).get("lastPrice"))
-        quantity = decimal(order.get("quantity") or 1)
-        if not entry or not last:
-            continue
-        invested = entry * quantity
-        profit = (last - entry) * quantity
+        invested = decimal(trade.get("invested"))
+        profit = decimal(trade.get("profit"))
         for key, start in starts.items():
             if created_at >= start:
-                summary[key]["profitKrw"] += round(profit)
-                summary[key]["investedKrw"] += round(invested)
+                summary[key]["profitKrw"] += profit
+                summary[key]["investedKrw"] += invested
                 summary[key]["positionCount"] += 1
 
     for item in summary.values():
@@ -1314,6 +1404,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
             positions.pop(symbol, None)
 
     results_by_symbol = {str(item.get("symbol")): item for item in results}
+    trade_ledger = paper_trade_ledger(orders, results_by_symbol)
     position_returns = []
     for symbol, order in positions.items():
         current = results_by_symbol.get(symbol)
@@ -1340,7 +1431,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "stopRate": stop_rate,
         "strategyConfig": config,
         "averageReturn": average_return,
-        "periodReturns": period_profit_summary(positions, results_by_symbol),
+        "periodReturns": period_profit_summary(trade_ledger),
         "technicalReview": tech_review,
         "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason, config),
         "todayOrderCount": len(today_orders),
@@ -1722,56 +1813,65 @@ def build_trading_journal() -> dict[str, Any]:
     results_by_symbol = {str(item.get("symbol")): item for item in results}
     state = load_journal_state()
     notes = state.get("notes") or {}
+    trade_ledger = paper_trade_ledger(orders, results_by_symbol)
+    orders_by_id = {str(item.get("id") or ""): item for item in orders if item.get("id")}
     entries: list[dict[str, Any]] = []
-    total_invested = 0.0
-    total_profit = 0.0
-    wins = 0
-    closed_count = 0
+    total_invested = sum(decimal(item.get("invested")) for item in trade_ledger)
+    total_profit = sum(decimal(item.get("profit")) for item in trade_ledger)
+    closed_trades = [item for item in trade_ledger if item.get("status") == "CLOSED"]
+    wins = sum(1 for item in closed_trades if decimal(item.get("returnRate")) > 0)
+    closed_count = len(closed_trades)
     open_count = len(open_paper_positions(orders))
 
-    for order in sorted(orders, key=lambda item: str(item.get("createdAt") or ""), reverse=True):
-        order_id = str(order.get("id") or "")
-        symbol = str(order.get("symbol") or "")
-        side = str(order.get("side") or "").upper()
+    for trade in sorted(
+        trade_ledger,
+        key=lambda item: str(item.get("closedAt") or item.get("openedAt") or ""),
+        reverse=True,
+    ):
+        order_id = str(trade.get("entryOrderId") or "")
+        exit_order_id = str(trade.get("exitOrderId") or "")
+        entry_order = orders_by_id.get(order_id) or {}
+        exit_order = orders_by_id.get(exit_order_id) or {}
+        symbol = str(trade.get("symbol") or entry_order.get("symbol") or "")
+        is_closed = trade.get("status") == "CLOSED"
+        side = "SELL" if is_closed else "BUY"
         current = results_by_symbol.get(symbol) or {}
-        quantity = decimal(order.get("quantity") or 1)
-        order_price = decimal(order.get("price"))
-        entry_price = decimal(order.get("entryPrice") or order.get("price"))
-        last_price = order_price if side == "SELL" else decimal(current.get("lastPrice") or order.get("lastPrice") or order_price)
-        invested = entry_price * quantity
-        profit = decimal(order.get("profit")) if side == "SELL" and order.get("profit") is not None else ((last_price - entry_price) * quantity if entry_price and last_price else 0.0)
-        return_rate = decimal(order.get("returnRate")) if order.get("returnRate") is not None else (profit / invested if invested else 0.0)
-        is_closed = side == "SELL" or str(order.get("status", "")).upper() in ("CLOSED", "SOLD")
+        quantity = decimal(trade.get("quantity") or entry_order.get("quantity") or 1)
+        entry_price = decimal(trade.get("entryPrice") or entry_order.get("price"))
+        last_price = decimal(trade.get("lastPrice") or entry_price)
+        invested = decimal(trade.get("invested"))
+        profit = decimal(trade.get("profit"))
+        return_rate = decimal(trade.get("returnRate"))
         verdict = current.get("verdict") or ("청산" if is_closed else "보유/관찰")
-        reason = order.get("reason") or current.get("reason") or "진입 사유 기록 없음"
-        note = notes.get(order_id) or {}
-        total_invested += invested
-        total_profit += profit
-        if is_closed:
-            closed_count += 1
-            if return_rate > 0:
-                wins += 1
+        reason = (
+            exit_order.get("reason")
+            or entry_order.get("reason")
+            or current.get("reason")
+            or "진입 사유 기록 없음"
+        )
+        note = notes.get(order_id) or notes.get(exit_order_id) or {}
         entries.append(
             {
                 "id": order_id,
-                "createdAt": str(order.get("createdAt") or ""),
-                "market": order.get("market"),
+                "createdAt": str(trade.get("closedAt") or trade.get("openedAt") or ""),
+                "market": trade.get("market"),
                 "symbol": symbol,
-                "name": order.get("name") or symbol,
+                "name": entry_order.get("name") or exit_order.get("name") or symbol,
                 "side": side,
-                "sideLabel": "매수" if side == "BUY" else "매도",
+                "sideLabel": "매수→매도" if is_closed else "매수",
                 "status": "청산" if is_closed else "보유중",
                 "quantity": quantity,
                 "entryPrice": entry_price,
                 "lastPrice": last_price,
-                "currency": order.get("currency"),
+                "currency": entry_order.get("currency") or exit_order.get("currency"),
                 "invested": invested,
                 "profit": profit,
                 "returnRate": return_rate,
                 "verdict": verdict,
                 "reason": reason,
-                "exitKind": order.get("exitKind"),
-                "entryOrderId": order.get("entryOrderId"),
+                "exitKind": exit_order.get("exitKind"),
+                "entryOrderId": order_id,
+                "exitOrderId": exit_order_id,
                 "memo": note.get("memo", ""),
                 "review": note.get("review", ""),
                 "tags": note.get("tags", []),
@@ -1779,7 +1879,8 @@ def build_trading_journal() -> dict[str, Any]:
             }
         )
 
-    count = len(entries)
+    count = len(trade_ledger)
+    period_returns = period_profit_summary(trade_ledger)
     summary = {
         "count": count,
         "openCount": open_count,
@@ -1788,6 +1889,7 @@ def build_trading_journal() -> dict[str, Any]:
         "totalInvested": total_invested,
         "totalProfit": total_profit,
         "averageReturn": total_profit / total_invested if total_invested else 0.0,
+        "periodReturns": period_returns,
         "best": max(entries, key=lambda item: decimal(item.get("returnRate")), default=None),
         "worst": min(entries, key=lambda item: decimal(item.get("returnRate")), default=None),
     }
@@ -1967,5 +2069,3 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
-
