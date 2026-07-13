@@ -791,6 +791,14 @@ def operation_report_interval_minutes(env: dict[str, str]) -> int:
     return max(5, min(60, minutes))
 
 
+def analysis_interval_seconds(env: dict[str, str]) -> int:
+    try:
+        seconds = int(str(env.get("ANALYSIS_INTERVAL_SECONDS", "10")).strip() or "10")
+    except ValueError:
+        seconds = 10
+    return max(5, min(60, seconds))
+
+
 def build_operation_report(
     market: str,
     session: str,
@@ -1279,7 +1287,7 @@ def safety_rules(
 
 def safety_gate(summary: dict[str, Any]) -> dict[str, Any]:
     rules = summary.get("safetyRules") or []
-    blockers = [rule for rule in rules if rule.get("tone") == "danger" and rule.get("key") in {"lock", "dailyLoss", "dailyOrders", "positionCap", "lossStreak"}]
+    blockers = [rule for rule in rules if rule.get("tone") == "danger" and rule.get("key") in {"lock", "dailyLoss", "positionCap", "lossStreak"}]
     return {
         "blocked": bool(blockers),
         "reason": str(blockers[0].get("detail") or blockers[0].get("label")) if blockers else "신규 진입 가능",
@@ -1293,7 +1301,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     stop_rate = decimal(config.get("stopRate"))
     today = time.strftime("%Y-%m-%d")
     today_orders = [
-        item for item in orders if str(item.get("createdAt", "")).startswith(today)
+        item for item in orders if item.get("side") == "BUY" and str(item.get("createdAt", "")).startswith(today)
     ]
     positions: dict[str, dict[str, Any]] = {}
     for order in orders:
@@ -1345,13 +1353,15 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     }
 
 
-def open_paper_positions(orders: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def open_paper_positions(orders: list[dict[str, Any]], market: str | None = None) -> dict[str, dict[str, Any]]:
     positions: dict[str, dict[str, Any]] = {}
     for order in orders:
         symbol = str(order.get("symbol") or "")
         if not symbol:
             continue
         side = str(order.get("side") or "").upper()
+        if market and order.get("market") != market:
+            continue
         if side == "BUY":
             positions[symbol] = order
         elif side == "SELL":
@@ -1359,69 +1369,108 @@ def open_paper_positions(orders: list[dict[str, Any]]) -> dict[str, dict[str, An
     return positions
 
 
-def apply_paper_exit_rules(
+def extract_stock_price(stock: dict[str, Any]) -> Any:
+    price = stock.get("price") if isinstance(stock.get("price"), dict) else {}
+    return (
+        stock.get("lastPrice")
+        or price.get("lastPrice")
+        or price.get("close")
+        or price.get("tradePrice")
+        or (stock.get("price") if not isinstance(stock.get("price"), dict) else None)
+    )
+
+
+def refresh_position_prices(
+    env: dict[str, str],
+    positions: dict[str, dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> dict[str, float]:
+    prices = {
+        str(item.get("symbol")): decimal(item.get("lastPrice"))
+        for item in results
+        if item.get("symbol") and decimal(item.get("lastPrice"))
+    }
+    missing = [symbol for symbol in positions if not prices.get(symbol)]
+    if missing:
+        try:
+            stocks = toss_get(
+                f"/api/v1/stocks?{urllib.parse.urlencode({'symbols': ','.join(missing)})}",
+                env,
+            ).get("result") or []
+            for stock in stocks:
+                symbol = str(stock.get("symbol") or "")
+                price = decimal(extract_stock_price(stock))
+                if symbol and price:
+                    prices[symbol] = price
+        except TossApiError:
+            pass
+    return prices
+
+
+def close_paper_positions_if_needed(
+    env: dict[str, str],
     orders: list[dict[str, Any]],
     results: list[dict[str, Any]],
     market: str,
+    session: str,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """Create paper SELL records when target/stop rules are touched."""
     config = strategy_config()
-    target_rate = decimal(config.get("targetRate") or PAPER_TARGET_RATE)
-    stop_rate = decimal(config.get("stopRate") or PAPER_STOP_RATE)
-    results_by_symbol = {str(item.get("symbol")): item for item in results}
-    positions = open_paper_positions(orders)
+    target_rate = decimal(config.get("targetRate"))
+    stop_rate = decimal(config.get("stopRate"))
+    positions = open_paper_positions(orders, market)
+    if not positions:
+        return orders, False
+    prices = refresh_position_prices(env, positions, results)
     changed = False
-    now_stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     for symbol, order in list(positions.items()):
-        if market and order.get("market") != market:
+        entry = decimal(order.get("price"))
+        last = prices.get(symbol, 0.0)
+        if not entry or not last:
             continue
-        current = results_by_symbol.get(symbol) or {}
-        entry_price = decimal(order.get("price"))
-        last_price = decimal(current.get("lastPrice") or order.get("lastPrice"))
-        quantity = decimal(order.get("quantity") or 1)
-        if not entry_price or not last_price:
-            continue
-        return_rate = (last_price - entry_price) / entry_price
-        if return_rate <= stop_rate:
+        rate = (last - entry) / entry
+        exit_kind = None
+        reason = None
+        if rate <= stop_rate:
             exit_kind = "손실선"
-            exit_reason = f"손실선 {percent(stop_rate)} 도달 · 자동 모의청산"
-        elif return_rate >= target_rate:
+            reason = f"손실선 {percent(stop_rate)} 도달 · 즉시 모의청산"
+        elif rate >= target_rate:
             exit_kind = "목표"
-            exit_reason = f"목표 {percent(target_rate)} 도달 · 자동 모의청산"
-        else:
+            reason = f"목표 {percent(target_rate)} 도달 · 즉시 모의청산"
+        if not exit_kind:
             continue
-
         orders.append(
             {
                 "id": f"PAPER-EXIT-{int(time.time())}-{symbol}",
-                "market": order.get("market") or market,
+                "market": order.get("market"),
+                "session": session,
                 "symbol": symbol,
-                "name": order.get("name") or current.get("name") or symbol,
+                "name": order.get("name"),
                 "side": "SELL",
-                "quantity": quantity,
-                "price": last_price,
-                "entryPrice": entry_price,
+                "quantity": decimal(order.get("quantity") or 1),
+                "price": last,
+                "entryPrice": entry,
                 "entryOrderId": order.get("id"),
-                "currency": order.get("currency") or current.get("currency"),
+                "currency": order.get("currency"),
                 "status": "FILLED",
-                "createdAt": now_stamp,
-                "reason": exit_reason,
+                "createdAt": now,
+                "reason": reason,
                 "exitKind": exit_kind,
-                "returnRate": return_rate,
-                "profit": (last_price - entry_price) * quantity,
+                "returnRate": rate,
+                "profit": (last - entry) * decimal(order.get("quantity") or 1),
             }
         )
         changed = True
-
     if changed:
         save_paper_orders(orders)
     return orders, changed
+
+
 def paper_trade(
-    results: list[dict[str, Any]], market: str
+    env: dict[str, str], results: list[dict[str, Any]], market: str, session: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     orders = load_paper_orders()
-    orders, _ = apply_paper_exit_rules(orders, results, market)
+    orders, _ = close_paper_positions_if_needed(env, orders, results, market, session)
     summary = paper_summary(orders, results)
     gate = safety_gate(summary)
     if summary["locked"] or gate["blocked"]:
@@ -1431,7 +1480,8 @@ def paper_trade(
     todays_market_orders = [
         item
         for item in orders
-        if item.get("market") == market
+        if item.get("side") == "BUY"
+        and item.get("market") == market
         and str(item.get("createdAt", "")).startswith(today)
         and str(item.get("side") or "").upper() == "BUY"
     ]
@@ -1453,6 +1503,7 @@ def paper_trade(
             {
                 "id": f"PAPER-{int(time.time())}",
                 "market": market,
+                "session": session,
                 "symbol": candidate.get("symbol"),
                 "name": candidate.get("name"),
                 "side": "BUY",
@@ -1475,7 +1526,7 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
             "marketCountry": market,
             "duration": "realtime",
             "excludeInvestmentCaution": "true",
-            "count": "30",
+            "count": "50",
         }
     )
     ranked = toss_get(f"/api/v1/rankings?{query}", env).get("result") or {}
@@ -1528,15 +1579,17 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
 
 def analysis_loop() -> None:
     while True:
+        sleep_seconds = 10
         with ANALYSIS_LOCK:
             enabled = bool(ANALYSIS["enabled"])
         if enabled:
             try:
                 env = load_env()
+                sleep_seconds = analysis_interval_seconds(env)
                 market, session = market_schedule(env)
                 results = scan_market(env, market) if market else []
                 if market:
-                    orders, paper_stats = paper_trade(results, market)
+                    orders, paper_stats = paper_trade(env, results, market, session)
                 else:
                     orders = load_paper_orders()
                     paper_stats = paper_summary(orders, results)
@@ -1566,7 +1619,7 @@ def analysis_loop() -> None:
                     pass
                 with ANALYSIS_LOCK:
                     ANALYSIS["lastError"] = str(exc)
-        time.sleep(30)
+        time.sleep(sleep_seconds)
 
 
 
@@ -1914,6 +1967,5 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
-
 
 

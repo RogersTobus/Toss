@@ -354,17 +354,16 @@ function renderAnalysisLog(items) {
   const log = document.querySelector("#analysisLog");
   if (!log) return;
   log.replaceChildren();
-  (items || []).slice(0, 4).forEach((item) => {
-    const analysis = item.verdict;
+  (items || []).slice(0, 20).forEach((item) => {
     const row = document.createElement("div");
     const icon = document.createElement("i");
-    icon.className = analysis.verdict === "진입 불가" ? "alert" : "safe";
-    icon.textContent = analysis.icon;
+    icon.className = item.verdict === "진입 불가" ? "alert" : item.verdict === "정밀 분석" ? "safe" : "";
+    icon.textContent = item.verdict === "진입 불가" ? "!" : item.verdict === "정밀 분석" ? "✓" : "·";
     const copy = document.createElement("span");
     const title = document.createElement("b");
-    title.textContent = `${item.name || item.symbol} · ${analysis.verdict}`;
+    title.textContent = `${item.name || item.symbol} · ${item.verdict || "분석 중"}`;
     const detail = document.createElement("small");
-    detail.textContent = `${analysis.reason} · ${signedPercent(item.dailyRate)}`;
+    detail.textContent = `${item.reason || "근거 수집 중"} · ${signedPercent(item.dailyRate)}`;
     const time = document.createElement("time");
     time.textContent = new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
     copy.append(title, detail);
@@ -459,7 +458,7 @@ function renderScannerResults(items) {
     quantity: 0,
   }));
   const table = document.querySelector("#holdingsTable");
-  const rows = normalized.slice(0, 5).map((item) => {
+  const rows = normalized.slice(0, 20).map((item) => {
     const row = document.createElement("div");
     row.className = "table-row";
     const identity = document.createElement("span");
