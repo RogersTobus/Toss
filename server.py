@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parent
@@ -35,6 +36,7 @@ KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_LOCK = threading.Lock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
+KST = ZoneInfo("Asia/Seoul")
 PAPER_TARGET_RATE = 0.01
 PAPER_STOP_RATE = -0.005
 PAPER_MAX_DAILY_ORDERS = 3
@@ -444,23 +446,65 @@ def post_json(url: str, payload: dict[str, Any], headers: dict[str, str] | None 
 
 def load_report_state() -> dict[str, Any]:
     if not REPORT_PATH.exists():
-        return {"sentKeys": [], "reports": [], "lastActiveMarket": None, "lastOperationReportKey": None}
+        return {"sentKeys": [], "reports": [], "issues": [], "lastActiveMarket": None, "lastOperationReportKey": None}
     try:
         data = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
         return {
             "sentKeys": data.get("sentKeys") or [],
             "reports": data.get("reports") or [],
+            "issues": data.get("issues") or [],
             "lastActiveMarket": data.get("lastActiveMarket"),
             "lastOperationReportKey": data.get("lastOperationReportKey"),
         }
     except (json.JSONDecodeError, OSError):
-        return {"sentKeys": [], "reports": [], "lastActiveMarket": None, "lastOperationReportKey": None}
+        return {"sentKeys": [], "reports": [], "issues": [], "lastActiveMarket": None, "lastOperationReportKey": None}
 
 
 def save_report_state(state: dict[str, Any]) -> None:
     state["sentKeys"] = (state.get("sentKeys") or [])[-80:]
     state["reports"] = (state.get("reports") or [])[-30:]
+    state["issues"] = (state.get("issues") or [])[-200:]
     REPORT_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def now_kst() -> datetime:
+    return datetime.now(KST)
+
+
+def kst_date_key(value: Any) -> str:
+    parsed = parse_order_time(value)
+    if parsed is None:
+        return str(value or "")[:10]
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=KST)
+    return parsed.astimezone(KST).strftime("%Y-%m-%d")
+
+
+def record_report_issue(error: Exception | str, category: str = "analysis") -> None:
+    message = str(error).strip() or "원인을 확인하지 못한 오류"
+    now = now_kst()
+    state = load_report_state()
+    issues = state.get("issues") or []
+    digest = hashlib.sha1(f"{category}:{message}".encode("utf-8", errors="ignore")).hexdigest()[:10]
+    key = f"{now.strftime('%Y-%m-%d')}-{category}-{digest}"
+    existing = next((item for item in issues if item.get("key") == key), None)
+    if existing:
+        existing["count"] = int(existing.get("count") or 1) + 1
+        existing["lastAt"] = now.strftime("%Y-%m-%dT%H:%M:%S%z")
+    else:
+        issues.append(
+            {
+                "key": key,
+                "date": now.strftime("%Y-%m-%d"),
+                "category": category,
+                "message": message[:500],
+                "count": 1,
+                "firstAt": now.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "lastAt": now.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+        )
+    state["issues"] = issues
+    save_report_state(state)
 
 
 def money(value: Any) -> str:
@@ -475,41 +519,182 @@ def percent(value: Any) -> str:
     return f"{sign}{abs(rate):.2f}%"
 
 
-def build_market_close_report(market: str, orders: list[dict[str, Any]], summary: dict[str, Any]) -> dict[str, Any]:
-    now = datetime.now().astimezone()
+def market_money(value: Any, market: str) -> str:
+    amount = decimal(value)
+    sign = "+" if amount >= 0 else "-"
+    if market == "US":
+        return f"{sign}${abs(amount):,.2f}"
+    return f"{sign}{abs(round(amount)):,}원"
+
+
+def strategy_close_review(
+    market: str,
+    orders: list[dict[str, Any]],
+    summary: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> dict[str, Any]:
+    date_key = now_kst().strftime("%Y-%m-%d")
+    config = strategy_config()
+    enabled = {
+        str(item.get("id")): item
+        for item in config.get("strategies") or []
+        if item.get("enabled")
+    }
+    ledger = paper_trade_ledger(orders, {})
+    closed = [
+        item for item in ledger
+        if item.get("market") == market
+        and item.get("status") == "CLOSED"
+        and kst_date_key(item.get("closedAt")) == date_key
+    ]
+    entries = [
+        item for item in orders
+        if str(item.get("side") or "").upper() == "BUY"
+        and item.get("market") == market
+        and kst_date_key(item.get("createdAt")) == date_key
+    ]
+    exits_by_id = {
+        str(item.get("id") or ""): item for item in orders
+        if str(item.get("side") or "").upper() == "SELL"
+    }
+    realized_profit = sum(decimal(item.get("profit")) for item in closed)
+    realized_invested = sum(decimal(item.get("invested")) for item in closed)
+    realized_return = realized_profit / realized_invested if realized_invested else 0.0
+    target_exits = [
+        item for item in closed
+        if str((exits_by_id.get(str(item.get("exitOrderId") or "")) or {}).get("exitKind") or "") == "목표"
+    ]
+    stop_exits = [
+        item for item in closed
+        if str((exits_by_id.get(str(item.get("exitOrderId") or "")) or {}).get("exitKind") or "") == "손실선"
+    ]
+    stop_rate = decimal(config.get("stopRate"))
+    delayed_stops = [item for item in stop_exits if decimal(item.get("returnRate")) < stop_rate - 0.003]
+    open_count = len(open_paper_positions(orders, market))
+    scores = [decimal(item.get("entryScore")) for item in entries if item.get("entryScore") is not None]
+    average_score = sum(scores) / len(scores) if scores else 0.0
+
+    good: list[str] = []
+    bad: list[str] = []
+    improvements: list[str] = []
+
+    if closed and realized_return > 0:
+        good.append(
+            f"유동성·80점 진입 필터: 청산 {len(closed)}건, 실현 {percent(realized_return)}"
+            + (f", 평균 진입점수 {average_score:.0f}점" if scores else "")
+        )
+    elif closed:
+        bad.append(
+            f"유동성·80점 진입 필터: 청산 {len(closed)}건, 실현 {percent(realized_return)}로 기대수익 미달"
+        )
+        improvements.append("진입 점수 자체보다 상승률 과열·스프레드·추세 지속 조건을 추가 검증")
+    else:
+        bad.append("진입 필터: 오늘 청산 표본이 없어 성과 판정 보류")
+        improvements.append("설정을 바꾸지 말고 청산 표본을 더 축적한 뒤 평가")
+
+    if target_exits:
+        good.append(f"+1% 수익 관리: 목표 청산 {len(target_exits)}건 작동")
+    elif "profit-trailing" in enabled and closed:
+        bad.append("+1% 수익 관리: 목표 청산 0건으로 수익 구간 검증 부족")
+
+    if stop_exits:
+        good.append(f"−0.5% 절대 손절: 손실 청산 {len(stop_exits)}건 실행")
+    if delayed_stops:
+        bad.append(f"절대 손절: {len(delayed_stops)}건이 손실선보다 0.3%p 이상 불리하게 청산")
+        improvements.append("손실선 근처에서는 시세 확인·청산 주기를 단축해 체결 괴리를 줄이기")
+
+    if open_count:
+        bad.append(f"장마감 포지션 관리: 미청산 {open_count}건 잔존")
+        improvements.append("시장 종료 전 신규 진입 차단과 마감 청산 규칙을 별도 검증")
+    elif entries:
+        good.append("장마감 포지션 관리: 미청산 포지션 없음")
+
+    if "three-minute-exit" in enabled and not any(
+        str((exits_by_id.get(str(item.get("exitOrderId") or "")) or {}).get("exitKind") or "") == "시간청산"
+        for item in closed
+    ):
+        bad.append("3분 시간청산: 실행 기록이 없어 규칙 작동 여부 검증 필요")
+        improvements.append("진입 시각 기준 3분 경과·추세 약화 조건을 실행 로그에 명시")
+
+    today_issues = [item for item in issues if item.get("date") == date_key]
+    error_lines = [
+        f"{item.get('message') or '원인 미상'} (반복 {int(item.get('count') or 1)}회)"
+        for item in today_issues[-5:]
+    ]
+    if today_issues:
+        improvements.append("반복 오류는 다음 장 시작 전 API 연결·재시도 로그를 우선 점검")
+
+    return {
+        "good": good or ["성과가 확인된 전략 없음"],
+        "bad": bad or ["특이 부진 전략 없음"],
+        "errors": error_lines or ["기록된 시스템 오류 없음"],
+        "improvements": list(dict.fromkeys(improvements)) or ["현재 전략을 유지하고 표본을 추가 축적"],
+        "realizedProfit": realized_profit,
+        "realizedReturn": realized_return,
+        "entryCount": len(entries),
+        "closedCount": len(closed),
+        "openCount": open_count,
+    }
+
+
+def build_market_close_report(
+    market: str,
+    orders: list[dict[str, Any]],
+    summary: dict[str, Any],
+    issues: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    now = now_kst()
     date_key = now.strftime("%Y-%m-%d")
     market_name = "한국장" if market == "KR" else "미국장" if market == "US" else market
     period = summary.get("periodReturns") or {}
-    today = period.get("today") or {}
     week = period.get("week") or {}
     month = period.get("month") or {}
-    today_orders = [item for item in orders if str(item.get("createdAt", "")).startswith(date_key) and item.get("market") == market]
-    top_names = [str(item.get("name") or item.get("symbol") or "-") for item in today_orders[-5:]]
+    review = strategy_close_review(market, orders, summary, issues or [])
+    today_orders = [
+        item for item in orders
+        if str(item.get("side") or "").upper() == "BUY"
+        and item.get("market") == market
+        and kst_date_key(item.get("createdAt")) == date_key
+    ]
+    top_names = list(dict.fromkeys(str(item.get("name") or item.get("symbol") or "-") for item in today_orders[-5:]))
+    good_lines = [f"- {item}" for item in review["good"]]
+    bad_lines = [f"- {item}" for item in review["bad"]]
+    error_lines = [f"- {item}" for item in review["errors"]]
+    improvement_lines = [f"- {item}" for item in review["improvements"]]
     lines = [
-        "[Orbit 단타 장마감 리포트]",
+        ":clipboard: *Orbit 단타 장마감 회고 리포트*",
         f"시장: {market_name}",
-        f"일시: {now.strftime('%Y-%m-%d %H:%M')}",
+        f"일시: {now.strftime('%Y-%m-%d %H:%M KST')}",
         "",
-        f"오늘 단타 수익: {money(today.get('profitKrw'))} ({percent(today.get('returnRate'))})",
-        f"이번주 단타 수익: {money(week.get('profitKrw'))} ({percent(week.get('returnRate'))})",
-        f"이번달 단타 수익: {money(month.get('profitKrw'))} ({percent(month.get('returnRate'))})",
+        "*1. 오늘 결산*",
+        f"실현 단타 손익: {market_money(review['realizedProfit'], market)} ({percent(review['realizedReturn'])})",
+        f"진입/청산/보유: {review['entryCount']} / {review['closedCount']} / {review['openCount']}건",
+        f"이번주 전체 단타 손익: {market_money(week.get('profitKrw'), market)} ({percent(week.get('returnRate'))})",
+        f"이번달 전체 단타 손익: {market_money(month.get('profitKrw'), market)} ({percent(month.get('returnRate'))})",
         "",
-        f"오늘 모의 진입: {len(today_orders)}건",
-        f"보유 포지션: {summary.get('openPositionCount', 0)}개",
+        "*2. 좋았던 전략*",
+        *good_lines,
+        "",
+        "*3. 좋지 않았던 전략*",
+        *bad_lines,
+        "",
+        "*4. 오늘 발생한 오류*",
+        *error_lines,
+        "",
+        "*5. 다음 장 개선방안*",
+        *improvement_lines,
     ]
     if top_names:
-        lines.append("대표 종목: " + ", ".join(top_names[:3]))
+        lines.extend(["", "대표 매매 종목: " + ", ".join(top_names[:5])])
     if summary.get("locked"):
-        lines.append("상태: " + str(summary.get("lockReason") or "오늘 거래 잠금"))
-    else:
-        lines.append("상태: 장마감 리포트 생성 완료")
+        lines.append("마감 상태: " + str(summary.get("lockReason") or "오늘 거래 잠금"))
     return {
         "id": f"{date_key}-{market}",
         "market": market,
         "marketName": market_name,
         "createdAt": now.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "todayProfitKrw": today.get("profitKrw", 0),
-        "todayReturnRate": today.get("returnRate", 0),
+        "todayProfitKrw": review["realizedProfit"],
+        "todayReturnRate": review["realizedReturn"],
         "orderCount": len(today_orders),
         "positionCount": summary.get("openPositionCount", 0),
         "sent": False,
@@ -672,9 +857,13 @@ def handle_paper_alert(env: dict[str, str], market: str | None, summary: dict[st
 
 
 def handle_problem_alert(env: dict[str, str], error: Exception) -> None:
+    try:
+        record_report_issue(error, "analysis")
+    except OSError:
+        pass
     if not slack_enabled(env, "alert"):
         return
-    now = datetime.now().astimezone()
+    now = now_kst()
     message = str(error) or error.__class__.__name__
     digest = hashlib.sha1(message.encode("utf-8", errors="ignore")).hexdigest()[:10]
     minute_slot = (now.minute // 10) * 10
@@ -751,7 +940,7 @@ def handle_market_close_report(
         "lastError": None,
     }
     if previous_market in ("KR", "US") and previous_market != current_market:
-        report = build_market_close_report(previous_market, orders, summary)
+        report = build_market_close_report(previous_market, orders, summary, state.get("issues") or [])
         sent_keys = set(state.get("sentKeys") or [])
         if report["id"] not in sent_keys:
             sent_channels = []
@@ -1604,6 +1793,8 @@ def paper_trade(
                 "status": "FILLED",
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "reason": candidate.get("reason"),
+                "entryScore": candidate.get("score"),
+                "strategyIds": ["liquidity-momentum-filter", "score-entry-80"],
             }
         )
         save_paper_orders(orders)
