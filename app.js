@@ -593,6 +593,13 @@ function formatJournalTime(value) {
   return date.toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+function formatTradingDay(value) {
+  if (!value) return "거래일 미지정";
+  const date = new Date(`${value}T12:00:00+09:00`);
+  if (Number.isNaN(date.getTime())) return `${value} 거래일`;
+  return `${date.toLocaleDateString("ko-KR", { month: "2-digit", day: "2-digit", weekday: "short" })} 거래일`;
+}
+
 function formatTradePrice(entry) {
   const price = Number(entry.entryPrice || 0);
   if (entry.currency === "USD") return `$${number.format(price)}`;
@@ -604,6 +611,9 @@ function createJournalRow(entry, compact = false) {
   row.type = "button";
   row.className = `journal-row ${entry.side === "SELL" ? "sell" : "buy"}`;
   row.dataset.journalId = entry.id;
+  const isOpen = selectedJournalEntry?.id === entry.id;
+  row.classList.toggle("is-open", isOpen);
+  row.setAttribute("aria-expanded", String(isOpen));
   const status = entry.review || entry.exitKind || entry.status || "기록";
   const priceText = entry.side === "SELL" ? `${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 청산` : `${formatTradePrice(entry)} 진입`;
   row.innerHTML = `
@@ -618,14 +628,15 @@ function createJournalRow(entry, compact = false) {
 function renderJournalSummary(target, summary = {}, page = false) {
   if (!target) return;
   const today = summary.periodReturns?.today || {};
+  const activeDay = summary.activeDay || {};
   const summaryItems = page
-    ? [["전체 기록", `${Number(summary.count || 0)}건`], ["보유/청산", `${Number(summary.openCount || 0)} / ${Number(summary.closedCount || 0)}`], ["누적 손익", signedWon(summary.totalProfit || 0)], ["승률", signedPercent(summary.winRate || 0)]]
+    ? [["거래일", formatTradingDay(summary.activeTradingDay).replace(" 거래일", "")], ["기록", `${Number(activeDay.count || 0)}건 (${Number(activeDay.openCount || 0)}/${Number(activeDay.closedCount || 0)})`], ["거래일 손익", signedWon(activeDay.totalProfit || 0)], ["거래일 승률", signedPercent(activeDay.winRate || 0)]]
     : [["기록", `${Number(summary.count || 0)}건`], ["보유/청산", `${Number(summary.openCount || 0)} / ${Number(summary.closedCount || 0)}`], ["오늘 손익", signedWon(today.profitKrw || 0)], ["오늘 수익률", signedPercent(today.returnRate || 0)]];
   target.replaceChildren();
   summaryItems.forEach(([label, value], index) => {
     const box = document.createElement("div");
     box.innerHTML = `<span>${label}</span><b>${value}</b>`;
-    if ((page && index === 2) || (!page && index >= 2)) applyTone(box.querySelector("b"), page ? summary.totalProfit : (index === 2 ? today.profitKrw : today.returnRate));
+    if ((page && index >= 2) || (!page && index >= 2)) applyTone(box.querySelector("b"), page ? (index === 2 ? activeDay.totalProfit : activeDay.winRate) : (index === 2 ? today.profitKrw : today.returnRate));
     target.append(box);
   });
 }
@@ -656,8 +667,37 @@ function renderTradingJournal(payload = {}) {
       list.append(empty);
       return;
     }
-    const rows = index === 0 ? entries.slice(0, 4) : entries;
-    rows.forEach((entry) => list.append(createJournalRow(entry, index === 0)));
+    if (index === 0) {
+      const rows = entries.filter((entry) => entry.tradingDay === summary.activeTradingDay).slice(0, 4);
+      if (!rows.length) {
+        const empty = document.createElement("div");
+        empty.className = "journal-empty";
+        empty.textContent = `${formatTradingDay(summary.activeTradingDay)} 기록이 없습니다.`;
+        list.append(empty);
+        return;
+      }
+      rows.forEach((entry) => list.append(createJournalRow(entry, true)));
+      return;
+    }
+
+    const daySummaryByKey = new Map((summary.days || []).map((day) => [day.tradingDay, day]));
+    const grouped = new Map();
+    entries.forEach((entry) => {
+      const day = entry.tradingDay || "거래일 미지정";
+      if (!grouped.has(day)) grouped.set(day, []);
+      grouped.get(day).push(entry);
+    });
+    grouped.forEach((dayEntries, day) => {
+      const group = document.createElement("section");
+      group.className = "journal-day-group";
+      const daySummary = daySummaryByKey.get(day) || {};
+      const heading = document.createElement("div");
+      heading.className = "journal-day-heading";
+      heading.innerHTML = `<b>${formatTradingDay(day)}</b><span>${Number(daySummary.count || dayEntries.length)}건 · ${signedWon(daySummary.totalProfit || 0)} · 승률 ${signedPercent(daySummary.winRate || 0)}</span>`;
+      group.append(heading);
+      dayEntries.forEach((entry) => group.append(createJournalRow(entry, false)));
+      list.append(group);
+    });
   });
 }
 
@@ -677,10 +717,36 @@ function setEditorValues(prefix, entry) {
   if (reviewEl) reviewEl.value = entry.review || "";
 }
 
-function openJournalEditor(entry) {
+function setJournalRowsExpanded(entryId = "") {
+  document.querySelectorAll(".journal-row").forEach((row) => {
+    const expanded = Boolean(entryId && row.dataset.journalId === entryId);
+    row.classList.toggle("is-open", expanded);
+    row.setAttribute("aria-expanded", String(expanded));
+  });
+}
+
+function closeJournalEditor() {
+  selectedJournalEntry = null;
+  document.querySelector("#journalEditor")?.setAttribute("hidden", "");
+  document.querySelector("#journalPageEditor")?.setAttribute("hidden", "");
+  document.querySelector(".journal-workspace")?.classList.remove("detail-open");
+  setJournalRowsExpanded();
+}
+
+function showJournalEditor(entry) {
   selectedJournalEntry = entry;
   setEditorValues("mini", entry);
   setEditorValues("page", entry);
+  document.querySelector(".journal-workspace")?.classList.add("detail-open");
+  setJournalRowsExpanded(entry.id);
+}
+
+function openJournalEditor(entry) {
+  if (selectedJournalEntry?.id === entry.id) {
+    closeJournalEditor();
+    return;
+  }
+  showJournalEditor(entry);
 }
 
 async function loadTradingJournal() {
@@ -720,7 +786,7 @@ async function saveJournalMemo() {
     if (!response.ok) throw new Error(payload.error || "일지 저장 실패");
     renderTradingJournal(payload);
     const refreshed = (payload.entries || []).find((entry) => entry.id === selectedJournalEntry.id);
-    if (refreshed) openJournalEditor(refreshed);
+    if (refreshed) showJournalEditor(refreshed);
     showToast("매매일지를 저장했습니다.");
   } catch (error) {
     showToast(error.message || "일지 저장에 실패했습니다.");

@@ -652,7 +652,8 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
   cursor: pointer;
 }
 .journal-row:hover,
-.journal-row:focus-visible {
+.journal-row:focus-visible,
+.journal-row.is-open {
   border-color: #d8b75f;
   background: #fff7e4;
   outline: none;
@@ -836,8 +837,11 @@ body[data-page="journal"] .journal-page {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
+}
+.journal-workspace.detail-open {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
 }
 .journal-ledger-card,
 .journal-detail-card {
@@ -874,6 +878,33 @@ body[data-page="journal"] .journal-page {
   padding-top: 12px;
   padding-right: 3px;
 }
+.journal-day-group {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+.journal-day-group + .journal-day-group {
+  margin-top: 7px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.journal-day-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 3px;
+  min-width: 0;
+}
+.journal-day-heading b {
+  color: var(--ink);
+  font-size: 12px;
+}
+.journal-day-heading span {
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+}
 .journal-row.sell { border-color: #ead2c9; background: #fff7f3; }
 .journal-row.buy { border-color: #e9dfc6; }
 .journal-detail-card {
@@ -882,6 +913,10 @@ body[data-page="journal"] .journal-page {
   gap: 10px;
   padding: 16px;
   align-self: stretch;
+}
+.journal-editor[hidden],
+.journal-detail-card[hidden] {
+  display: none;
 }
 .journal-detail-top { display: grid; gap: 4px; }
 .journal-detail-top span { color: var(--gold-deep); font-size: 10px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
@@ -911,7 +946,8 @@ body[data-page="journal"] .journal-page {
   .watch-table, .long-term-list { max-height: 420px; }
 }
 @media (max-width: 1023px) {
-  .journal-workspace { grid-template-columns: 1fr; }
+  .journal-workspace,
+  .journal-workspace.detail-open { grid-template-columns: 1fr; }
   .journal-detail-card { min-height: 360px; }
 }
 @media (max-width: 760px) {
@@ -923,4 +959,6 @@ body[data-page="journal"] .journal-page {
   .journal-page-summary { grid-template-columns: 1fr; }
   .journal-ledger-card, .journal-detail-card { padding: 12px; }
   .journal-ledger-head { flex-direction: column; }
+  .journal-day-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .journal-day-heading span { text-align: left; }
 }

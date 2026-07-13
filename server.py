@@ -474,22 +474,14 @@ def now_kst() -> datetime:
     return datetime.now(KST)
 
 
-def kst_date_key(value: Any) -> str:
-    parsed = parse_order_time(value)
-    if parsed is None:
-        return str(value or "")[:10]
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=KST)
-    return parsed.astimezone(KST).strftime("%Y-%m-%d")
-
-
 def record_report_issue(error: Exception | str, category: str = "analysis") -> None:
     message = str(error).strip() or "원인을 확인하지 못한 오류"
     now = now_kst()
+    trading_day = paper_trading_day(now)
     state = load_report_state()
     issues = state.get("issues") or []
     digest = hashlib.sha1(f"{category}:{message}".encode("utf-8", errors="ignore")).hexdigest()[:10]
-    key = f"{now.strftime('%Y-%m-%d')}-{category}-{digest}"
+    key = f"{trading_day}-{category}-{digest}"
     existing = next((item for item in issues if item.get("key") == key), None)
     if existing:
         existing["count"] = int(existing.get("count") or 1) + 1
@@ -498,7 +490,7 @@ def record_report_issue(error: Exception | str, category: str = "analysis") -> N
         issues.append(
             {
                 "key": key,
-                "date": now.strftime("%Y-%m-%d"),
+                "date": trading_day,
                 "category": category,
                 "message": message[:500],
                 "count": 1,
@@ -534,7 +526,7 @@ def strategy_close_review(
     summary: dict[str, Any],
     issues: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    date_key = now_kst().strftime("%Y-%m-%d")
+    date_key = paper_trading_day()
     config = strategy_config()
     enabled = {
         str(item.get("id")): item
@@ -546,13 +538,13 @@ def strategy_close_review(
         item for item in ledger
         if item.get("market") == market
         and item.get("status") == "CLOSED"
-        and kst_date_key(item.get("closedAt")) == date_key
+        and paper_trading_day(item.get("closedAt")) == date_key
     ]
     entries = [
         item for item in orders
         if str(item.get("side") or "").upper() == "BUY"
         and item.get("market") == market
-        and kst_date_key(item.get("createdAt")) == date_key
+        and paper_trading_day(item.get("createdAt")) == date_key
     ]
     exits_by_id = {
         str(item.get("id") or ""): item for item in orders
@@ -645,7 +637,7 @@ def build_market_close_report(
     issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     now = now_kst()
-    date_key = now.strftime("%Y-%m-%d")
+    date_key = paper_trading_day(now)
     market_name = "한국장" if market == "KR" else "미국장" if market == "US" else market
     period = summary.get("periodReturns") or {}
     week = period.get("week") or {}
@@ -655,7 +647,7 @@ def build_market_close_report(
         item for item in orders
         if str(item.get("side") or "").upper() == "BUY"
         and item.get("market") == market
-        and kst_date_key(item.get("createdAt")) == date_key
+        and paper_trading_day(item.get("createdAt")) == date_key
     ]
     top_names = list(dict.fromkeys(str(item.get("name") or item.get("symbol") or "-") for item in today_orders[-5:]))
     good_lines = [f"- {item}" for item in review["good"]]
@@ -1300,6 +1292,17 @@ def parse_order_time(value: Any) -> datetime | None:
     return None
 
 
+def paper_trading_day(value: Any = None) -> str:
+    """Return the KR-open trading day (09:00 KST through the next US close)."""
+    moment = value if isinstance(value, datetime) else parse_order_time(value)
+    if moment is None:
+        moment = now_kst()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=KST)
+    shifted = moment.astimezone(KST) - timedelta(hours=9)
+    return shifted.strftime("%Y-%m-%d")
+
+
 def start_of_week(now: datetime) -> datetime:
     start_day = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     return start_day - timedelta(days=now.weekday())
@@ -1404,10 +1407,11 @@ def paper_trade_ledger(
 
 def period_profit_summary(trades: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     now = now_kst()
+    trading_today = datetime.strptime(paper_trading_day(now), "%Y-%m-%d")
     starts = {
-        "month": datetime(now.year, now.month, 1, tzinfo=now.tzinfo),
-        "week": start_of_week(now),
-        "today": datetime(now.year, now.month, now.day, tzinfo=now.tzinfo),
+        "month": datetime(trading_today.year, trading_today.month, 1),
+        "week": start_of_week(trading_today),
+        "today": trading_today,
     }
     summary = {
         key: {"profitKrw": 0, "investedKrw": 0, "returnRate": 0.0, "positionCount": 0}
@@ -1415,12 +1419,11 @@ def period_profit_summary(trades: list[dict[str, Any]]) -> dict[str, dict[str, A
     }
 
     for trade in trades:
-        occurred_at = trade.get("closedAt") or trade.get("openedAt")
-        created_at = parse_order_time(occurred_at)
-        if created_at is None:
+        trading_day = paper_trading_day(trade.get("closedAt") or trade.get("openedAt"))
+        try:
+            created_at = datetime.strptime(trading_day, "%Y-%m-%d")
+        except ValueError:
             continue
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=now.tzinfo)
         invested = decimal(trade.get("invested"))
         profit = decimal(trade.get("profit"))
         for key, start in starts.items():
@@ -1636,11 +1639,11 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     config = strategy_config()
     target_rate = decimal(config.get("targetRate"))
     stop_rate = decimal(config.get("stopRate"))
-    today = now_kst().strftime("%Y-%m-%d")
+    today = paper_trading_day()
     today_orders = [
         item for item in orders
         if str(item.get("side") or "").upper() == "BUY"
-        and kst_date_key(item.get("createdAt")) == today
+        and paper_trading_day(item.get("createdAt")) == today
     ]
     positions: dict[str, dict[str, Any]] = {}
     for order in orders:
@@ -1824,13 +1827,13 @@ def paper_trade(
     if summary["locked"] or gate["blocked"]:
         return orders[-50:], summary
 
-    today = now_kst().strftime("%Y-%m-%d")
+    today = paper_trading_day()
     todays_market_orders = [
         item
         for item in orders
         if str(item.get("side") or "").upper() == "BUY"
         and item.get("market") == market
-        and kst_date_key(item.get("createdAt")) == today
+        and paper_trading_day(item.get("createdAt")) == today
     ]
     config = strategy_config()
     if len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS):
@@ -2259,6 +2262,7 @@ def build_trading_journal() -> dict[str, Any]:
             {
                 "id": order_id,
                 "createdAt": str(trade.get("closedAt") or trade.get("openedAt") or ""),
+                "tradingDay": paper_trading_day(trade.get("closedAt") or trade.get("openedAt")),
                 "market": trade.get("market"),
                 "symbol": symbol,
                 "name": entry_order.get("name") or exit_order.get("name") or symbol,
@@ -2285,6 +2289,55 @@ def build_trading_journal() -> dict[str, Any]:
             }
         )
 
+    daily: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        day = str(entry.get("tradingDay") or "")
+        bucket = daily.setdefault(
+            day,
+            {
+                "tradingDay": day,
+                "count": 0,
+                "openCount": 0,
+                "closedCount": 0,
+                "wins": 0,
+                "totalInvested": 0.0,
+                "totalProfit": 0.0,
+            },
+        )
+        bucket["count"] += 1
+        bucket["totalInvested"] += decimal(entry.get("invested"))
+        bucket["totalProfit"] += decimal(entry.get("profit"))
+        if entry.get("status") == "청산":
+            bucket["closedCount"] += 1
+            if decimal(entry.get("returnRate")) > 0:
+                bucket["wins"] += 1
+        else:
+            bucket["openCount"] += 1
+
+    days = []
+    for bucket in daily.values():
+        invested = decimal(bucket.get("totalInvested"))
+        closed = int(bucket.get("closedCount") or 0)
+        bucket["returnRate"] = decimal(bucket.get("totalProfit")) / invested if invested else 0.0
+        bucket["winRate"] = int(bucket.get("wins") or 0) / closed if closed else 0.0
+        bucket.pop("wins", None)
+        days.append(bucket)
+    days.sort(key=lambda item: str(item.get("tradingDay") or ""), reverse=True)
+    active_trading_day = paper_trading_day()
+    active_day = next(
+        (item for item in days if item.get("tradingDay") == active_trading_day),
+        {
+            "tradingDay": active_trading_day,
+            "count": 0,
+            "openCount": 0,
+            "closedCount": 0,
+            "totalInvested": 0.0,
+            "totalProfit": 0.0,
+            "returnRate": 0.0,
+            "winRate": 0.0,
+        },
+    )
+
     count = len(trade_ledger)
     period_returns = period_profit_summary(trade_ledger)
     summary = {
@@ -2298,6 +2351,9 @@ def build_trading_journal() -> dict[str, Any]:
         "periodReturns": period_returns,
         "best": max(entries, key=lambda item: decimal(item.get("returnRate")), default=None),
         "worst": min(entries, key=lambda item: decimal(item.get("returnRate")), default=None),
+        "activeTradingDay": active_trading_day,
+        "activeDay": active_day,
+        "days": days,
     }
     return {
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
