@@ -37,6 +37,8 @@ TOKEN_LOCK = threading.Lock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
+PAPER_SCHEMA_VERSION = 2
+PAPER_STARTING_CAPITAL_KRW = 1_000_000
 PAPER_TARGET_RATE = 0.01
 PAPER_STOP_RATE = -0.005
 PAPER_MAX_DAILY_ORDERS = 3
@@ -128,6 +130,7 @@ ANALYSIS: dict[str, Any] = {
     "reportStatus": {"enabled": False, "lastSentAt": None, "lastError": None},
 }
 CALENDAR_CACHE: dict[str, Any] = {"expiresAt": 0.0, "KR": {}, "US": {}}
+FX_CACHE: dict[str, Any] = {"expiresAt": 0.0, "usdKrw": 0.0}
 
 
 
@@ -522,8 +525,6 @@ def percent(value: Any) -> str:
 def market_money(value: Any, market: str) -> str:
     amount = decimal(value)
     sign = "+" if amount >= 0 else "-"
-    if market == "US":
-        return f"{sign}${abs(amount):,.2f}"
     return f"{sign}{abs(round(amount)):,}원"
 
 
@@ -1241,21 +1242,50 @@ def market_schedule(env: dict[str, str]) -> tuple[Any, str]:
     return None, "시장 휴장"
 
 
-def load_paper_orders() -> list[dict[str, Any]]:
+def new_paper_state() -> dict[str, Any]:
+    return {
+        "schemaVersion": PAPER_SCHEMA_VERSION,
+        "startingCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
+        "allocationMode": "confidence",
+        "currency": "KRW",
+        "resetAt": now_kst().strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "orders": [],
+    }
+
+
+def save_paper_state(state: dict[str, Any]) -> None:
+    PAPER_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_paper_state() -> dict[str, Any]:
     if not PAPER_PATH.exists():
-        return []
+        state = new_paper_state()
+        save_paper_state(state)
+        return state
     try:
-        orders = json.loads(PAPER_PATH.read_text(encoding="utf-8")).get("orders") or []
-        return orders if isinstance(orders, list) else []
+        state = json.loads(PAPER_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return []
+        state = {}
+    if not isinstance(state, dict) or int(state.get("schemaVersion") or 0) != PAPER_SCHEMA_VERSION:
+        state = new_paper_state()
+        save_paper_state(state)
+        save_journal_state({"notes": {}, "reviews": {}})
+    state.setdefault("startingCapitalKrw", PAPER_STARTING_CAPITAL_KRW)
+    state.setdefault("allocationMode", "confidence")
+    state.setdefault("currency", "KRW")
+    state.setdefault("orders", [])
+    return state
+
+
+def load_paper_orders() -> list[dict[str, Any]]:
+    orders = load_paper_state().get("orders") or []
+    return orders if isinstance(orders, list) else []
 
 
 def save_paper_orders(orders: list[dict[str, Any]]) -> None:
-    PAPER_PATH.write_text(
-        json.dumps({"orders": orders}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    state = load_paper_state()
+    state["orders"] = orders
+    save_paper_state(state)
 
 
 def parse_order_time(value: Any) -> datetime | None:
@@ -1373,7 +1403,7 @@ def paper_trade_ledger(
 
 
 def period_profit_summary(trades: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    now = datetime.now().astimezone()
+    now = now_kst()
     starts = {
         "month": datetime(now.year, now.month, 1, tzinfo=now.tzinfo),
         "week": start_of_week(now),
@@ -1403,6 +1433,34 @@ def period_profit_summary(trades: list[dict[str, Any]]) -> dict[str, dict[str, A
         invested = item["investedKrw"]
         item["returnRate"] = item["profitKrw"] / invested if invested else 0.0
     return summary
+
+
+def paper_capital_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    state = load_paper_state()
+    starting = decimal(state.get("startingCapitalKrw") or PAPER_STARTING_CAPITAL_KRW)
+    closed = [item for item in trades if item.get("status") == "CLOSED"]
+    opened = [item for item in trades if item.get("status") == "OPEN"]
+    realized = sum(decimal(item.get("profit")) for item in closed)
+    unrealized = sum(decimal(item.get("profit")) for item in opened)
+    open_invested = sum(decimal(item.get("invested")) for item in opened)
+    cash = max(0.0, starting + realized - open_invested)
+    equity = cash + open_invested + unrealized
+    return {
+        "startingCapitalKrw": starting,
+        "cashKrw": cash,
+        "openInvestedKrw": open_invested,
+        "realizedProfitKrw": realized,
+        "unrealizedProfitKrw": unrealized,
+        "equityKrw": equity,
+        "returnRate": (equity - starting) / starting if starting else 0.0,
+        "currency": "KRW",
+        "allocationMode": "confidence",
+    }
+
+
+def confidence_allocation_rate(score: Any) -> float:
+    normalized = clamp(score, 80, 100, 80)
+    return 0.15 + ((normalized - 80) / 20) * 0.45
 
 
 
@@ -1578,22 +1636,26 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     config = strategy_config()
     target_rate = decimal(config.get("targetRate"))
     stop_rate = decimal(config.get("stopRate"))
-    today = time.strftime("%Y-%m-%d")
+    today = now_kst().strftime("%Y-%m-%d")
     today_orders = [
-        item for item in orders if item.get("side") == "BUY" and str(item.get("createdAt", "")).startswith(today)
+        item for item in orders
+        if str(item.get("side") or "").upper() == "BUY"
+        and kst_date_key(item.get("createdAt")) == today
     ]
     positions: dict[str, dict[str, Any]] = {}
     for order in orders:
         symbol = str(order.get("symbol") or "")
         if not symbol:
             continue
-        if order.get("side") == "BUY":
+        side = str(order.get("side") or "").upper()
+        if side == "BUY":
             positions[symbol] = order
-        elif order.get("side") == "SELL":
+        elif side == "SELL":
             positions.pop(symbol, None)
 
     results_by_symbol = {str(item.get("symbol")): item for item in results}
     trade_ledger = paper_trade_ledger(orders, results_by_symbol)
+    capital = paper_capital_summary(trade_ledger)
     position_returns = []
     for symbol, order in positions.items():
         current = results_by_symbol.get(symbol)
@@ -1619,6 +1681,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "targetRate": target_rate,
         "stopRate": stop_rate,
         "strategyConfig": config,
+        "capital": capital,
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(trade_ledger),
         "technicalReview": tech_review,
@@ -1681,6 +1744,9 @@ def refresh_position_prices(
                 symbol = str(stock.get("symbol") or "")
                 price = decimal(extract_stock_price(stock))
                 if symbol and price:
+                    order = positions.get(symbol) or {}
+                    if str(order.get("sourceCurrency") or "") == "USD":
+                        price *= decimal(order.get("fxRate")) or usd_krw_rate(env)
                     prices[symbol] = price
         except TossApiError:
             pass
@@ -1732,6 +1798,8 @@ def close_paper_positions_if_needed(
                 "entryPrice": entry,
                 "entryOrderId": order.get("id"),
                 "currency": order.get("currency"),
+                "sourceCurrency": order.get("sourceCurrency"),
+                "fxRate": order.get("fxRate") or 1,
                 "status": "FILLED",
                 "createdAt": now,
                 "reason": reason,
@@ -1756,28 +1824,48 @@ def paper_trade(
     if summary["locked"] or gate["blocked"]:
         return orders[-50:], summary
 
-    today = time.strftime("%Y-%m-%d")
+    today = now_kst().strftime("%Y-%m-%d")
     todays_market_orders = [
         item
         for item in orders
-        if item.get("side") == "BUY"
+        if str(item.get("side") or "").upper() == "BUY"
         and item.get("market") == market
-        and str(item.get("createdAt", "")).startswith(today)
-        and str(item.get("side") or "").upper() == "BUY"
+        and kst_date_key(item.get("createdAt")) == today
     ]
     config = strategy_config()
     if len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS):
         return orders[-50:], summary
     existing = {(item.get("market"), item.get("symbol")) for item in open_paper_positions(orders).values()}
-    candidate = next(
+    capital = summary.get("capital") or {}
+    starting_capital = decimal(capital.get("startingCapitalKrw") or PAPER_STARTING_CAPITAL_KRW)
+    available_cash = decimal(capital.get("cashKrw"))
+    candidate = None
+    quantity = 0
+    allocation_rate = 0.0
+    allocated_krw = 0.0
+    ranked_candidates = sorted(
         (
-            item
-            for item in results
+            item for item in results
             if item.get("verdict") == "정밀 분석"
             and (market, item.get("symbol")) not in existing
         ),
-        None,
+        key=lambda item: (decimal(item.get("score")), -decimal(item.get("rank") or 999)),
+        reverse=True,
     )
+    for item in ranked_candidates:
+        price_krw = decimal(item.get("lastPrice"))
+        if price_krw <= 0:
+            continue
+        confidence_rate = confidence_allocation_rate(item.get("score"))
+        budget = min(available_cash, starting_capital * confidence_rate)
+        shares = int(budget // price_krw)
+        if shares < 1:
+            continue
+        candidate = item
+        quantity = shares
+        allocation_rate = confidence_rate
+        allocated_krw = price_krw * shares
+        break
     if candidate:
         orders.append(
             {
@@ -1787,9 +1875,14 @@ def paper_trade(
                 "symbol": candidate.get("symbol"),
                 "name": candidate.get("name"),
                 "side": "BUY",
-                "quantity": 1,
+                "quantity": quantity,
                 "price": candidate.get("lastPrice"),
-                "currency": candidate.get("currency"),
+                "currency": "KRW",
+                "sourceCurrency": candidate.get("sourceCurrency") or candidate.get("currency"),
+                "sourcePrice": candidate.get("sourcePrice"),
+                "fxRate": candidate.get("fxRate") or 1,
+                "allocationRate": allocation_rate,
+                "allocatedKrw": allocated_krw,
                 "status": "FILLED",
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "reason": candidate.get("reason"),
@@ -1800,6 +1893,21 @@ def paper_trade(
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
     return orders[-50:], summary
+
+
+def usd_krw_rate(env: dict[str, str]) -> float:
+    if time.time() < decimal(FX_CACHE.get("expiresAt")) and decimal(FX_CACHE.get("usdKrw")) > 0:
+        return decimal(FX_CACHE.get("usdKrw"))
+    exchange = toss_get(
+        "/api/v1/exchange-rate?baseCurrency=USD&quoteCurrency=KRW", env
+    ).get("result") or {}
+    rate = decimal(exchange.get("midRate") or exchange.get("rate"))
+    if rate <= 0:
+        raise TossApiError(502, "exchange-rate-missing", "미국 종목 원화 환산 환율을 불러오지 못했습니다.")
+    FX_CACHE["usdKrw"] = rate
+    FX_CACHE["expiresAt"] = time.time() + 60
+    return rate
+
 
 def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
     query = urllib.parse.urlencode(
@@ -1818,9 +1926,13 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
         f"/api/v1/stocks?{urllib.parse.urlencode({'symbols': ','.join(symbols)})}", env
     ).get("result") or []
     names = {str(stock.get("symbol")): stock.get("name") for stock in stocks}
+    exchange_rate = usd_krw_rate(env) if market == "US" else 1.0
     results = []
     for row in rows:
         price = row.get("price") or {}
+        source_currency = str(row.get("currency") or ("USD" if market == "US" else "KRW"))
+        source_price = decimal(price.get("lastPrice"))
+        normalized_price = source_price * exchange_rate if source_currency == "USD" else source_price
         rate = decimal(price.get("changeRate"))
         rank = int(row.get("rank") or 30)
         liquidity_score = max(0, 40 - ((rank - 1) * 1.2))
@@ -1847,8 +1959,12 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
                 "rank": row.get("rank"),
                 "symbol": row.get("symbol"),
                 "name": names.get(str(row.get("symbol"))) or row.get("symbol"),
-                "currency": row.get("currency"),
-                "lastPrice": price.get("lastPrice"),
+                "marketCountry": market,
+                "currency": "KRW",
+                "sourceCurrency": source_currency,
+                "sourcePrice": source_price,
+                "fxRate": exchange_rate if source_currency == "USD" else 1.0,
+                "lastPrice": normalized_price,
                 "dailyRate": rate,
                 "tradingAmount": row.get("tradingAmount"),
                 "score": score,

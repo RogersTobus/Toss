@@ -453,7 +453,7 @@ function renderScannerResults(items) {
   if (!items?.length) return;
   const normalized = items.map((item) => ({
     ...item,
-    marketCountry: item.currency === "USD" ? "US" : "KR",
+    marketCountry: item.marketCountry || (item.sourceCurrency === "USD" ? "US" : "KR"),
     profitRate: item.dailyRate,
     quantity: 0,
   }));
@@ -463,7 +463,7 @@ function renderScannerResults(items) {
     row.className = "table-row";
     const identity = document.createElement("span");
     const ticker = document.createElement("b");
-    ticker.className = `ticker ${item.currency === "USD" ? "nv" : "kr"}`;
+    ticker.className = `ticker ${item.marketCountry === "US" ? "nv" : "kr"}`;
     ticker.textContent = item.name?.slice(0, 1) || "·";
     const title = document.createElement("strong");
     title.textContent = item.name;
@@ -731,6 +731,7 @@ async function saveJournalMemo() {
 
 function renderPaperSummary(state) {
   const summary = state.paperSummary || {};
+  const capital = summary.capital || {};
   const averageReturn = Number(summary.averageReturn || 0);
   const targetRate = Number(summary.targetRate || 0.01);
   const stopRate = Number(summary.stopRate || -0.005);
@@ -785,7 +786,8 @@ function renderPaperSummary(state) {
     if (metaElement) metaElement.textContent = `투입금 ${plainWon(invested)} · ${count}개`;
   });
 
-  document.querySelector("#botStatus").textContent = `${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
+  const equityKrw = Number(capital.equityKrw ?? capital.startingCapitalKrw ?? 1_000_000);
+  document.querySelector("#botStatus").textContent = `모의자산 ${plainWon(equityKrw)} · ${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
   const positionInsight = document.querySelector("#positionInsight");
   const orderInsight = document.querySelector("#orderInsight");
   if (positionInsight) positionInsight.textContent = `${openPositionCount}개`;
@@ -1081,4 +1083,3 @@ window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
 window.setInterval(loadTradingJournal, 60_000);
-
