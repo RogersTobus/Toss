@@ -2112,6 +2112,99 @@ def save_journal_state(state: dict[str, Any]) -> None:
     JOURNAL_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def journal_holding_time(opened_at: Any, closed_at: Any) -> str:
+    opened = parse_order_time(opened_at)
+    closed = parse_order_time(closed_at)
+    if not opened or not closed:
+        return "측정 중"
+    elapsed = max(0, int((closed - opened).total_seconds()))
+    if elapsed < 60:
+        return f"{elapsed}초"
+    minutes, seconds = divmod(elapsed, 60)
+    if minutes < 60:
+        return f"{minutes}분 {seconds}초"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}시간 {minutes}분"
+
+
+def automatic_journal_note(
+    trade: dict[str, Any],
+    entry_order: dict[str, Any],
+    exit_order: dict[str, Any],
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    """Create an evidence-based draft while preserving any note the user saved."""
+    is_closed = trade.get("status") == "CLOSED"
+    entry_reason = clean_text(
+        entry_order.get("reason") or current.get("reason"),
+        "자동 진입 당시 판단 근거가 기록되지 않았습니다.",
+        240,
+    )
+    exit_reason = clean_text(
+        exit_order.get("reason"),
+        "아직 보유 중이라 청산 판단을 기다리고 있습니다.",
+        240,
+    )
+    score = decimal(entry_order.get("entryScore"))
+    allocation_rate = decimal(entry_order.get("allocationRate"))
+    return_rate = decimal(trade.get("returnRate"))
+    profit = decimal(trade.get("profit"))
+    exit_kind = clean_text(exit_order.get("exitKind"), "", 40)
+    stop_rate = decimal(strategy_config().get("stopRate") or PAPER_STOP_RATE)
+    duration = journal_holding_time(trade.get("openedAt"), trade.get("closedAt"))
+
+    entry_facts = []
+    if score:
+        entry_facts.append(f"평가 {score:.0f}점")
+    if allocation_rate:
+        entry_facts.append(f"모의자금 {allocation_rate * 100:.1f}% 배정")
+    entry_context = f" ({', '.join(entry_facts)})" if entry_facts else ""
+
+    if not is_closed:
+        review = "관찰 필요"
+        evaluation = "포지션 보유 중입니다. 손익과 청산 조건이 확정된 뒤 최종 평가합니다."
+        improvement = "손실선과 목표가를 유지하고, 진입 근거가 무너지면 지체 없이 청산합니다."
+        result_line = f"현재: {percent(return_rate)} · 평가손익 {money(profit)}"
+        tags = ["자동 작성", "보유중"]
+    elif exit_kind == "손실선":
+        stop_slippage = stop_rate - return_rate
+        if stop_slippage <= 0.001:
+            review = "손절 준수"
+            evaluation = f"설정 손실선 {percent(stop_rate)} 부근에서 청산해 손실 제한 규칙을 지켰습니다."
+            improvement = "같은 손실을 줄이려면 진입 직전 급등폭과 거래량 지속성을 더 엄격히 확인합니다."
+        else:
+            review = "규칙 위반"
+            evaluation = (
+                f"설정 손실선 {percent(stop_rate)}보다 {abs(stop_slippage) * 100:.2f}%p 불리하게 청산됐습니다."
+            )
+            improvement = "시세 수집과 청산 주기를 점검해 손실선 도달 즉시 주문 상태가 일치하도록 수정합니다."
+        result_line = f"결과: {percent(return_rate)} · 확정손익 {money(profit)} · 보유 {duration}"
+        tags = ["자동 작성", "손절"]
+    elif return_rate > 0:
+        review = "좋은 진입"
+        evaluation = "진입 근거가 실제 수익으로 이어졌고 수익 구간에서 청산이 완료됐습니다."
+        improvement = "거래량과 추세가 유지된 구간을 다시 확인해 같은 진입 조건의 재현성을 높입니다."
+        result_line = f"결과: {percent(return_rate)} · 확정손익 {money(profit)} · 보유 {duration}"
+        tags = ["자동 작성", "수익"]
+    else:
+        review = "성급한 진입"
+        evaluation = "진입 뒤 기대한 추세가 이어지지 않아 손실 또는 무수익으로 종료됐습니다."
+        improvement = "추격 진입을 피하고 거래대금·돌파 유지·호가 안정성이 함께 확인될 때만 진입합니다."
+        result_line = f"결과: {percent(return_rate)} · 확정손익 {money(profit)} · 보유 {duration}"
+        tags = ["자동 작성", "개선 필요"]
+
+    memo = "\n".join(
+        [
+            f"진입: {entry_reason}{entry_context}",
+            f"청산: {exit_reason}",
+            result_line,
+            f"복기: {evaluation}",
+            f"다음 개선: {improvement}",
+        ]
+    )
+    return {"memo": memo, "review": review, "tags": tags}
+
+
 def build_trading_journal() -> dict[str, Any]:
     orders = load_paper_orders()
     with ANALYSIS_LOCK:
@@ -2157,6 +2250,8 @@ def build_trading_journal() -> dict[str, Any]:
             or "진입 사유 기록 없음"
         )
         note = notes.get(order_id) or notes.get(exit_order_id) or {}
+        automatic_note = automatic_journal_note(trade, entry_order, exit_order, current)
+        note_source = "user" if note else "auto"
         entries.append(
             {
                 "id": order_id,
@@ -2179,9 +2274,10 @@ def build_trading_journal() -> dict[str, Any]:
                 "exitKind": exit_order.get("exitKind"),
                 "entryOrderId": order_id,
                 "exitOrderId": exit_order_id,
-                "memo": note.get("memo", ""),
-                "review": note.get("review", ""),
-                "tags": note.get("tags", []),
+                "memo": note.get("memo", automatic_note["memo"]),
+                "review": note.get("review", automatic_note["review"]),
+                "tags": note.get("tags", automatic_note["tags"]),
+                "noteSource": note_source,
                 "updatedAt": note.get("updatedAt"),
             }
         )
