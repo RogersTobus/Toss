@@ -2251,7 +2251,10 @@ def build_trading_journal() -> dict[str, Any]:
         )
         note = notes.get(order_id) or notes.get(exit_order_id) or {}
         automatic_note = automatic_journal_note(trade, entry_order, exit_order, current)
-        note_source = "user" if note else "auto"
+        user_memo = clean_text(note.get("memo"), "", 1200)
+        user_review = clean_text(note.get("review"), "", 400)
+        user_tags = note.get("tags") if isinstance(note.get("tags"), list) else []
+        note_source = "user" if user_memo or user_review or user_tags else "auto"
         entries.append(
             {
                 "id": order_id,
@@ -2274,9 +2277,9 @@ def build_trading_journal() -> dict[str, Any]:
                 "exitKind": exit_order.get("exitKind"),
                 "entryOrderId": order_id,
                 "exitOrderId": exit_order_id,
-                "memo": note.get("memo", automatic_note["memo"]),
-                "review": note.get("review", automatic_note["review"]),
-                "tags": note.get("tags", automatic_note["tags"]),
+                "memo": user_memo or automatic_note["memo"],
+                "review": user_review or automatic_note["review"],
+                "tags": user_tags or automatic_note["tags"],
                 "noteSource": note_source,
                 "updatedAt": note.get("updatedAt"),
             }
