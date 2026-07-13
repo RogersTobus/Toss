@@ -25,6 +25,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 PAPER_PATH = ROOT / "paper_state.json"
 REPORT_PATH = ROOT / "report_state.json"
+JOURNAL_PATH = ROOT / "journal_state.json"
 STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
 DEPLOY_STATE_PATH = ROOT / ".deploy" / "last_sync.json"
 BASE_URL = "https://openapi.tossinvest.com"
@@ -1567,6 +1568,125 @@ def deploy_status() -> dict[str, Any]:
     except Exception:
         return {"available": False, "message": "배포 기록 읽기 실패"}
 
+
+def load_journal_state() -> dict[str, Any]:
+    if not JOURNAL_PATH.exists():
+        return {"notes": {}, "reviews": {}}
+    try:
+        data = json.loads(JOURNAL_PATH.read_text(encoding="utf-8"))
+        return {
+            "notes": data.get("notes") or {},
+            "reviews": data.get("reviews") or {},
+        }
+    except (json.JSONDecodeError, OSError):
+        return {"notes": {}, "reviews": {}}
+
+
+def save_journal_state(state: dict[str, Any]) -> None:
+    JOURNAL_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def build_trading_journal() -> dict[str, Any]:
+    orders = load_paper_orders()
+    with ANALYSIS_LOCK:
+        analysis = dict(ANALYSIS)
+    results = analysis.get("results") or []
+    results_by_symbol = {str(item.get("symbol")): item for item in results}
+    state = load_journal_state()
+    notes = state.get("notes") or {}
+    entries: list[dict[str, Any]] = []
+    total_invested = 0.0
+    total_profit = 0.0
+    wins = 0
+    closed_count = 0
+
+    for order in sorted(orders, key=lambda item: str(item.get("createdAt") or ""), reverse=True):
+        order_id = str(order.get("id") or "")
+        symbol = str(order.get("symbol") or "")
+        current = results_by_symbol.get(symbol) or {}
+        entry_price = decimal(order.get("price"))
+        last_price = decimal(current.get("lastPrice") or order.get("lastPrice") or entry_price)
+        quantity = decimal(order.get("quantity") or 1)
+        invested = entry_price * quantity
+        profit = (last_price - entry_price) * quantity if entry_price and last_price else 0.0
+        return_rate = profit / invested if invested else 0.0
+        is_closed = str(order.get("side")) == "SELL" or str(order.get("status", "")).upper() in ("CLOSED", "SOLD")
+        verdict = current.get("verdict") or ("청산" if is_closed else "보유/관찰")
+        reason = current.get("reason") or order.get("reason") or "진입 사유 기록 없음"
+        note = notes.get(order_id) or {}
+        total_invested += invested
+        total_profit += profit
+        if return_rate > 0:
+            wins += 1
+        if is_closed:
+            closed_count += 1
+        created_at = str(order.get("createdAt") or "")
+        entries.append(
+            {
+                "id": order_id,
+                "createdAt": created_at,
+                "market": order.get("market"),
+                "symbol": symbol,
+                "name": order.get("name") or symbol,
+                "side": order.get("side"),
+                "status": "청산" if is_closed else "보유중",
+                "quantity": quantity,
+                "entryPrice": entry_price,
+                "lastPrice": last_price,
+                "currency": order.get("currency"),
+                "invested": invested,
+                "profit": profit,
+                "returnRate": return_rate,
+                "verdict": verdict,
+                "reason": reason,
+                "memo": note.get("memo", ""),
+                "review": note.get("review", ""),
+                "tags": note.get("tags", []),
+                "updatedAt": note.get("updatedAt"),
+            }
+        )
+
+    count = len(entries)
+    summary = {
+        "count": count,
+        "openCount": max(0, count - closed_count),
+        "closedCount": closed_count,
+        "winRate": wins / count if count else 0.0,
+        "totalInvested": total_invested,
+        "totalProfit": total_profit,
+        "averageReturn": total_profit / total_invested if total_invested else 0.0,
+        "best": max(entries, key=lambda item: decimal(item.get("returnRate")), default=None),
+        "worst": min(entries, key=lambda item: decimal(item.get("returnRate")), default=None),
+    }
+    return {
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "summary": summary,
+        "entries": entries[:30],
+    }
+
+
+def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:
+    order_id = clean_text(payload.get("id"), "", 80)
+    if not order_id:
+        raise TossApiError(400, "journal-id-missing", "저장할 매매 기록 ID가 없습니다.")
+    memo = clean_text(payload.get("memo"), "", 1200)
+    review = clean_text(payload.get("review"), "", 400)
+    tags_raw = payload.get("tags") or []
+    if isinstance(tags_raw, str):
+        tags = [clean_text(item, "", 24) for item in tags_raw.split(",")]
+    else:
+        tags = [clean_text(item, "", 24) for item in tags_raw]
+    tags = [item for item in tags if item][:6]
+    state = load_journal_state()
+    notes = state.setdefault("notes", {})
+    notes[order_id] = {
+        "memo": memo,
+        "review": review,
+        "tags": tags,
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    save_journal_state(state)
+    return build_trading_journal()
 def analysis_snapshot() -> dict[str, Any]:
     with ANALYSIS_LOCK:
         return dict(ANALYSIS)
@@ -1624,6 +1744,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/strategy/config":
             self.send_json(strategy_payload())
             return
+        if path == "/api/trading-journal":
+            self.send_json(build_trading_journal())
+            return
         if path == "/api/kakao/auth-url":
             try:
                 self.send_json({"url": kakao_auth_url(load_env())})
@@ -1679,6 +1802,12 @@ class Handler(BaseHTTPRequestHandler):
             except TossApiError as exc:
                 self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
             return
+        if path == "/api/trading-journal/note":
+            try:
+                self.send_json(save_journal_note(self.read_json_body()))
+            except TossApiError as exc:
+                self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
+            return
         if path == "/api/strategy/config":
             try:
                 config = save_strategy_config(self.read_json_body())
@@ -1706,3 +1835,6 @@ if __name__ == "__main__":
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
+
+
+

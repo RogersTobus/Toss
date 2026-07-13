@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
@@ -161,6 +161,33 @@
 
             <!-- helper: renderPaperOrders가 참조. 화면 비노출, dayTradeStatus 갱신용 -->
             <div class="session-list" id="paperOrders" hidden></div>
+            <div class="trading-journal-panel">
+              <div class="section-kicker"><span>매매일지</span><b id="journalUpdatedAt">기록 대기</b></div>
+              <div class="journal-summary" id="journalSummary">
+                <div><span>기록</span><b>0건</b></div>
+                <div><span>승률</span><b>0.00%</b></div>
+                <div><span>누적 손익</span><b>+₩0</b></div>
+                <div><span>평균 수익률</span><b>+0.00%</b></div>
+              </div>
+              <div class="journal-list" id="tradingJournalList">
+                <div class="journal-empty">모의 매매가 기록되면 자동으로 일지가 쌓입니다.</div>
+              </div>
+              <div class="journal-editor" id="journalEditor" hidden>
+                <div><b id="journalEditorTitle">거래 메모</b><span id="journalEditorMeta">기록 선택 대기</span></div>
+                <textarea id="journalMemo" rows="3" placeholder="진입 이유, 감정, 놓친 점, 다음 개선점을 적어두세요."></textarea>
+                <div class="journal-editor-actions">
+                  <select id="journalReview">
+                    <option value="">복기 판단 선택</option>
+                    <option value="좋은 진입">좋은 진입</option>
+                    <option value="성급한 진입">성급한 진입</option>
+                    <option value="손절 준수">손절 준수</option>
+                    <option value="규칙 위반">규칙 위반</option>
+                    <option value="관찰 필요">관찰 필요</option>
+                  </select>
+                  <button type="button" class="journal-save-btn" id="journalSaveBtn">일지 저장</button>
+                </div>
+              </div>
+            </div>
 
             <button class="strategy-btn" data-open-page="quant">전략 설정 컨트롤타워 열기 <span>→</span></button>
           </article>
@@ -245,3 +272,5 @@
   <script src="app.js"></script>
 </body>
 </html>
+
+

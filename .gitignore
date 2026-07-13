@@ -14,3 +14,4 @@ logs/
 report_state.json
 kakao_state.json
 strategy_config.json
+journal_state.json

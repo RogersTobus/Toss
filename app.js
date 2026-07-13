@@ -6,6 +6,7 @@ let liveMarketSession = null;
 let selectedAnalysisItem = null;
 let appVersion = null;
 let currentStrategies = [];
+let selectedJournalEntry = null;
 
 function signedWon(value) {
   const amount = Number(value || 0);
@@ -585,6 +586,118 @@ function renderMarketReports(state) {
   });
 }
 
+
+function formatJournalTime(value) {
+  if (!value) return "시간 없음";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+  return date.toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function formatTradePrice(entry) {
+  const price = Number(entry.entryPrice || 0);
+  if (entry.currency === "USD") return `$${number.format(price)}`;
+  return won.format(price);
+}
+
+function renderTradingJournal(payload = {}) {
+  const summaryEl = document.querySelector("#journalSummary");
+  const list = document.querySelector("#tradingJournalList");
+  const updated = document.querySelector("#journalUpdatedAt");
+  if (!summaryEl || !list) return;
+  const summary = payload.summary || {};
+  const entries = payload.entries || [];
+  if (updated) updated.textContent = payload.updatedAt ? `${formatJournalTime(payload.updatedAt)} 갱신` : "기록 대기";
+
+  const summaryItems = [
+    ["기록", `${Number(summary.count || 0)}건`],
+    ["승률", signedPercent(summary.winRate || 0)],
+    ["누적 손익", signedWon(summary.totalProfit || 0)],
+    ["평균 수익률", signedPercent(summary.averageReturn || 0)],
+  ];
+  summaryEl.replaceChildren();
+  summaryItems.forEach(([label, value], index) => {
+    const box = document.createElement("div");
+    box.innerHTML = `<span>${label}</span><b>${value}</b>`;
+    if (index >= 2) applyTone(box.querySelector("b"), index === 2 ? summary.totalProfit : summary.averageReturn);
+    summaryEl.append(box);
+  });
+
+  list.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "journal-empty";
+    empty.textContent = "모의 매매가 기록되면 자동으로 일지가 쌓입니다.";
+    list.append(empty);
+    return;
+  }
+  entries.slice(0, 4).forEach((entry) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "journal-row";
+    row.dataset.journalId = entry.id;
+    row.innerHTML = `
+      <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(entry.createdAt)} · ${entry.market || "-"} · ${formatTradePrice(entry)}</small></span>
+      <em class="${Number(entry.returnRate || 0) >= 0 ? "positive-text" : "negative-text"}">${signedPercent(entry.returnRate || 0)}</em>
+      <strong>${entry.review || entry.status || "기록"}</strong>
+    `;
+    row.addEventListener("click", () => openJournalEditor(entry));
+    list.append(row);
+  });
+}
+
+function openJournalEditor(entry) {
+  selectedJournalEntry = entry;
+  const editor = document.querySelector("#journalEditor");
+  if (!editor) return;
+  editor.hidden = false;
+  document.querySelector("#journalEditorTitle").textContent = `${entry.name || entry.symbol} 매매 메모`;
+  document.querySelector("#journalEditorMeta").textContent = `${formatJournalTime(entry.createdAt)} · ${entry.reason || "진입 사유 없음"}`;
+  document.querySelector("#journalMemo").value = entry.memo || "";
+  document.querySelector("#journalReview").value = entry.review || "";
+}
+
+async function loadTradingJournal() {
+  try {
+    const response = await fetch("/api/trading-journal", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "매매일지를 불러오지 못했습니다.");
+    renderTradingJournal(payload);
+  } catch (error) {
+    const list = document.querySelector("#tradingJournalList");
+    if (list) list.innerHTML = `<div class="journal-empty">${error.message || "매매일지 연결 확인 필요"}</div>`;
+  }
+}
+
+async function saveJournalMemo() {
+  if (!selectedJournalEntry) {
+    showToast("먼저 매매 기록을 선택해주세요.");
+    return;
+  }
+  const button = document.querySelector("#journalSaveBtn");
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch("/api/trading-journal/note", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: selectedJournalEntry.id,
+        memo: document.querySelector("#journalMemo")?.value || "",
+        review: document.querySelector("#journalReview")?.value || "",
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "일지 저장 실패");
+    renderTradingJournal(payload);
+    const refreshed = (payload.entries || []).find((entry) => entry.id === selectedJournalEntry.id);
+    if (refreshed) openJournalEditor(refreshed);
+    showToast("매매일지를 저장했습니다.");
+  } catch (error) {
+    showToast(error.message || "일지 저장에 실패했습니다.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
 function renderPaperSummary(state) {
   const summary = state.paperSummary || {};
   const averageReturn = Number(summary.averageReturn || 0);
@@ -909,6 +1022,7 @@ async function loadAnalysisStatus() {
       renderPaperOrders(state.paperOrders, state.activeMarket);
       renderPaperSummary(state);
       renderMarketReports(state);
+      loadTradingJournal();
       if (document.body.dataset.page === "quant" && !document.activeElement?.closest?.("#strategyTower")) {
         loadStrategyConfig();
       }
@@ -925,6 +1039,7 @@ document.querySelector(".mobile-menu").addEventListener("click", () => {
 document.querySelector(".add-btn")?.addEventListener("click", () => showToast("전략 만들기 화면을 준비 중입니다."));
 // 전략 컨트롤타워 이동은 [data-open-page] 핸들러가 처리합니다.
 document.querySelector("#strategySaveBtn")?.addEventListener("click", saveStrategyConfig);
+document.querySelector("#journalSaveBtn")?.addEventListener("click", saveJournalMemo);
 document.querySelectorAll("[data-slack-test]").forEach((button) => {
   button.addEventListener("click", () => testSlackChannel(button.dataset.slackTest, button));
 });
@@ -933,6 +1048,7 @@ loadDashboard();
 loadAnalysisStatus();
 loadHealthStatus();
 loadStrategyConfig();
+loadTradingJournal();
 updateMarketClock();
 updateGreeting();
 window.setInterval(updateMarketClock, 1_000);
@@ -940,3 +1056,6 @@ window.setInterval(updateGreeting, 60_000);
 window.setInterval(loadDashboard, 60_000);
 window.setInterval(loadAnalysisStatus, 60_000);
 window.setInterval(loadHealthStatus, 60_000);
+window.setInterval(loadTradingJournal, 60_000);
+
+
