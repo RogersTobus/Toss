@@ -28,9 +28,9 @@
         <button class="nav-item" data-page="quant">
           <span class="nav-icon">⌘</span><span>Quant Lab</span>
         </button>
-        <button class="nav-item" data-page="orders">
-          <span class="nav-icon">↗</span><span>Orders</span>
-          <span class="nav-count">3</span>
+        <button class="nav-item" data-page="journal">
+          <span class="nav-icon">↗</span><span>매매일지</span>
+          <span class="nav-count" id="journalNavCount">0</span>
         </button>
       </nav>
 
@@ -189,6 +189,7 @@
               </div>
             </div>
 
+            <button class="strategy-btn secondary-btn" data-open-page="journal">전체 매매일지 열기 <span>→</span></button>
             <button class="strategy-btn" data-open-page="quant">전략 설정 컨트롤타워 열기 <span>→</span></button>
           </article>
 
@@ -262,6 +263,54 @@
               <small>텍스트를 수정하고 저장하면 다음 분석부터 이 문구를 기준으로 관리합니다.</small>
               <button type="button" class="strategy-btn" id="strategySaveBtn">전략 저장 <span>→</span></button>
             </div>
+          </div>
+        </section>
+        <!-- ---------- TRADING JOURNAL (page 3) ---------- -->
+        <section class="journal-page" aria-label="전체 매매일지">
+          <div class="journal-page-head">
+            <div>
+              <p class="eyebrow accent">TRADE JOURNAL</p>
+              <h1>전체 매매일지</h1>
+              <p>모든 모의 매수·매도 기록과 자동 청산 사유, 복기 메모를 한 화면에 남깁니다.</p>
+            </div>
+            <button class="strategy-btn back-btn" data-open-page="overview"><span>←</span> Overview로 돌아가기</button>
+          </div>
+
+          <div class="journal-page-summary" id="journalPageSummary">
+            <div><span>전체 기록</span><b>0건</b></div>
+            <div><span>보유/청산</span><b>0 / 0</b></div>
+            <div><span>누적 손익</span><b>+₩0</b></div>
+            <div><span>승률</span><b>+0.00%</b></div>
+          </div>
+
+          <div class="journal-workspace">
+            <article class="journal-ledger-card">
+              <div class="journal-ledger-head">
+                <div><b>매매 전체 이력</b><span>최신순 · BUY/SELL 모두 기록</span></div>
+                <span id="journalPageUpdatedAt">기록 대기</span>
+              </div>
+              <div class="journal-all-list" id="journalAllList">
+                <div class="journal-empty">아직 기록된 매매가 없습니다.</div>
+              </div>
+            </article>
+
+            <aside class="journal-detail-card" id="journalPageEditor" hidden>
+              <div class="journal-detail-top">
+                <span>선택한 기록 복기</span>
+                <b id="journalPageEditorTitle">거래 메모</b>
+                <small id="journalPageEditorMeta">기록 선택 대기</small>
+              </div>
+              <textarea id="journalPageMemo" rows="8" placeholder="진입/청산 이유, 감정, 규칙 준수 여부, 다음 개선점을 적어두세요."></textarea>
+              <select id="journalPageReview">
+                <option value="">복기 판단 선택</option>
+                <option value="좋은 진입">좋은 진입</option>
+                <option value="성급한 진입">성급한 진입</option>
+                <option value="손절 준수">손절 준수</option>
+                <option value="규칙 위반">규칙 위반</option>
+                <option value="관찰 필요">관찰 필요</option>
+              </select>
+              <button type="button" class="journal-save-btn" id="journalPageSaveBtn">일지 저장</button>
+            </aside>
           </div>
         </section>
       </div>

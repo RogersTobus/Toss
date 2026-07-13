@@ -1,4 +1,4 @@
-/* =========================================================================
+﻿/* =========================================================================
    ORBIT — Quant Investment Dashboard
    Redesign: fixed-viewport (no page scroll) · responsive · white + gold
    Sections:
@@ -765,4 +765,162 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
   .journal-row { grid-template-columns: 1fr; align-items: start; }
   .journal-editor > div:first-child,
   .journal-editor-actions { flex-direction: column; align-items: stretch; }
+}
+
+/* ---------- Responsive UX hardening + full trading journal page ---------- */
+.content {
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+body[data-page="overview"] .content {
+  align-content: start;
+}
+body[data-page="overview"] .operations-grid {
+  min-height: min(760px, calc(100dvh - var(--topbar-h) - 210px));
+}
+.bot-panel,
+.watch-panel,
+.long-term-card {
+  min-width: 0;
+}
+.secondary-btn {
+  background: var(--panel);
+  color: var(--ink-soft);
+  border: 1px solid var(--line);
+}
+.secondary-btn:hover { background: var(--gold-tint); }
+
+.journal-page { display: none; }
+body[data-page="journal"] .hero-layout,
+body[data-page="journal"] .operations-grid,
+body[data-page="journal"] .strategy-control-page { display: none; }
+body[data-page="journal"] .content { grid-template-rows: minmax(0, 1fr); }
+body[data-page="journal"] .journal-page {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(12px, 1.6vh, 18px);
+  min-height: 0;
+  grid-row: 1 / -1;
+}
+.journal-page-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.journal-page-head h1 {
+  margin: 2px 0 6px;
+  font-size: clamp(22px, 2vw, 30px);
+  letter-spacing: -.04em;
+}
+.journal-page-head p:last-child { color: var(--muted); font-size: 12.5px; }
+.journal-page-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.journal-page-summary > div {
+  padding: 14px 15px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+  min-width: 0;
+}
+.journal-page-summary span,
+.journal-page-summary b { display: block; min-width: 0; }
+.journal-page-summary span { color: var(--muted); font-size: 10px; font-weight: 800; }
+.journal-page-summary b { margin-top: 5px; font-size: clamp(16px, 1.6vw, 22px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.journal-workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 14px;
+}
+.journal-ledger-card,
+.journal-detail-card {
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+}
+.journal-ledger-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+}
+.journal-ledger-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.journal-ledger-head b,
+.journal-ledger-head span { display: block; }
+.journal-ledger-head b { font-size: 15px; }
+.journal-ledger-head span { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.journal-ledger-head > span { margin-top: 0; white-space: nowrap; }
+.journal-all-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding-top: 12px;
+  padding-right: 3px;
+}
+.journal-row.sell { border-color: #ead2c9; background: #fff7f3; }
+.journal-row.buy { border-color: #e9dfc6; }
+.journal-detail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  align-self: stretch;
+}
+.journal-detail-top { display: grid; gap: 4px; }
+.journal-detail-top span { color: var(--gold-deep); font-size: 10px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+.journal-detail-top b { font-size: 18px; }
+.journal-detail-top small { color: var(--muted); line-height: 1.4; }
+.journal-detail-card textarea,
+.journal-detail-card select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--panel-2);
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+.journal-detail-card textarea { flex: 1; min-height: 190px; padding: 12px; resize: vertical; }
+.journal-detail-card select { min-height: 40px; padding: 0 10px; }
+.journal-detail-card .journal-save-btn { min-height: 42px; font-size: 12px; }
+
+@media (max-width: 1280px) {
+  body[data-page="overview"] .operations-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    grid-template-areas: "bot" "analysis" "longterm";
+    min-height: 0;
+  }
+  .watch-table, .long-term-list { max-height: 420px; }
+}
+@media (max-width: 1023px) {
+  .journal-workspace { grid-template-columns: 1fr; }
+  .journal-detail-card { min-height: 360px; }
+}
+@media (max-width: 760px) {
+  .journal-page-head { flex-direction: column; }
+  .journal-page-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .journal-page-head .back-btn { width: 100%; }
+}
+@media (max-width: 520px) {
+  .journal-page-summary { grid-template-columns: 1fr; }
+  .journal-ledger-card, .journal-detail-card { padding: 12px; }
+  .journal-ledger-head { flex-direction: column; }
 }

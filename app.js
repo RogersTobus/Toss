@@ -600,61 +600,87 @@ function formatTradePrice(entry) {
   return won.format(price);
 }
 
-function renderTradingJournal(payload = {}) {
-  const summaryEl = document.querySelector("#journalSummary");
-  const list = document.querySelector("#tradingJournalList");
-  const updated = document.querySelector("#journalUpdatedAt");
-  if (!summaryEl || !list) return;
-  const summary = payload.summary || {};
-  const entries = payload.entries || [];
-  if (updated) updated.textContent = payload.updatedAt ? `${formatJournalTime(payload.updatedAt)} 갱신` : "기록 대기";
+function createJournalRow(entry, compact = false) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = `journal-row ${entry.side === "SELL" ? "sell" : "buy"}`;
+  row.dataset.journalId = entry.id;
+  const status = entry.review || entry.exitKind || entry.status || "기록";
+  const priceText = entry.side === "SELL" ? `${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 청산` : `${formatTradePrice(entry)} 진입`;
+  row.innerHTML = `
+    <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(entry.createdAt)} · ${entry.market || "-"} · ${entry.sideLabel || entry.side || "-"} · ${priceText}</small></span>
+    <em class="${Number(entry.returnRate || 0) >= 0 ? "positive-text" : "negative-text"}">${signedPercent(entry.returnRate || 0)}</em>
+    <strong>${status}</strong>
+  `;
+  row.addEventListener("click", () => openJournalEditor(entry));
+  return row;
+}
 
-  const summaryItems = [
-    ["기록", `${Number(summary.count || 0)}건`],
-    ["승률", signedPercent(summary.winRate || 0)],
-    ["누적 손익", signedWon(summary.totalProfit || 0)],
-    ["평균 수익률", signedPercent(summary.averageReturn || 0)],
-  ];
-  summaryEl.replaceChildren();
+function renderJournalSummary(target, summary = {}, page = false) {
+  if (!target) return;
+  const summaryItems = page
+    ? [["전체 기록", `${Number(summary.count || 0)}건`], ["보유/청산", `${Number(summary.openCount || 0)} / ${Number(summary.closedCount || 0)}`], ["누적 손익", signedWon(summary.totalProfit || 0)], ["승률", signedPercent(summary.winRate || 0)]]
+    : [["기록", `${Number(summary.count || 0)}건`], ["승률", signedPercent(summary.winRate || 0)], ["누적 손익", signedWon(summary.totalProfit || 0)], ["평균 수익률", signedPercent(summary.averageReturn || 0)]];
+  target.replaceChildren();
   summaryItems.forEach(([label, value], index) => {
     const box = document.createElement("div");
     box.innerHTML = `<span>${label}</span><b>${value}</b>`;
-    if (index >= 2) applyTone(box.querySelector("b"), index === 2 ? summary.totalProfit : summary.averageReturn);
-    summaryEl.append(box);
+    if ((page && index === 2) || (!page && index >= 2)) applyTone(box.querySelector("b"), page ? summary.totalProfit : (index === 2 ? summary.totalProfit : summary.averageReturn));
+    target.append(box);
   });
+}
 
-  list.replaceChildren();
-  if (!entries.length) {
-    const empty = document.createElement("div");
-    empty.className = "journal-empty";
-    empty.textContent = "모의 매매가 기록되면 자동으로 일지가 쌓입니다.";
-    list.append(empty);
-    return;
-  }
-  entries.slice(0, 4).forEach((entry) => {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "journal-row";
-    row.dataset.journalId = entry.id;
-    row.innerHTML = `
-      <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(entry.createdAt)} · ${entry.market || "-"} · ${formatTradePrice(entry)}</small></span>
-      <em class="${Number(entry.returnRate || 0) >= 0 ? "positive-text" : "negative-text"}">${signedPercent(entry.returnRate || 0)}</em>
-      <strong>${entry.review || entry.status || "기록"}</strong>
-    `;
-    row.addEventListener("click", () => openJournalEditor(entry));
-    list.append(row);
+function renderTradingJournal(payload = {}) {
+  const summary = payload.summary || {};
+  const entries = payload.entries || [];
+  const updatedText = payload.updatedAt ? `${formatJournalTime(payload.updatedAt)} 갱신` : "기록 대기";
+  const updated = document.querySelector("#journalUpdatedAt");
+  const pageUpdated = document.querySelector("#journalPageUpdatedAt");
+  const navCount = document.querySelector("#journalNavCount");
+  if (updated) updated.textContent = updatedText;
+  if (pageUpdated) pageUpdated.textContent = updatedText;
+  if (navCount) navCount.textContent = Number(summary.count || 0);
+
+  renderJournalSummary(document.querySelector("#journalSummary"), summary, false);
+  renderJournalSummary(document.querySelector("#journalPageSummary"), summary, true);
+
+  const miniList = document.querySelector("#tradingJournalList");
+  const allList = document.querySelector("#journalAllList");
+  [miniList, allList].forEach((list, index) => {
+    if (!list) return;
+    list.replaceChildren();
+    if (!entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "journal-empty";
+      empty.textContent = "모의 매매가 기록되면 자동으로 일지가 쌓입니다.";
+      list.append(empty);
+      return;
+    }
+    const rows = index === 0 ? entries.slice(0, 4) : entries;
+    rows.forEach((entry) => list.append(createJournalRow(entry, index === 0)));
   });
+}
+
+function setEditorValues(prefix, entry) {
+  const editor = document.querySelector(prefix === "page" ? "#journalPageEditor" : "#journalEditor");
+  if (!editor) return;
+  editor.hidden = false;
+  const title = `${entry.name || entry.symbol} ${entry.sideLabel || "매매"} 메모`;
+  const meta = `${formatJournalTime(entry.createdAt)} · ${entry.reason || "진입 사유 없음"}`;
+  const titleEl = document.querySelector(prefix === "page" ? "#journalPageEditorTitle" : "#journalEditorTitle");
+  const metaEl = document.querySelector(prefix === "page" ? "#journalPageEditorMeta" : "#journalEditorMeta");
+  const memoEl = document.querySelector(prefix === "page" ? "#journalPageMemo" : "#journalMemo");
+  const reviewEl = document.querySelector(prefix === "page" ? "#journalPageReview" : "#journalReview");
+  if (titleEl) titleEl.textContent = title;
+  if (metaEl) metaEl.textContent = meta;
+  if (memoEl) memoEl.value = entry.memo || "";
+  if (reviewEl) reviewEl.value = entry.review || "";
 }
 
 function openJournalEditor(entry) {
   selectedJournalEntry = entry;
-  const editor = document.querySelector("#journalEditor");
-  if (!editor) return;
-  editor.hidden = false;
-  document.querySelector("#journalEditorTitle").textContent = `${entry.name || entry.symbol} 매매 메모`;
-  document.querySelector("#journalEditorMeta").textContent = `${formatJournalTime(entry.createdAt)} · ${entry.reason || "진입 사유 없음"}`;
-  document.querySelector("#journalMemo").value = entry.memo || "";
-  document.querySelector("#journalReview").value = entry.review || "";
+  setEditorValues("mini", entry);
+  setEditorValues("page", entry);
 }
 
 async function loadTradingJournal() {
@@ -665,7 +691,10 @@ async function loadTradingJournal() {
     renderTradingJournal(payload);
   } catch (error) {
     const list = document.querySelector("#tradingJournalList");
-    if (list) list.innerHTML = `<div class="journal-empty">${error.message || "매매일지 연결 확인 필요"}</div>`;
+    const allList = document.querySelector("#journalAllList");
+    const message = error.message || "매매일지 연결 확인 필요";
+    if (list) list.innerHTML = `<div class="journal-empty">${message}</div>`;
+    if (allList) allList.innerHTML = `<div class="journal-empty">${message}</div>`;
   }
 }
 
@@ -674,7 +703,8 @@ async function saveJournalMemo() {
     showToast("먼저 매매 기록을 선택해주세요.");
     return;
   }
-  const button = document.querySelector("#journalSaveBtn");
+  const usePageEditor = document.body.dataset.page === "journal";
+  const button = document.querySelector(usePageEditor ? "#journalPageSaveBtn" : "#journalSaveBtn");
   if (button) button.disabled = true;
   try {
     const response = await fetch("/api/trading-journal/note", {
@@ -682,8 +712,8 @@ async function saveJournalMemo() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         id: selectedJournalEntry.id,
-        memo: document.querySelector("#journalMemo")?.value || "",
-        review: document.querySelector("#journalReview")?.value || "",
+        memo: document.querySelector(usePageEditor ? "#journalPageMemo" : "#journalMemo")?.value || "",
+        review: document.querySelector(usePageEditor ? "#journalPageReview" : "#journalReview")?.value || "",
       }),
     });
     const payload = await response.json();
@@ -698,6 +728,7 @@ async function saveJournalMemo() {
     if (button) button.disabled = false;
   }
 }
+
 function renderPaperSummary(state) {
   const summary = state.paperSummary || {};
   const averageReturn = Number(summary.averageReturn || 0);
@@ -955,29 +986,21 @@ function showToast(message) {
 }
 
 function openPage(page) {
-  const target = page === "quant" ? "quant" : "overview";
+  const target = ["overview", "quant", "journal"].includes(page) ? page : "overview";
   document.body.dataset.page = target;
   document.querySelectorAll(".nav-item[data-page]").forEach((nav) => {
     nav.classList.toggle("active", nav.dataset.page === target);
   });
-  if (target === "quant") {
-    showToast("전략 설정 컨트롤타워를 열었습니다.");
+  if (target === "quant") showToast("전략 설정 컨트롤타워를 열었습니다.");
+  if (target === "journal") {
+    showToast("전체 매매일지를 열었습니다.");
+    loadTradingJournal();
   }
 }
 
 document.querySelectorAll(".nav-item[data-page]").forEach((item) => {
-  item.addEventListener("click", () => {
-    if (["overview", "quant"].includes(item.dataset.page)) {
-      openPage(item.dataset.page);
-      return;
-    }
-    document.body.dataset.page = "overview";
-    document.querySelectorAll(".nav-item[data-page]").forEach((nav) => nav.classList.remove("active"));
-    item.classList.add("active");
-    showToast("이 화면은 다음 단계에서 연결할게요.");
-  });
+  item.addEventListener("click", () => openPage(item.dataset.page));
 });
-
 document.querySelectorAll("[data-open-page]").forEach((button) => {
   button.addEventListener("click", () => openPage(button.dataset.openPage));
 });
@@ -1040,6 +1063,7 @@ document.querySelector(".add-btn")?.addEventListener("click", () => showToast("�
 // 전략 컨트롤타워 이동은 [data-open-page] 핸들러가 처리합니다.
 document.querySelector("#strategySaveBtn")?.addEventListener("click", saveStrategyConfig);
 document.querySelector("#journalSaveBtn")?.addEventListener("click", saveJournalMemo);
+document.querySelector("#journalPageSaveBtn")?.addEventListener("click", saveJournalMemo);
 document.querySelectorAll("[data-slack-test]").forEach((button) => {
   button.addEventListener("click", () => testSlackChannel(button.dataset.slackTest, button));
 });

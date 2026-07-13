@@ -576,10 +576,10 @@ def exchange_kakao_code(env: dict[str, str], code: str) -> dict[str, Any]:
 def kakao_callback_page(title: str, body: str, ok: bool = True) -> bytes:
     color = "#5c7f2f" if ok else "#9c3b32"
     html = f"""<!doctype html>
-<html lang=\"ko\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <style>body{{font-family:Arial,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f7f5ee;color:#171914;display:grid;place-items:center;min-height:100vh;margin:0}}main{{width:min(520px,92vw);background:#fff;border:1px solid #e6e0d0;border-radius:18px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.08)}}h1{{font-size:22px;margin:0 0 12px;color:{color}}}p{{line-height:1.6}}button{{border:0;border-radius:10px;background:#171914;color:#fff;padding:12px 16px;font-weight:800;cursor:pointer}}</style></head>
-<body><main><h1>{title}</h1><p>{body}</p><button onclick=\"location.href='/'\">Orbit으로 돌아가기</button></main></body></html>"""
+<body><main><h1>{title}</h1><p>{body}</p><button onclick="location.href='/'">Orbit으로 돌아가기</button></main></body></html>"""
     return html.encode("utf-8")
 
 def kakao_enabled(env: dict[str, str]) -> bool:
@@ -1048,14 +1048,15 @@ def load_paper_orders() -> list[dict[str, Any]]:
     if not PAPER_PATH.exists():
         return []
     try:
-        return (json.loads(PAPER_PATH.read_text(encoding="utf-8")).get("orders") or [])[-20:]
+        orders = json.loads(PAPER_PATH.read_text(encoding="utf-8")).get("orders") or []
+        return orders if isinstance(orders, list) else []
     except (OSError, json.JSONDecodeError):
         return []
 
 
 def save_paper_orders(orders: list[dict[str, Any]]) -> None:
     PAPER_PATH.write_text(
-        json.dumps({"orders": orders[-20:]}, ensure_ascii=False, indent=2),
+        json.dumps({"orders": orders}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -1343,14 +1344,88 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         ),
     }
 
+
+def open_paper_positions(orders: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    positions: dict[str, dict[str, Any]] = {}
+    for order in orders:
+        symbol = str(order.get("symbol") or "")
+        if not symbol:
+            continue
+        side = str(order.get("side") or "").upper()
+        if side == "BUY":
+            positions[symbol] = order
+        elif side == "SELL":
+            positions.pop(symbol, None)
+    return positions
+
+
+def apply_paper_exit_rules(
+    orders: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+    market: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Create paper SELL records when target/stop rules are touched."""
+    config = strategy_config()
+    target_rate = decimal(config.get("targetRate") or PAPER_TARGET_RATE)
+    stop_rate = decimal(config.get("stopRate") or PAPER_STOP_RATE)
+    results_by_symbol = {str(item.get("symbol")): item for item in results}
+    positions = open_paper_positions(orders)
+    changed = False
+    now_stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    for symbol, order in list(positions.items()):
+        if market and order.get("market") != market:
+            continue
+        current = results_by_symbol.get(symbol) or {}
+        entry_price = decimal(order.get("price"))
+        last_price = decimal(current.get("lastPrice") or order.get("lastPrice"))
+        quantity = decimal(order.get("quantity") or 1)
+        if not entry_price or not last_price:
+            continue
+        return_rate = (last_price - entry_price) / entry_price
+        if return_rate <= stop_rate:
+            exit_kind = "손실선"
+            exit_reason = f"손실선 {percent(stop_rate)} 도달 · 자동 모의청산"
+        elif return_rate >= target_rate:
+            exit_kind = "목표"
+            exit_reason = f"목표 {percent(target_rate)} 도달 · 자동 모의청산"
+        else:
+            continue
+
+        orders.append(
+            {
+                "id": f"PAPER-EXIT-{int(time.time())}-{symbol}",
+                "market": order.get("market") or market,
+                "symbol": symbol,
+                "name": order.get("name") or current.get("name") or symbol,
+                "side": "SELL",
+                "quantity": quantity,
+                "price": last_price,
+                "entryPrice": entry_price,
+                "entryOrderId": order.get("id"),
+                "currency": order.get("currency") or current.get("currency"),
+                "status": "FILLED",
+                "createdAt": now_stamp,
+                "reason": exit_reason,
+                "exitKind": exit_kind,
+                "returnRate": return_rate,
+                "profit": (last_price - entry_price) * quantity,
+            }
+        )
+        changed = True
+
+    if changed:
+        save_paper_orders(orders)
+    return orders, changed
 def paper_trade(
     results: list[dict[str, Any]], market: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     orders = load_paper_orders()
+    orders, _ = apply_paper_exit_rules(orders, results, market)
     summary = paper_summary(orders, results)
     gate = safety_gate(summary)
     if summary["locked"] or gate["blocked"]:
-        return orders[-20:], summary
+        return orders[-50:], summary
 
     today = time.strftime("%Y-%m-%d")
     todays_market_orders = [
@@ -1358,11 +1433,12 @@ def paper_trade(
         for item in orders
         if item.get("market") == market
         and str(item.get("createdAt", "")).startswith(today)
+        and str(item.get("side") or "").upper() == "BUY"
     ]
     config = strategy_config()
     if len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS):
-        return orders[-20:], summary
-    existing = {(item.get("market"), item.get("symbol")) for item in orders[-10:]}
+        return orders[-50:], summary
+    existing = {(item.get("market"), item.get("symbol")) for item in open_paper_positions(orders).values()}
     candidate = next(
         (
             item
@@ -1390,8 +1466,7 @@ def paper_trade(
         )
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
-    return orders[-20:], summary
-
+    return orders[-50:], summary
 
 def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
     query = urllib.parse.urlencode(
@@ -1599,36 +1674,39 @@ def build_trading_journal() -> dict[str, Any]:
     total_profit = 0.0
     wins = 0
     closed_count = 0
+    open_count = len(open_paper_positions(orders))
 
     for order in sorted(orders, key=lambda item: str(item.get("createdAt") or ""), reverse=True):
         order_id = str(order.get("id") or "")
         symbol = str(order.get("symbol") or "")
+        side = str(order.get("side") or "").upper()
         current = results_by_symbol.get(symbol) or {}
-        entry_price = decimal(order.get("price"))
-        last_price = decimal(current.get("lastPrice") or order.get("lastPrice") or entry_price)
         quantity = decimal(order.get("quantity") or 1)
+        order_price = decimal(order.get("price"))
+        entry_price = decimal(order.get("entryPrice") or order.get("price"))
+        last_price = order_price if side == "SELL" else decimal(current.get("lastPrice") or order.get("lastPrice") or order_price)
         invested = entry_price * quantity
-        profit = (last_price - entry_price) * quantity if entry_price and last_price else 0.0
-        return_rate = profit / invested if invested else 0.0
-        is_closed = str(order.get("side")) == "SELL" or str(order.get("status", "")).upper() in ("CLOSED", "SOLD")
+        profit = decimal(order.get("profit")) if side == "SELL" and order.get("profit") is not None else ((last_price - entry_price) * quantity if entry_price and last_price else 0.0)
+        return_rate = decimal(order.get("returnRate")) if order.get("returnRate") is not None else (profit / invested if invested else 0.0)
+        is_closed = side == "SELL" or str(order.get("status", "")).upper() in ("CLOSED", "SOLD")
         verdict = current.get("verdict") or ("청산" if is_closed else "보유/관찰")
-        reason = current.get("reason") or order.get("reason") or "진입 사유 기록 없음"
+        reason = order.get("reason") or current.get("reason") or "진입 사유 기록 없음"
         note = notes.get(order_id) or {}
         total_invested += invested
         total_profit += profit
-        if return_rate > 0:
-            wins += 1
         if is_closed:
             closed_count += 1
-        created_at = str(order.get("createdAt") or "")
+            if return_rate > 0:
+                wins += 1
         entries.append(
             {
                 "id": order_id,
-                "createdAt": created_at,
+                "createdAt": str(order.get("createdAt") or ""),
                 "market": order.get("market"),
                 "symbol": symbol,
                 "name": order.get("name") or symbol,
-                "side": order.get("side"),
+                "side": side,
+                "sideLabel": "매수" if side == "BUY" else "매도",
                 "status": "청산" if is_closed else "보유중",
                 "quantity": quantity,
                 "entryPrice": entry_price,
@@ -1639,6 +1717,8 @@ def build_trading_journal() -> dict[str, Any]:
                 "returnRate": return_rate,
                 "verdict": verdict,
                 "reason": reason,
+                "exitKind": order.get("exitKind"),
+                "entryOrderId": order.get("entryOrderId"),
                 "memo": note.get("memo", ""),
                 "review": note.get("review", ""),
                 "tags": note.get("tags", []),
@@ -1649,9 +1729,9 @@ def build_trading_journal() -> dict[str, Any]:
     count = len(entries)
     summary = {
         "count": count,
-        "openCount": max(0, count - closed_count),
+        "openCount": open_count,
         "closedCount": closed_count,
-        "winRate": wins / count if count else 0.0,
+        "winRate": wins / closed_count if closed_count else 0.0,
         "totalInvested": total_invested,
         "totalProfit": total_profit,
         "averageReturn": total_profit / total_invested if total_invested else 0.0,
@@ -1661,9 +1741,8 @@ def build_trading_journal() -> dict[str, Any]:
     return {
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "summary": summary,
-        "entries": entries[:30],
+        "entries": entries,
     }
-
 
 def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:
     order_id = clean_text(payload.get("id"), "", 80)
