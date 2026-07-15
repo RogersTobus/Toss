@@ -651,6 +651,103 @@ function renderJournalSummary(target, summary = {}, page = false) {
   });
 }
 
+function renderJournalPerformance(summary = {}) {
+  const card = document.querySelector("#performanceTrendCard");
+  const chart = document.querySelector("#performanceTrendChart");
+  const verdict = document.querySelector("#performanceTrendVerdict");
+  const summaryText = document.querySelector("#performanceTrendSummary");
+  const metrics = document.querySelector("#performanceTrendMetrics");
+  if (!card || !chart || !verdict || !summaryText || !metrics) return;
+
+  const days = (summary.days || []).slice(0, 8).reverse();
+  if (!days.length) {
+    card.className = "performance-trend-card flat";
+    verdict.textContent = "표본 대기";
+    summaryText.textContent = "첫 거래일이 끝나면 승률과 손익 흐름을 그립니다.";
+    chart.innerHTML = `<text x="360" y="96" text-anchor="middle" fill="#8a7c65" font-size="12">거래일 데이터가 아직 없습니다</text>`;
+    return;
+  }
+
+  const weightedWinRate = (items) => {
+    const closed = items.reduce((sum, day) => sum + Number(day.closedCount || 0), 0);
+    const wins = items.reduce((sum, day) => sum + Number(day.closedCount || 0) * Number(day.winRate || 0), 0);
+    return closed ? wins / closed : 0;
+  };
+  const weightedReturn = (items) => {
+    const invested = items.reduce((sum, day) => sum + Number(day.totalInvested || 0), 0);
+    const profit = items.reduce((sum, day) => sum + Number(day.totalProfit || 0), 0);
+    return invested ? profit / invested : 0;
+  };
+  const split = Math.max(1, Math.floor(days.length / 2));
+  const previousDays = days.slice(0, split);
+  const recentDays = days.slice(split).length ? days.slice(split) : days.slice(-1);
+  const previousWin = weightedWinRate(previousDays);
+  const recentWin = weightedWinRate(recentDays);
+  const previousReturn = weightedReturn(previousDays);
+  const recentReturn = weightedReturn(recentDays);
+  const winDelta = recentWin - previousWin;
+  const returnDelta = recentReturn - previousReturn;
+  const recentProfit = recentDays.reduce((sum, day) => sum + Number(day.totalProfit || 0), 0);
+  const recentClosed = recentDays.reduce((sum, day) => sum + Number(day.closedCount || 0), 0);
+
+  let tone = "flat";
+  let label = "박스권";
+  let insight = "승률과 손익의 방향이 엇갈려, 현재 전략의 우위가 아직 뚜렷하지 않습니다.";
+  if (days.length < 2 || recentClosed < 3) {
+    label = "표본 부족";
+    insight = "청산 표본이 더 쌓여야 발전 여부를 안정적으로 판정할 수 있습니다.";
+  } else if (winDelta >= .05 && returnDelta >= 0) {
+    tone = "improving";
+    label = "개선 중";
+    insight = "최근 구간의 승률과 투자 대비 손익이 함께 개선되고 있습니다.";
+  } else if (winDelta <= -.05 || returnDelta <= -.005) {
+    tone = "declining";
+    label = "후퇴 경계";
+    insight = "최근 승률 또는 손익 효율이 낮아져 진입 조건을 다시 점검할 구간입니다.";
+  }
+
+  card.className = `performance-trend-card ${tone}`;
+  verdict.textContent = label;
+  summaryText.textContent = `최근 ${recentDays.length}거래일과 이전 ${previousDays.length}거래일을 비교한 실시간 판정입니다.`;
+  metrics.innerHTML = `
+    <div><span>최근 승률</span><b>${(recentWin * 100).toFixed(1)}%</b></div>
+    <div><span>이전 구간 대비</span><b class="${winDelta >= 0 ? "positive-text" : "negative-text"}">${winDelta >= 0 ? "+" : "−"}${Math.abs(winDelta * 100).toFixed(1)}%p</b></div>
+    <div><span>최근 누적 손익</span><b class="${recentProfit >= 0 ? "positive-text" : "negative-text"}">${signedWon(recentProfit)}</b></div>
+    <p>${insight} · 최근 청산 ${recentClosed}건</p>
+  `;
+
+  const width = 720;
+  const left = 42;
+  const right = 18;
+  const top = 18;
+  const lineBottom = 112;
+  const profitBase = 151;
+  const xStep = days.length > 1 ? (width - left - right) / (days.length - 1) : 0;
+  const maxProfit = Math.max(1, ...days.map((day) => Math.abs(Number(day.totalProfit || 0))));
+  const points = days.map((day, index) => {
+    const x = days.length > 1 ? left + index * xStep : width / 2;
+    const rate = Math.max(0, Math.min(1, Number(day.winRate || 0)));
+    const y = top + (1 - rate) * (lineBottom - top);
+    return { x, y, rate, day };
+  });
+  const path = points.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const grid = [0, .5, 1].map((rate) => {
+    const y = top + (1 - rate) * (lineBottom - top);
+    return `<line x1="${left}" y1="${y}" x2="${width - right}" y2="${y}" stroke="#ece0c6" stroke-width="1"/><text x="2" y="${y + 3}" fill="#8a7c65" font-size="9">${Math.round(rate * 100)}%</text>`;
+  }).join("");
+  const bars = points.map(({ x, day }) => {
+    const profit = Number(day.totalProfit || 0);
+    const height = Math.max(2, Math.abs(profit) / maxProfit * 23);
+    const y = profit >= 0 ? profitBase - height : profitBase;
+    const color = profit >= 0 ? "#4f7a4b" : "#c25948";
+    return `<rect x="${(x - 10).toFixed(1)}" y="${y.toFixed(1)}" width="20" height="${height.toFixed(1)}" rx="3" fill="${color}" opacity=".62"><title>${day.tradingDay} 손익 ${signedWon(profit)}</title></rect>`;
+  }).join("");
+  const dots = points.map(({ x, y, rate, day }) => `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="#fffdf7" stroke="#c39a34" stroke-width="2"><title>${day.tradingDay} 승률 ${(rate * 100).toFixed(1)}%</title></circle>`).join("");
+  const labels = points.map(({ x, day }) => `<text x="${x.toFixed(1)}" y="184" text-anchor="middle" fill="#8a7c65" font-size="9">${String(day.tradingDay || "").slice(5).replace("-", ".")}</text>`).join("");
+  chart.innerHTML = `${grid}<line x1="${left}" y1="${profitBase}" x2="${width - right}" y2="${profitBase}" stroke="#d8ccb5" stroke-width="1"/>${bars}<path d="${path}" fill="none" stroke="#c39a34" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>${dots}${labels}`;
+  chart.setAttribute("aria-label", `${days.length}개 거래일 승률 추세. 현재 판정 ${label}. 최근 승률 ${(recentWin * 100).toFixed(1)}퍼센트.`);
+}
+
 function renderMistakeNotebook(payload = {}) {
   const coaching = payload.coaching || {};
   const note = coaching.active || {};
@@ -968,6 +1065,7 @@ function renderTradingJournal(payload = {}) {
 
   renderJournalSummary(document.querySelector("#journalSummary"), summary, false);
   renderJournalSummary(document.querySelector("#journalPageSummary"), summary, true);
+  renderJournalPerformance(summary);
   renderMistakeNotebook(payload);
   renderLearningBrain(payload.learning || {}, entries);
 
@@ -1462,6 +1560,7 @@ function showToast(message) {
 function openPage(page) {
   const target = ["overview", "quant", "journal"].includes(page) ? page : "overview";
   document.body.dataset.page = target;
+  setSidebarOpen(false);
   document.querySelectorAll(".nav-item[data-page]").forEach((nav) => {
     nav.classList.toggle("active", nav.dataset.page === target);
   });
@@ -1529,8 +1628,25 @@ async function loadAnalysisStatus() {
   }
 }
 
-document.querySelector(".mobile-menu").addEventListener("click", () => {
-  document.querySelector(".sidebar").classList.toggle("open");
+const sidebar = document.querySelector(".sidebar");
+const mobileMenu = document.querySelector(".mobile-menu");
+const sidebarScrim = document.querySelector(".sidebar-scrim");
+
+function setSidebarOpen(open) {
+  const shouldOpen = Boolean(open && window.innerWidth < 1024);
+  sidebar?.classList.toggle("open", shouldOpen);
+  mobileMenu?.setAttribute("aria-expanded", String(shouldOpen));
+  sidebarScrim?.setAttribute("tabindex", shouldOpen ? "0" : "-1");
+}
+
+mobileMenu?.setAttribute("aria-expanded", "false");
+mobileMenu?.addEventListener("click", () => setSidebarOpen(!sidebar?.classList.contains("open")));
+sidebarScrim?.addEventListener("click", () => setSidebarOpen(false));
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setSidebarOpen(false);
+});
+window.addEventListener("resize", () => {
+  if (window.innerWidth >= 1024) setSidebarOpen(false);
 });
 
 document.querySelector(".add-btn")?.addEventListener("click", () => showToast("전략 만들기 화면을 준비 중입니다."));

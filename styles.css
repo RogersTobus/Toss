@@ -98,6 +98,7 @@ main {
   display: flex; flex-direction: column;
   background: #efe9db; border-right: 1px solid #e4dbc6;
 }
+.sidebar-scrim { display: none; }
 .brand {
   display: flex; align-items: center; gap: 11px; margin: 4px 8px 34px;
   color: var(--ink); text-decoration: none; font-weight: 700; letter-spacing: .18em;
@@ -237,7 +238,11 @@ main {
     "bot longterm";
   gap: clamp(12px, 1.2vw, 18px);
 }
-.bot-panel { grid-area: bot; overflow: hidden; }
+.bot-panel { grid-area: bot; }
+.bot-panel > .panel-header {
+  position: sticky; top: 0; z-index: 3;
+  padding-bottom: 8px; background: var(--panel);
+}
 .watch-panel { grid-area: analysis; }
 .long-term-card { grid-area: longterm; }
 
@@ -246,6 +251,7 @@ main {
   padding: clamp(14px, 1.6vh, 20px);
   display: flex; flex-direction: column; gap: clamp(8px, 1vh, 12px);
 }
+.panel.bot-panel { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .panel-header h2 { font-size: clamp(16px, 1.5vw, 19px); letter-spacing: -.025em; font-weight: 600; }
 .panel-header.compact h2 { font-size: 15px; }
@@ -351,7 +357,7 @@ main {
 .strategy-btn span { color: var(--lime); }
 
 /* ---------- 10. Watch panel (실시간 분석현황) ---------- */
-.watch-table { display: flex; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; }
+.watch-table { display: flex; flex: 1 1 auto; flex-direction: column; gap: 4px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .table-row {
   display: grid; grid-template-columns: 1.5fr 0.9fr 0.9fr 1.1fr; gap: 10px; align-items: center;
   padding: 9px 12px; border-radius: 10px;
@@ -398,15 +404,15 @@ main {
 .detail-note { margin-top: 10px; font-size: 10.5px; color: var(--ink-soft); line-height: 1.4; }
 
 /* ---------- 11. Long-term card ---------- */
-.long-term-list { display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
+.long-term-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; min-height: 0; overflow-y: auto; }
 .long-term-list > div {
-  display: grid; grid-template-columns: 1fr auto; grid-template-areas: "name value" "meta value";
-  align-items: center; column-gap: 12px; row-gap: 2px;
-  padding: 11px 14px; border-radius: var(--radius-sm); background: var(--panel-2); border: 1px solid var(--line-soft);
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "name" "value";
+  align-content: center; row-gap: 4px;
+  padding: 9px 11px; border-radius: var(--radius-sm); background: var(--panel-2); border: 1px solid var(--line-soft);
 }
 .long-term-list > div b { grid-area: name; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.long-term-list > div small { grid-area: meta; font-size: 10px; color: var(--muted); }
-.long-term-list > div strong { grid-area: value; font-size: 12.5px; font-weight: 600; color: var(--ink); text-align: right; white-space: nowrap; }
+.long-term-list > div small { display: none; }
+.long-term-list > div strong { grid-area: value; font-size: 11.5px; font-weight: 600; color: var(--green); text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- 12. Quant Lab page ---------- */
 .strategy-control-page { display: none; }
@@ -524,6 +530,13 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
   .connection-stack { grid-template-rows: repeat(3, minmax(40px, 1fr)); }
 }
 
+@media (min-width: 1024px) and (max-width: 1180px) {
+  .operations-grid { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); }
+  .long-term-list > div { padding: 8px; }
+  .long-term-list > div b { font-size: 11px; }
+  .long-term-list > div strong { font-size: 10px; }
+}
+
 /* Below 1024: switch to natural flow (stack + allow page scroll) */
 @media (max-width: 1023px) {
   .app-shell { height: auto; min-height: 100dvh; overflow: visible; grid-template-columns: 1fr; }
@@ -532,6 +545,13 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
     transition: transform .25s ease; box-shadow: 0 20px 60px -20px rgba(0,0,0,.4);
   }
   .sidebar.open { transform: translateX(0); }
+  .sidebar-scrim {
+    position: fixed; inset: 0 0 0 260px; z-index: 50; display: block;
+    border: 0; background: rgba(34, 25, 14, .34);
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .2s ease, visibility .2s ease;
+  }
+  .sidebar.open + .sidebar-scrim { opacity: 1; visibility: visible; pointer-events: auto; }
   main { grid-template-rows: var(--topbar-h) auto; }
   .topbar { position: sticky; top: 0; z-index: 40; }
   .mobile-menu { display: block; }
@@ -544,7 +564,15 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
   .ai-overview-card { grid-template-columns: 1fr; }
   .ai-overview-metrics { min-width: 0; }
   .panel { overflow: visible; }
+  .bot-panel > .panel-header { position: static; padding-bottom: 0; }
   .bot-panel { min-height: 0; }
+  .long-term-list { display: flex; flex-direction: column; }
+  .long-term-list > div {
+    grid-template-columns: 1fr auto; grid-template-areas: "name value" "meta value";
+    align-items: center; column-gap: 12px; row-gap: 2px; padding: 11px 14px;
+  }
+  .long-term-list > div small { display: block; grid-area: meta; font-size: 10px; color: var(--muted); }
+  .long-term-list > div strong { text-align: right; font-size: 12.5px; }
   .watch-table, .daytrade-table, .long-term-list, .strategy-control-list { max-height: 340px; }
   body[data-page="quant"] .content { grid-template-rows: none; }
   .strategy-control-board { overflow: visible; }
@@ -590,7 +618,7 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
   .hero-layout > .card, .hero-layout > .connection-stack { min-height: clamp(108px, 14vh, 132px); }
   .panel { gap: 8px; padding: 13px; }
   /* Keep the CTA pinned & visible; let only the position list scroll. */
-  .bot-panel { overflow: hidden; }
+  .panel.bot-panel { overflow-y: auto; }
   .daytrade-status { flex: 1 1 auto; min-height: 0; }
   .daytrade-table { min-height: 0; overflow-y: auto; padding-right: 2px; }
   .strategy-btn { margin-top: 4px; }
@@ -837,18 +865,7 @@ body[data-page="quant"] .content { grid-template-rows: minmax(0, 1fr); }
   .journal-editor-actions { flex-direction: column; align-items: stretch; }
 }
 
-/* ---------- Responsive UX hardening + full trading journal page ---------- */
-.content {
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-gutter: stable;
-}
-body[data-page="overview"] .content {
-  align-content: start;
-}
-body[data-page="overview"] .operations-grid {
-  min-height: min(760px, calc(100dvh - var(--topbar-h) - 210px));
-}
+/* ---------- Full trading journal page ---------- */
 .bot-panel,
 .watch-panel,
 .long-term-card {
@@ -871,6 +888,9 @@ body[data-page="journal"] .journal-page {
   flex-direction: column;
   gap: clamp(12px, 1.6vh, 18px);
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 3px;
   grid-row: 1 / -1;
 }
 .journal-page,
@@ -904,6 +924,43 @@ body[data-page="journal"] .journal-page {
 .journal-page-summary b { display: block; min-width: 0; }
 .journal-page-summary span { color: var(--muted); font-size: 10px; font-weight: 800; }
 .journal-page-summary b { margin-top: 5px; font-size: clamp(16px, 1.6vw, 22px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.performance-trend-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 15px 16px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--gold);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+}
+.performance-trend-card.improving { border-left-color: var(--green); background: linear-gradient(135deg, var(--panel), #f7fbf2); }
+.performance-trend-card.declining { border-left-color: var(--red); background: linear-gradient(135deg, var(--panel), #fff8f5); }
+.performance-trend-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+}
+.performance-trend-head h2 { margin: 2px 0 4px; font-size: clamp(18px, 1.6vw, 23px); letter-spacing: -.03em; }
+.performance-trend-head > div > p:last-child { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.trend-verdict {
+  flex: 0 0 auto; padding: 7px 11px; border-radius: 999px;
+  background: var(--gold-tint); color: var(--gold-deep); font-size: 10px; white-space: nowrap;
+}
+.performance-trend-card.improving .trend-verdict { background: var(--green-tint); color: var(--green); }
+.performance-trend-card.declining .trend-verdict { background: var(--red-tint); color: var(--red); }
+.performance-trend-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, .32fr); gap: 15px; min-width: 0; }
+.performance-chart-wrap { min-width: 0; padding: 10px 12px 4px; border: 1px solid var(--line-soft); border-radius: var(--radius-sm); background: rgba(255,255,255,.58); }
+.performance-chart-legend { display: flex; justify-content: flex-end; gap: 14px; color: var(--muted); font-size: 9px; font-weight: 700; }
+.performance-chart-legend span { display: flex; align-items: center; gap: 5px; }
+.performance-chart-legend i { display: inline-block; width: 15px; }
+.win-rate-line { height: 2px; background: var(--gold); }
+.profit-bar { height: 7px; border-radius: 2px; background: var(--green); opacity: .7; }
+.performance-chart { display: block; width: 100%; height: clamp(145px, 18vh, 190px); overflow: visible; }
+.performance-insight { display: grid; align-content: start; gap: 7px; min-width: 0; }
+.performance-insight > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 11px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--panel-2); }
+.performance-insight span { color: var(--muted); font-size: 9px; font-weight: 700; }
+.performance-insight b { font-size: 12px; white-space: nowrap; }
+.performance-insight p { padding: 10px 11px; border-radius: 10px; background: var(--gold-tint); color: var(--ink-soft); font-size: 10px; line-height: 1.5; }
 .journal-review-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(300px, .55fr);
@@ -1028,6 +1085,15 @@ body[data-page="journal"] .journal-page {
   background: linear-gradient(145deg, #fffdf7 0%, #fbf2dc 100%);
   box-shadow: var(--shadow-soft);
 }
+.learning-brain-card > summary { list-style: none; cursor: pointer; }
+.learning-brain-card > summary::-webkit-details-marker { display: none; }
+.learning-brain-card > summary::after {
+  content: "펼치기"; flex: 0 0 auto; align-self: center;
+  padding: 5px 8px; border: 1px solid var(--gold-soft); border-radius: 999px;
+  color: var(--gold-deep); background: rgba(255,255,255,.55); font-size: 9px; font-weight: 900;
+}
+.learning-brain-card[open] > summary::after { content: "접기"; }
+.learning-brain-card > :not(summary) { margin-top: 10px; }
 .learning-brain-head {
   display: flex;
   align-items: flex-start;
@@ -1555,16 +1621,8 @@ body[data-page="journal"] .journal-page {
 .journal-detail-card select { min-height: 40px; padding: 0 10px; }
 .journal-detail-card .journal-save-btn { min-height: 42px; font-size: 12px; }
 
-@media (max-width: 1280px) {
-  body[data-page="overview"] .operations-grid {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto auto;
-    grid-template-areas: "bot" "analysis" "longterm";
-    min-height: 0;
-  }
-  .watch-table, .long-term-list { max-height: 420px; }
-}
 @media (max-width: 1023px) {
+  body[data-page="journal"] .journal-page { overflow: visible; padding-right: 0; }
   .journal-review-grid { grid-template-columns: 1fr; }
   .learning-brain-body { grid-template-columns: 1fr; }
   .learning-symbol-list, .learning-memory-list { max-height: 210px; }
@@ -1577,6 +1635,9 @@ body[data-page="journal"] .journal-page {
 @media (max-width: 760px) {
   .journal-page-head { flex-direction: column; }
   .journal-page-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .performance-trend-body { grid-template-columns: 1fr; }
+  .performance-insight { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .performance-insight p { grid-column: 1 / -1; }
   .journal-page-head .back-btn { width: 100%; }
   .mistake-note-lessons { grid-template-columns: 1fr; }
   .learning-brain-head { flex-direction: column; }
@@ -1594,7 +1655,9 @@ body[data-page="journal"] .journal-page {
 @media (max-width: 520px) {
   .content { padding-left: 12px; padding-right: 12px; }
   .top-actions .add-btn { display: none; }
-  .journal-page-summary { grid-template-columns: 1fr; }
+  .performance-trend-head { flex-direction: column; }
+  .performance-insight { grid-template-columns: 1fr; }
+  .performance-insight p { grid-column: auto; }
   .mistake-note-head { flex-wrap: wrap; }
   .learning-brain-card { padding: 12px; }
   .learning-brain-summary { grid-template-columns: 1fr 1fr; }

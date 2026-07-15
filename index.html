@@ -44,6 +44,7 @@
         </div>
       </div>
     </aside>
+    <button class="sidebar-scrim" type="button" aria-label="메뉴 닫기" tabindex="-1"></button>
 
     <!-- ============ MAIN ============ -->
     <main>
@@ -302,6 +303,29 @@
             <div><span>승률</span><b>+0.00%</b></div>
           </div>
 
+          <section class="performance-trend-card flat" id="performanceTrendCard" aria-label="최근 거래 성과 추세">
+            <div class="performance-trend-head">
+              <div>
+                <p class="eyebrow accent">PERFORMANCE TREND</p>
+                <h2>전략 발전 추세</h2>
+                <p id="performanceTrendSummary">거래일별 승률과 손익을 비교하고 있습니다.</p>
+              </div>
+              <b class="trend-verdict" id="performanceTrendVerdict">판정 대기</b>
+            </div>
+            <div class="performance-trend-body">
+              <div class="performance-chart-wrap">
+                <div class="performance-chart-legend"><span><i class="win-rate-line"></i>승률</span><span><i class="profit-bar"></i>일 손익</span></div>
+                <svg id="performanceTrendChart" class="performance-chart" viewBox="0 0 720 190" preserveAspectRatio="none" role="img" aria-label="최근 거래일별 승률과 손익 그래프"></svg>
+              </div>
+              <div class="performance-insight" id="performanceTrendMetrics">
+                <div><span>최근 승률</span><b>0.00%</b></div>
+                <div><span>이전 구간 대비</span><b>0.00%p</b></div>
+                <div><span>최근 누적 손익</span><b>+₩0</b></div>
+                <p>거래일 표본이 쌓이면 발전 여부를 자동 판정합니다.</p>
+              </div>
+            </div>
+          </section>
+
           <section class="journal-review-grid" aria-label="Orbit 자동 오답노트">
             <article class="mistake-note-card neutral" id="mistakeNoteCard">
               <div class="mistake-note-head">
@@ -330,15 +354,15 @@
             </article>
           </section>
 
-          <section class="learning-brain-card" aria-label="Orbit 전체 투자 공용 학습 뇌">
-            <div class="learning-brain-head">
+          <details class="learning-brain-card" aria-label="Orbit 전체 투자 공용 학습 뇌">
+            <summary class="learning-brain-head">
               <div>
                 <p class="eyebrow accent">ORBIT LEARNING BRAIN</p>
                 <h2>전체 투자 공용 뇌</h2>
                 <span id="learningBrainUpdatedAt">거래 기억을 불러오는 중입니다.</span>
               </div>
               <b id="learningApplyStatus">모든 종목에 다음 거래 즉시 적용</b>
-            </div>
+            </summary>
             <div class="learning-brain-summary" id="learningBrainSummary">
               <div><span>학습 거래</span><b>0건</b></div>
               <div><span>점수 표본</span><b>0건</b></div>
@@ -387,7 +411,7 @@
                 <div class="learning-empty">청산 거래가 쌓이면 종목별 사례가 남습니다.</div>
               </div>
             </details>
-          </section>
+          </details>
 
           <div class="journal-workspace">
             <article class="journal-ledger-card">
