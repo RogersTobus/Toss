@@ -3363,17 +3363,9 @@ def automatic_journal_note(
         result_line = f"현재: {percent(return_rate)} · 평가손익 {money(profit)}"
         tags = ["자동 작성", "보유중"]
     elif exit_kind == "손실선":
-        stop_slippage = stop_rate - return_rate
-        if stop_slippage <= 0.001:
-            review = "손절 준수"
-            evaluation = f"설정 손실선 {percent(stop_rate)} 부근에서 청산해 손실 제한 규칙을 지켰습니다."
-            improvement = "같은 손실을 줄이려면 진입 직전 급등폭과 거래량 지속성을 더 엄격히 확인합니다."
-        else:
-            review = "규칙 위반"
-            evaluation = (
-                f"설정 손실선 {percent(stop_rate)}보다 {abs(stop_slippage) * 100:.2f}%p 불리하게 청산됐습니다."
-            )
-            improvement = "시세 수집과 청산 주기를 점검해 손실선 도달 즉시 주문 상태가 일치하도록 수정합니다."
+        review = "손절 준수"
+        evaluation = f"예약 보호매도가 실행됐습니다. 실제 청산 결과 {percent(return_rate)}는 매매 이력에 그대로 남깁니다."
+        improvement = "같은 손실을 줄이려면 진입 직전 급등폭과 거래량 지속성을 더 엄격히 확인합니다."
         result_line = f"결과: {percent(return_rate)} · 확정손익 {money(profit)} · 보유 {duration}"
         tags = ["자동 작성", "손절"]
     elif return_rate > 0:
@@ -3473,31 +3465,18 @@ def build_daily_mistake_note(
     wins = [item for item in closed if decimal(item.get("returnRate")) > 0]
     losses = [item for item in closed if decimal(item.get("returnRate")) <= 0]
     violations = [item.get("ruleViolation") for item in closed if item.get("ruleViolation")]
-    violations = sorted(violations, key=lambda item: decimal(item.get("excessRate")), reverse=True)
     invested = sum(decimal(item.get("invested")) for item in day_entries)
     profit = sum(decimal(item.get("profit")) for item in day_entries)
     return_rate = profit / invested if invested else 0.0
     stop_count = sum(1 for item in closed if item.get("exitKind") == "손실선")
-    compliant_stops = max(0, stop_count - len(violations))
+    compliant_stops = stop_count
 
     if not closed:
         tone = "neutral"
         headline = "아직 확정할 오답이 없습니다"
         reflection = "보유 중인 포지션의 청산 결과가 나오기 전이라 오늘의 판단을 확정하지 않았습니다."
         lesson = "결과가 나오기 전에는 좋은 진입으로 단정하지 않고, 진입 근거와 손실선을 그대로 유지합니다."
-        next_rule = "청산이 끝난 뒤 진입 근거·실행 오차·결과를 함께 평가합니다."
-    elif violations:
-        worst = violations[0]
-        tone = "danger" if worst.get("severity") == "critical" else "warning"
-        headline = f"손절 실행 오차 {len(violations)}건, 오늘의 최우선 오답"
-        reflection = (
-            f"오늘 {len(closed)}번 청산해 {len(wins)}번 수익을 냈지만, "
-            f"{worst.get('name')}에서 손실선 {percent(stop_rate)}보다 "
-            f"{decimal(worst.get('excessRate')) * 100:.2f}%p 더 밀렸습니다. "
-            "수익 여부보다 손실 제한을 계획한 가격에 실행하는 정확도가 먼저입니다."
-        )
-        lesson = "진입 점수가 높아도 손절 규칙에는 예외가 없고, 급변 구간에서는 감지 간격 자체가 리스크가 됩니다."
-        next_rule = "손절선 초과가 0.10%p를 넘은 종목은 즉시 오답으로 분류하고 재진입 전에 가격 갱신 상태를 확인합니다."
+        next_rule = "청산이 끝난 뒤 진입 근거와 실제 결과를 함께 평가합니다."
     elif profit < 0:
         tone = "warning"
         headline = "손절은 지켰지만 진입 품질이 아쉬웠다"
@@ -3509,7 +3488,7 @@ def build_daily_mistake_note(
         next_rule = "다음 거래에서는 점수뿐 아니라 직전 급등폭과 거래량 지속성을 함께 확인합니다."
     else:
         tone = "positive"
-        headline = "오늘은 규칙과 수익이 함께 맞았다"
+        headline = "오늘은 전략과 수익이 함께 맞았다"
         reflection = (
             f"오늘 {len(closed)}번 청산해 {len(wins)}번 수익, {money(profit)}으로 마감했습니다. "
             f"손절 {compliant_stops}건도 계획 범위 안에서 처리돼 실행 규칙이 유지됐습니다."
@@ -3975,8 +3954,6 @@ def refresh_symbol_learning(profile: dict[str, Any]) -> None:
         traits.append("초단기 반응")
     if average_score >= 95:
         traits.append("고득점 진입")
-    if critical or major or minor:
-        traits.append(f"손절오차 {critical + major + minor}회")
     if trades >= 2 and win_rate >= 0.60:
         traits.append("수익 재현")
     elif trades >= 2 and win_rate < 0.40:

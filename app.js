@@ -281,6 +281,41 @@ function renderStrategyPayload(payload = {}) {
   renderStrategyConfig(payload.config || {});
   if (Array.isArray(payload.strategies)) renderStrategyTower(payload.strategies);
   renderOverallAdvice(payload.overallAdvice || {});
+  renderCurrentStrategySummary(payload);
+}
+
+function renderCurrentStrategySummary(payload = {}) {
+  const target = document.querySelector("#currentStrategySummary");
+  const status = document.querySelector("#currentStrategyStatus");
+  if (!target) return;
+  const config = payload.config || {};
+  const strategies = Array.isArray(payload.strategies) ? payload.strategies : (config.strategies || []);
+  const enabled = strategies.filter((strategy) => strategy.enabled !== false);
+  const groups = [
+    { label: "후보·진입", ids: ["liquidity-momentum-filter", "score-entry-80"] },
+    { label: "PAPER 운용", ids: ["adaptive-capital-utilization", "paper-learning-sprint", "unlimited-paper-experience"] },
+    { label: "손실 방어", ids: ["hard-stop-loss"] },
+    { label: "수익·시간 청산", ids: ["profit-trailing", "three-minute-exit"] },
+    { label: "계좌·재진입", ids: ["daily-risk-kill-switch", "reentry-cooldown", "overnight-extended-session"] },
+  ];
+  if (status) status.textContent = `${enabled.length}개 활성`;
+  target.replaceChildren();
+  groups.forEach((group) => {
+    const items = enabled.filter((strategy) => group.ids.includes(strategy.id));
+    if (!items.length) return;
+    const card = document.createElement("article");
+    card.className = "current-strategy-item";
+    const title = items.map((item) => item.title).join(" · ");
+    const detail = items.map((item) => item.judge).filter(Boolean).join(" / ");
+    card.innerHTML = `<span>${group.label}</span><b>${title}</b><small>${detail || "현재 설정 적용 중"}</small>`;
+    target.append(card);
+  });
+  if (!target.children.length) {
+    const empty = document.createElement("div");
+    empty.className = "current-strategy-empty";
+    empty.textContent = "활성화된 전략이 없습니다. 전략 설정 컨트롤타워를 확인해주세요.";
+    target.append(empty);
+  }
 }
 
 function renderOverallAdvice(advice = {}) {
@@ -606,30 +641,24 @@ function formatTradePrice(entry) {
   return won.format(price);
 }
 
-function createJournalRow(entry, compact = false, category = null) {
+function createJournalRow(entry, compact = false) {
   const row = document.createElement("button");
   row.type = "button";
-  const violation = entry.ruleViolation || null;
-  const view = category || (entry.status === "청산" ? "SELL_DONE" : "HOLDING");
-  const isSellView = view === "SELL_DONE";
-  const isHoldingView = view === "HOLDING";
-  row.className = `journal-row ${isSellView ? "sell" : "buy"}${isHoldingView ? " holding" : ""}${compact ? " compact" : ""}${violation && isSellView ? " has-violation" : ""}`;
+  const isClosed = entry.status === "청산";
+  row.className = `journal-row ${isClosed ? "sell" : "buy holding"}${compact ? " compact" : ""}`;
   row.dataset.journalId = entry.id;
   const isOpen = selectedJournalEntry?.id === entry.id;
   row.classList.toggle("is-open", isOpen);
   row.setAttribute("aria-expanded", String(isOpen));
-  const status = isSellView
-    ? (violation ? `${violation.label} 위반` : "매도 완료")
-    : (isHoldingView ? "보유 중" : "매수 완료");
-  const categoryLabel = isSellView ? "매도 완료" : (isHoldingView ? "보유 중" : "매수 완료");
-  const priceText = isSellView
-    ? `${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 매도`
+  const status = isClosed ? "청산 완료" : "보유 중";
+  const priceText = isClosed
+    ? `${formatTradePrice(entry)} 매수 → ${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 매도`
     : `${formatTradePrice(entry)} 매수${entry.protectiveStopOrder?.triggerPrice ? ` · 보호 ${formatTradePrice({ ...entry, entryPrice: entry.protectiveStopOrder.triggerPrice })}` : ""}`;
-  const eventTime = isSellView ? (entry.closedAt || entry.createdAt) : (entry.openedAt || entry.createdAt);
+  const eventTime = isClosed ? (entry.closedAt || entry.createdAt) : (entry.openedAt || entry.createdAt);
   row.innerHTML = `
-    <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(eventTime)} · ${entry.market || "-"} · ${categoryLabel} · ${priceText}</small></span>
+    <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(eventTime)} · ${entry.market || "-"} · ${entry.sideLabel || status} · ${priceText}</small></span>
     <em class="${Number(entry.returnRate || 0) >= 0 ? "positive-text" : "negative-text"}">${signedPercent(entry.returnRate || 0)}</em>
-    <strong class="${violation && isSellView ? `violation-${violation.severity || "minor"}` : ""}">${status}</strong>
+    <strong>${status}</strong>
   `;
   row.addEventListener("click", () => openJournalEditor(entry));
   return row;
@@ -753,9 +782,7 @@ function renderJournalPerformance(summary = {}) {
 function renderMistakeNotebook(payload = {}) {
   const coaching = payload.coaching || {};
   const note = coaching.active || {};
-  const entries = payload.entries || [];
   const stats = note.stats || {};
-  const violations = note.violations || [];
   const tone = note.tone || "neutral";
   const headline = note.headline || "오늘의 매매를 복기하고 있습니다.";
   const reflection = note.reflection || "청산 결과가 나오면 실수와 다음 원칙을 자동으로 정리합니다.";
@@ -769,8 +796,8 @@ function renderMistakeNotebook(payload = {}) {
   if (miniCopy) miniCopy.textContent = note.nextRule || reflection;
   if (miniCount) {
     miniCount.textContent = note.appliedImmediately
-      ? `위반 ${violations.length} · 즉시 적용`
-      : (violations.length ? `위반 ${violations.length}건` : "규칙 확인 완료");
+      ? `${Number(stats.closedCount || 0)}청산 · 즉시 학습`
+      : `${Number(stats.closedCount || 0)}청산 복기`;
   }
 
   const card = document.querySelector("#mistakeNoteCard");
@@ -782,44 +809,11 @@ function renderMistakeNotebook(payload = {}) {
   const lessonEl = document.querySelector("#mistakeNoteLesson");
   const ruleEl = document.querySelector("#mistakeNoteRule");
   if (dateEl) dateEl.textContent = `${formatTradingDay(note.tradingDay)} · ${note.author || "Orbit 자동 복기"}`;
-  if (scoreEl) scoreEl.textContent = `${Number(stats.closedCount || 0)}청산 · ${Number(stats.winCount || 0)}승 · 오답 ${violations.length}`;
+  if (scoreEl) scoreEl.textContent = `${Number(stats.closedCount || 0)}청산 · ${Number(stats.winCount || 0)}승 · ${Number(stats.lossCount || 0)}패`;
   if (headlineEl) headlineEl.textContent = headline;
   if (reflectionEl) reflectionEl.textContent = reflection;
   if (lessonEl) lessonEl.textContent = note.lesson || "결과와 실행 과정을 함께 확인합니다.";
   if (ruleEl) ruleEl.textContent = note.nextRule || "손실선과 진입 근거를 유지합니다.";
-
-  const countEl = document.querySelector("#ruleViolationCount");
-  const list = document.querySelector("#ruleViolationList");
-  if (countEl) countEl.textContent = `${violations.length}건`;
-  if (!list) return;
-  list.replaceChildren();
-  if (!violations.length) {
-    const empty = document.createElement("div");
-    empty.className = "rule-violation-empty";
-    empty.textContent = "오늘 확인된 규칙 위반이 없습니다. 손절 실행이 계획 범위 안에 있습니다.";
-    list.append(empty);
-    return;
-  }
-
-  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
-  violations.forEach((violation) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `rule-violation-item ${violation.severity || "minor"}`;
-    button.innerHTML = `
-      <em>${violation.label || "확인"}</em>
-      <span><b>${violation.name || violation.symbol}</b><small>손실선 초과 ${Number(violation.excessRate || 0) * 100 >= 0 ? "+" : ""}${(Number(violation.excessRate || 0) * 100).toFixed(2)}%p</small></span>
-      <strong>${signedPercent(violation.returnRate || 0)}</strong>
-    `;
-    const entry = entriesById.get(violation.id);
-    if (entry) {
-      button.addEventListener("click", () => {
-        showJournalEditor(entry);
-        document.querySelector("#journalPageEditor")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      });
-    }
-    list.append(button);
-  });
 }
 
 function formatLearningCooldown(seconds) {
@@ -1060,9 +1054,11 @@ function renderTradingJournal(payload = {}) {
   const updatedText = payload.updatedAt ? `${formatJournalTime(payload.updatedAt)} 갱신` : "기록 대기";
   const updated = document.querySelector("#journalUpdatedAt");
   const pageUpdated = document.querySelector("#journalPageUpdatedAt");
+  const historyCount = document.querySelector("#journalHistoryCount");
   const navCount = document.querySelector("#journalNavCount");
   if (updated) updated.textContent = updatedText;
   if (pageUpdated) pageUpdated.textContent = updatedText;
+  if (historyCount) historyCount.textContent = `${Number(summary.count || 0)}건`;
   if (navCount) navCount.textContent = Number(summary.count || 0);
 
   renderJournalSummary(document.querySelector("#journalSummary"), summary, false);
@@ -1103,36 +1099,22 @@ function renderTradingJournal(payload = {}) {
       if (!grouped.has(day)) grouped.set(day, []);
       grouped.get(day).push(entry);
     });
-    grouped.forEach((dayEntries, day) => {
-      const group = document.createElement("section");
+    [...grouped.entries()].forEach(([day, dayEntries], groupIndex) => {
+      const group = document.createElement("details");
       group.className = "journal-day-group";
+      group.dataset.tradingDay = day;
+      group.open = groupIndex === 0;
       const daySummary = daySummaryByKey.get(day) || {};
-      const heading = document.createElement("div");
+      const heading = document.createElement("summary");
       heading.className = "journal-day-heading";
       heading.innerHTML = `<b>${formatTradingDay(day)}</b><span>${Number(daySummary.count || dayEntries.length)}건 · ${signedWon(daySummary.totalProfit || 0)} · 승률 ${signedPercent(daySummary.winRate || 0)}</span>`;
       group.append(heading);
-      const categories = [
-        { key: "BUY_DONE", label: "매수 완료", entries: dayEntries },
-        { key: "SELL_DONE", label: "매도 완료", entries: dayEntries.filter((entry) => entry.status === "청산") },
-        { key: "HOLDING", label: "보유 중", entries: dayEntries.filter((entry) => entry.status !== "청산") },
-      ];
-      categories.forEach((category) => {
-        const section = document.createElement("div");
-        section.className = `journal-status-group ${category.key.toLowerCase().replace("_", "-")}`;
-        const categoryHead = document.createElement("div");
-        categoryHead.className = "journal-status-heading";
-        categoryHead.innerHTML = `<b>${category.label}</b><span>${category.entries.length}건</span>`;
-        section.append(categoryHead);
-        if (category.entries.length) {
-          category.entries.forEach((entry) => section.append(createJournalRow(entry, true, category.key)));
-        } else {
-          const empty = document.createElement("div");
-          empty.className = "journal-status-empty";
-          empty.textContent = `${category.label} 기록 없음`;
-          section.append(empty);
-        }
-        group.append(section);
-      });
+      const timeline = document.createElement("div");
+      timeline.className = "journal-day-timeline";
+      [...dayEntries]
+        .sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime())
+        .forEach((entry) => timeline.append(createJournalRow(entry, true)));
+      group.append(timeline);
       list.append(group);
     });
   });
@@ -1173,6 +1155,11 @@ function closeJournalEditor() {
 
 function showJournalEditor(entry) {
   selectedJournalEntry = entry;
+  const history = document.querySelector(".journal-history-section");
+  if (history) history.open = true;
+  [...document.querySelectorAll(".journal-day-group")].forEach((group) => {
+    if (group.dataset.tradingDay === entry.tradingDay) group.open = true;
+  });
   setEditorValues("mini", entry);
   setEditorValues("page", entry);
   document.querySelector(".journal-workspace")?.classList.add("detail-open");
@@ -1656,6 +1643,9 @@ document.querySelector(".add-btn")?.addEventListener("click", () => showToast("�
 document.querySelector("#strategySaveBtn")?.addEventListener("click", saveStrategyConfig);
 document.querySelector("#journalSaveBtn")?.addEventListener("click", saveJournalMemo);
 document.querySelector("#journalPageSaveBtn")?.addEventListener("click", saveJournalMemo);
+document.querySelector(".journal-history-section")?.addEventListener("toggle", (event) => {
+  if (!event.currentTarget.open) closeJournalEditor();
+});
 document.querySelectorAll("[data-slack-test]").forEach((button) => {
   button.addEventListener("click", () => testSlackChannel(button.dataset.slackTest, button));
 });

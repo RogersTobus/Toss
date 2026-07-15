@@ -201,7 +201,6 @@
                     <option value="좋은 진입">좋은 진입</option>
                     <option value="성급한 진입">성급한 진입</option>
                     <option value="손절 준수">손절 준수</option>
-                    <option value="규칙 위반">규칙 위반</option>
                     <option value="관찰 필요">관찰 필요</option>
                   </select>
                   <button type="button" class="journal-save-btn" id="journalSaveBtn">일지 저장</button>
@@ -326,6 +325,20 @@
             </div>
           </section>
 
+          <section class="current-strategy-card" aria-label="현재 적용 중인 전략 요약">
+            <div class="current-strategy-head">
+              <div>
+                <p class="eyebrow accent">CURRENT PLAYBOOK</p>
+                <h2>현재 전략 요약</h2>
+                <p>실제 모의 운용에 적용 중인 전략을 역할별로 압축해 보여줍니다.</p>
+              </div>
+              <b id="currentStrategyStatus">전략 불러오는 중</b>
+            </div>
+            <div class="current-strategy-summary" id="currentStrategySummary">
+              <div class="current-strategy-empty">전략 설정을 확인하고 있습니다.</div>
+            </div>
+          </section>
+
           <section class="journal-review-grid" aria-label="Orbit 자동 오답노트">
             <article class="mistake-note-card neutral" id="mistakeNoteCard">
               <div class="mistake-note-head">
@@ -340,16 +353,6 @@
               <div class="mistake-note-lessons">
                 <div><span>배운 점</span><b id="mistakeNoteLesson">결과가 확정되면 자동으로 작성합니다.</b></div>
                 <div><span>다음 거래 원칙</span><b id="mistakeNoteRule">손실선과 진입 근거를 그대로 유지합니다.</b></div>
-              </div>
-            </article>
-
-            <article class="rule-violation-card">
-              <div class="rule-violation-head">
-                <div><p class="eyebrow">RULE CHECK</p><h2>규칙 위반 압축보기</h2></div>
-                <b id="ruleViolationCount">0건</b>
-              </div>
-              <div class="rule-violation-list" id="ruleViolationList">
-                <div class="rule-violation-empty">오늘 확인된 규칙 위반이 없습니다.</div>
               </div>
             </article>
           </section>
@@ -413,35 +416,45 @@
             </details>
           </details>
 
-          <div class="journal-workspace">
-            <article class="journal-ledger-card">
-              <div class="journal-ledger-head">
-                <div><b>거래일별 매매 이력</b><span>한국장 개장부터 미국 정규장 종료까지 한 거래일로 관리</span></div>
-                <span id="journalPageUpdatedAt">기록 대기</span>
+          <details class="journal-history-section" aria-label="거래일별 매매 이력">
+            <summary class="journal-history-toggle">
+              <div>
+                <p class="eyebrow accent">TRADE LEDGER</p>
+                <b>거래일별 매매 이력</b>
+                <small>한국장 개장부터 미국 정규장 종료까지 한 거래일로 관리</small>
               </div>
-              <div class="journal-all-list" id="journalAllList">
-                <div class="journal-empty">아직 기록된 매매가 없습니다.</div>
-              </div>
-            </article>
+              <span class="journal-history-status">
+                <strong id="journalHistoryCount">0건</strong>
+                <em id="journalPageUpdatedAt">기록 대기</em>
+                <i aria-hidden="true"></i>
+              </span>
+            </summary>
 
-            <aside class="journal-detail-card" id="journalPageEditor" hidden>
-              <div class="journal-detail-top">
-                <span>선택한 기록 복기</span>
-                <b id="journalPageEditorTitle">거래 메모</b>
-                <small id="journalPageEditorMeta">기록 선택 대기</small>
-              </div>
-              <textarea id="journalPageMemo" rows="8" placeholder="진입/청산 이유, 감정, 규칙 준수 여부, 다음 개선점을 적어두세요."></textarea>
-              <select id="journalPageReview">
-                <option value="">복기 판단 선택</option>
-                <option value="좋은 진입">좋은 진입</option>
-                <option value="성급한 진입">성급한 진입</option>
-                <option value="손절 준수">손절 준수</option>
-                <option value="규칙 위반">규칙 위반</option>
-                <option value="관찰 필요">관찰 필요</option>
-              </select>
-              <button type="button" class="journal-save-btn" id="journalPageSaveBtn">일지 저장</button>
-            </aside>
-          </div>
+            <div class="journal-workspace">
+              <article class="journal-ledger-card">
+                <div class="journal-all-list" id="journalAllList">
+                  <div class="journal-empty">아직 기록된 매매가 없습니다.</div>
+                </div>
+              </article>
+
+              <aside class="journal-detail-card" id="journalPageEditor" hidden>
+                <div class="journal-detail-top">
+                  <span>선택한 기록 복기</span>
+                  <b id="journalPageEditorTitle">거래 메모</b>
+                  <small id="journalPageEditorMeta">기록 선택 대기</small>
+                </div>
+                <textarea id="journalPageMemo" rows="8" placeholder="진입/청산 이유, 감정, 전략 실행 평가, 다음 개선점을 적어두세요."></textarea>
+                <select id="journalPageReview">
+                  <option value="">복기 판단 선택</option>
+                  <option value="좋은 진입">좋은 진입</option>
+                  <option value="성급한 진입">성급한 진입</option>
+                  <option value="손절 준수">손절 준수</option>
+                  <option value="관찰 필요">관찰 필요</option>
+                </select>
+                <button type="button" class="journal-save-btn" id="journalPageSaveBtn">일지 저장</button>
+              </aside>
+            </div>
+          </details>
         </section>
       </div>
     </main>
