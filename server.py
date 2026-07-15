@@ -37,13 +37,16 @@ KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_LOCK = threading.Lock()
 LEARNING_LOCK = threading.Lock()
+PAPER_LOCK = threading.RLock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
 PAPER_SCHEMA_VERSION = 2
 PAPER_STARTING_CAPITAL_KRW = 1_000_000
 PAPER_TARGET_RATE = 0.01
-PAPER_STOP_RATE = -0.005
+PAPER_STOP_RATE = -0.0045
+PAPER_STOP_MONITOR_INTERVAL_SECONDS = 1.0
+PAPER_STOP_REENTRY_COOLDOWN_SECONDS = 60
 PAPER_MAX_DAILY_ORDERS = 3
 PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
@@ -113,9 +116,9 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "hard-stop-loss",
-        "title": "−0.5% 절대 손절",
-        "description": "평균 체결가 대비 −0.5%에 닿으면 즉시 전량 청산하고 손절선을 불리한 방향으로 옮기거나 물타기하지 않습니다.",
-        "judge": "자본 보호 최우선",
+        "title": "−0.45% 예약 보호매도",
+        "description": "매수 체결과 동시에 평균 체결가 대비 −0.45%에 PAPER 보호매도를 예약하고, 별도 포지션 감시기가 발동가 도달 시 전량 청산합니다.",
+        "judge": "매수 즉시 보호주문 등록",
         "enabled": True,
     },
     {
@@ -171,6 +174,13 @@ ANALYSIS: dict[str, Any] = {
         "locked": False,
         "lockReason": None,
     },
+    "riskMonitor": {
+        "enabled": True,
+        "intervalSec": PAPER_STOP_MONITOR_INTERVAL_SECONDS,
+        "lastRunAt": None,
+        "lastActionAt": None,
+        "lastError": None,
+    },
     "reports": [],
     "reportStatus": {"enabled": False, "lastSentAt": None, "lastError": None},
 }
@@ -203,12 +213,13 @@ def normalize_strategies(raw: Any = None) -> list[dict[str, Any]]:
     strategies: list[dict[str, Any]] = []
     for base in DEFAULT_STRATEGIES:
         stored = stored_by_id.get(str(base["id"]), {})
+        execution_managed = str(base["id"]) == "hard-stop-loss"
         strategies.append(
             {
                 "id": base["id"],
-                "title": clean_text(stored.get("title"), str(base["title"]), 80),
-                "description": clean_text(stored.get("description"), str(base["description"]), 360),
-                "judge": clean_text(stored.get("judge"), str(base["judge"]), 120),
+                "title": str(base["title"]) if execution_managed else clean_text(stored.get("title"), str(base["title"]), 80),
+                "description": str(base["description"]) if execution_managed else clean_text(stored.get("description"), str(base["description"]), 360),
+                "judge": str(base["judge"]) if execution_managed else clean_text(stored.get("judge"), str(base["judge"]), 120),
                 "enabled": bool(stored.get("enabled", base["enabled"])),
             }
         )
@@ -637,7 +648,7 @@ def strategy_close_review(
         bad.append("+1% 수익 관리: 목표 청산 0건으로 수익 구간 검증 부족")
 
     if stop_exits:
-        good.append(f"−0.5% 절대 손절: 손실 청산 {len(stop_exits)}건 실행")
+        good.append(f"{percent(stop_rate)} 예약 보호매도: 손실 청산 {len(stop_exits)}건 실행")
     if delayed_stops:
         bad.append(f"절대 손절: {len(delayed_stops)}건이 손실선보다 0.3%p 이상 불리하게 청산")
         improvements.append("손실선 근처에서는 시세 확인·청산 주기를 단축해 체결 괴리를 줄이기")
@@ -1292,7 +1303,9 @@ def new_paper_state() -> dict[str, Any]:
 
 
 def save_paper_state(state: dict[str, Any]) -> None:
-    PAPER_PATH.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary = PAPER_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(PAPER_PATH)
 
 
 def load_paper_state() -> dict[str, Any]:
@@ -1798,6 +1811,13 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         elif side == "SELL":
             positions.pop(symbol, None)
 
+    working_protective_stops = sum(
+        1
+        for order in positions.values()
+        if isinstance(order.get("protectiveStopOrder"), dict)
+        and (order.get("protectiveStopOrder") or {}).get("status") == "WORKING"
+    )
+
     results_by_symbol = {str(item.get("symbol")): item for item in results}
     trade_ledger = paper_trade_ledger(orders, results_by_symbol)
     capital = paper_capital_summary(trade_ledger)
@@ -1854,6 +1874,13 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason, config),
         "todayOrderCount": len(today_orders),
         "openPositionCount": len(positions),
+        "protectiveStops": {
+            "workingCount": working_protective_stops,
+            "positionCount": len(positions),
+            "coverageRate": working_protective_stops / len(positions) if positions else 1.0,
+            "stopRate": stop_rate,
+            "monitorIntervalSec": PAPER_STOP_MONITOR_INTERVAL_SECONDS,
+        },
         "locked": locked,
         "lockReason": lock_reason,
         "decision": trading_decision(
@@ -1876,6 +1903,79 @@ def open_paper_positions(orders: list[dict[str, Any]], market: str | None = None
         elif side == "SELL":
             positions.pop(symbol, None)
     return positions
+
+
+def build_protective_stop_order(
+    entry_order: dict[str, Any], stop_rate: float
+) -> dict[str, Any]:
+    """Create the PAPER resting protection attached to a filled buy."""
+    entry_price = decimal(entry_order.get("price"))
+    normalized_rate = clamp(stop_rate, -0.05, -0.001, PAPER_STOP_RATE)
+    trigger_price = entry_price * (1 + normalized_rate) if entry_price else 0.0
+    entry_id = str(entry_order.get("id") or f"PAPER-{int(time.time())}")
+    created_at = str(entry_order.get("createdAt") or time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+    return {
+        "id": f"PAPER-STOP-{entry_id}",
+        "entryOrderId": entry_id,
+        "side": "SELL",
+        "orderType": "PAPER_PROTECTIVE_STOP",
+        "status": "WORKING",
+        "stopRate": normalized_rate,
+        "triggerPrice": trigger_price,
+        "quantity": decimal(entry_order.get("quantity") or 1),
+        "createdAt": created_at,
+        "fillPolicy": "TRIGGER_PRICE",
+    }
+
+
+def ensure_protective_stop_order(
+    entry_order: dict[str, Any], stop_rate: float
+) -> tuple[dict[str, Any], bool]:
+    existing = entry_order.get("protectiveStopOrder")
+    if isinstance(existing, dict) and existing.get("status") == "WORKING":
+        normalized_rate = clamp(stop_rate, -0.05, -0.001, PAPER_STOP_RATE)
+        entry_price = decimal(entry_order.get("price"))
+        if abs(decimal(existing.get("stopRate")) - normalized_rate) > 0.0000001:
+            existing.update(
+                {
+                    "stopRate": normalized_rate,
+                    "triggerPrice": entry_price * (1 + normalized_rate) if entry_price else 0.0,
+                    "replacedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                }
+            )
+            return existing, True
+        return existing, False
+    if isinstance(existing, dict) and existing.get("status") in ("FILLED", "CANCELLED"):
+        return existing, False
+    protective = build_protective_stop_order(entry_order, stop_rate)
+    entry_order["protectiveStopOrder"] = protective
+    return protective, True
+
+
+def stop_reentry_cooldown_symbols(
+    orders: list[dict[str, Any]], market: str, now: datetime | None = None
+) -> set[str]:
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KST)
+    blocked: set[str] = set()
+    for order in reversed(orders):
+        if str(order.get("side") or "").upper() != "SELL":
+            continue
+        if str(order.get("status") or "FILLED").upper() != "FILLED":
+            continue
+        if order.get("market") != market or order.get("exitKind") != "손실선":
+            continue
+        moment = parse_order_time(order.get("createdAt"))
+        if not moment:
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=KST)
+        age = (current.astimezone(KST) - moment.astimezone(KST)).total_seconds()
+        if 0 <= age < PAPER_STOP_REENTRY_COOLDOWN_SECONDS:
+            blocked.add(str(order.get("symbol") or ""))
+    blocked.discard("")
+    return blocked
 
 
 def extract_stock_price(stock: dict[str, Any]) -> Any:
@@ -1925,6 +2025,7 @@ def close_paper_positions_if_needed(
     results: list[dict[str, Any]],
     market: str,
     session: str,
+    stop_only: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     config = strategy_config()
     target_rate = decimal(config.get("targetRate"))
@@ -1940,15 +2041,43 @@ def close_paper_positions_if_needed(
         last = prices.get(symbol, 0.0)
         if not entry or not last:
             continue
-        rate = (last - entry) / entry
+        protective, created = ensure_protective_stop_order(order, stop_rate)
+        changed = changed or created
+        trigger_price = decimal(protective.get("triggerPrice"))
+        protective_rate = decimal(protective.get("stopRate") or stop_rate)
+        observed_rate = (last - entry) / entry
+        fill_price = last
+        rate = observed_rate
         exit_kind = None
         reason = None
-        if rate <= stop_rate:
+        if protective.get("status") == "WORKING" and trigger_price and last <= trigger_price:
             exit_kind = "손실선"
-            reason = f"손실선 {percent(stop_rate)} 도달 · 즉시 모의청산"
-        elif rate >= target_rate:
+            fill_price = trigger_price
+            rate = (fill_price - entry) / entry
+            reason = (
+                f"예약 보호매도 {percent(protective_rate)} 체결"
+                f" · 감시 관측가 {percent(observed_rate)}"
+            )
+            protective.update(
+                {
+                    "status": "FILLED",
+                    "filledAt": now,
+                    "fillPrice": fill_price,
+                    "observedPrice": last,
+                    "observedReturnRate": observed_rate,
+                    "slippageFromTriggerRate": observed_rate - protective_rate,
+                }
+            )
+        elif not stop_only and observed_rate >= target_rate:
             exit_kind = "목표"
             reason = f"목표 {percent(target_rate)} 도달 · 즉시 모의청산"
+            protective.update(
+                {
+                    "status": "CANCELLED",
+                    "cancelledAt": now,
+                    "cancelReason": "목표 청산 완료",
+                }
+            )
         if not exit_kind:
             continue
         orders.append(
@@ -1960,9 +2089,11 @@ def close_paper_positions_if_needed(
                 "name": order.get("name"),
                 "side": "SELL",
                 "quantity": decimal(order.get("quantity") or 1),
-                "price": last,
+                "price": fill_price,
+                "observedPrice": last,
                 "entryPrice": entry,
                 "entryOrderId": order.get("id"),
+                "protectiveStopOrderId": protective.get("id"),
                 "currency": order.get("currency"),
                 "sourceCurrency": order.get("sourceCurrency"),
                 "fxRate": order.get("fxRate") or 1,
@@ -1970,10 +2101,13 @@ def close_paper_positions_if_needed(
                 "createdAt": now,
                 "reason": reason,
                 "exitKind": exit_kind,
-                "stopRate": stop_rate,
+                "stopRate": protective_rate,
+                "stopTriggerPrice": trigger_price,
                 "targetRate": target_rate,
                 "returnRate": rate,
-                "profit": (last - entry) * decimal(order.get("quantity") or 1),
+                "observedReturnRate": observed_rate,
+                "profit": (fill_price - entry) * decimal(order.get("quantity") or 1),
+                "fillPolicy": protective.get("fillPolicy"),
             }
         )
         changed = True
@@ -1983,6 +2117,13 @@ def close_paper_positions_if_needed(
 
 
 def paper_trade(
+    env: dict[str, str], results: list[dict[str, Any]], market: str, session: str
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    with PAPER_LOCK:
+        return paper_trade_locked(env, results, market, session)
+
+
+def paper_trade_locked(
     env: dict[str, str], results: list[dict[str, Any]], market: str, session: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     orders = load_paper_orders()
@@ -2032,6 +2173,7 @@ def paper_trade(
     allocation_rate = 0.0
     allocated_krw = 0.0
     learning_decisions: list[dict[str, Any]] = []
+    stop_cooldown = stop_reentry_cooldown_symbols(orders, market)
     ranked_candidates = sorted(
         (
             item for item in results
@@ -2043,6 +2185,18 @@ def paper_trade(
     )
     for item in ranked_candidates:
         symbol = str(item.get("symbol") or "")
+        if symbol in stop_cooldown:
+            learning_decisions.append(
+                {
+                    "symbol": symbol,
+                    "name": item.get("name") or symbol,
+                    "allowed": False,
+                    "capitalAllowed": False,
+                    "reason": f"예약 손절 후 {PAPER_STOP_REENTRY_COOLDOWN_SECONDS}초 재진입 대기",
+                    "scope": "EXECUTION_SAFETY",
+                }
+            )
+            continue
         policy = learning_entry_policy(symbol, item.get("score"), learning_state)
         decision = dict(policy)
         decision["name"] = item.get("name") or symbol
@@ -2089,8 +2243,8 @@ def paper_trade(
         allocation_rate = allocated_krw / working_capital if working_capital else 0.0
         break
     if candidate:
-        orders.append(
-            {
+        created_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        buy_order = {
                 "id": f"PAPER-{int(time.time())}",
                 "market": market,
                 "session": session,
@@ -2124,7 +2278,7 @@ def paper_trade(
                     "learningAppliedAfterSizing": True,
                 },
                 "status": "FILLED",
-                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "createdAt": created_at,
                 "reason": candidate.get("reason"),
                 "entryScore": candidate.get("score"),
                 "baseEntryScore": candidate.get("baseScore"),
@@ -2148,9 +2302,13 @@ def paper_trade(
                     "adaptive-capital-utilization",
                     "paper-learning-sprint",
                     "unlimited-paper-experience",
+                    "hard-stop-loss",
                 ],
             }
+        buy_order["protectiveStopOrder"] = build_protective_stop_order(
+            buy_order, decimal(config.get("stopRate") or PAPER_STOP_RATE)
         )
+        orders.append(buy_order)
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
     summary["learningBrain"] = learning_brain.get("summary")
@@ -2951,6 +3109,51 @@ def off_market_study_loop() -> None:
         time.sleep(OFF_MARKET_STUDY_POLL_SECONDS)
 
 
+def position_risk_loop() -> None:
+    """Watch already-filled PAPER positions independently from candidate scans."""
+    while True:
+        try:
+            env = load_env()
+            market, session = market_schedule(env)
+            changed = False
+            orders: list[dict[str, Any]] = []
+            if market:
+                with PAPER_LOCK:
+                    orders = load_paper_orders()
+                    orders, changed = close_paper_positions_if_needed(
+                        env, orders, [], market, session, stop_only=True
+                    )
+            with ANALYSIS_LOCK:
+                current_results = list(ANALYSIS.get("results") or [])
+            paper_stats = paper_summary(orders, current_results) if changed else None
+            with ANALYSIS_LOCK:
+                monitor = ANALYSIS.setdefault("riskMonitor", {})
+                monitor.update(
+                    {
+                        "enabled": True,
+                        "intervalSec": PAPER_STOP_MONITOR_INTERVAL_SECONDS,
+                        "lastRunAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "lastError": None,
+                    }
+                )
+                if changed:
+                    monitor["lastActionAt"] = monitor["lastRunAt"]
+                    ANALYSIS["paperOrders"] = orders[-50:]
+                    ANALYSIS["paperSummary"] = paper_stats
+        except Exception as exc:
+            with ANALYSIS_LOCK:
+                monitor = ANALYSIS.setdefault("riskMonitor", {})
+                monitor.update(
+                    {
+                        "enabled": True,
+                        "intervalSec": PAPER_STOP_MONITOR_INTERVAL_SECONDS,
+                        "lastRunAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "lastError": str(exc)[:300],
+                    }
+                )
+        time.sleep(PAPER_STOP_MONITOR_INTERVAL_SECONDS)
+
+
 def analysis_loop() -> None:
     while True:
         sleep_seconds = 10
@@ -3029,6 +3232,7 @@ def health_status() -> dict[str, Any]:
             "activeSession": analysis.get("activeSession"),
             "lastError": analysis.get("lastError"),
         },
+        "riskMonitor": dict(analysis.get("riskMonitor") or {}),
     }
 
 
@@ -3126,7 +3330,13 @@ def automatic_journal_note(
     return_rate = decimal(trade.get("returnRate"))
     profit = decimal(trade.get("profit"))
     exit_kind = clean_text(exit_order.get("exitKind"), "", 40)
-    stop_rate = decimal(strategy_config().get("stopRate") or PAPER_STOP_RATE)
+    protective = entry_order.get("protectiveStopOrder") if isinstance(entry_order.get("protectiveStopOrder"), dict) else {}
+    stop_rate = decimal(
+        exit_order.get("stopRate")
+        or protective.get("stopRate")
+        or strategy_config().get("stopRate")
+        or PAPER_STOP_RATE
+    )
     duration = journal_holding_time(trade.get("openedAt"), trade.get("closedAt"))
 
     entry_facts = []
@@ -3178,6 +3388,12 @@ def automatic_journal_note(
         tags = ["자동 작성", "개선 필요"]
 
     memo_lines = [f"진입: {entry_reason}{entry_context}"]
+    if protective:
+        memo_lines.append(
+            f"보호주문: {percent(protective.get('stopRate'))} · "
+            f"발동가 {round(decimal(protective.get('triggerPrice'))):,}원 · "
+            f"상태 {protective.get('status') or 'WORKING'}"
+        )
     if learning_line:
         memo_lines.append(learning_line)
     memo_lines.extend(
@@ -4140,6 +4356,17 @@ def build_trading_journal() -> dict[str, Any]:
                 "reason": reason,
                 "exitKind": exit_order.get("exitKind"),
                 "stopRateAtExit": decimal(exit_order.get("stopRate") or stop_rate),
+                "stopTriggerPrice": decimal(
+                    exit_order.get("stopTriggerPrice")
+                    or (entry_order.get("protectiveStopOrder") or {}).get("triggerPrice")
+                ),
+                "observedExitPrice": decimal(exit_order.get("observedPrice")),
+                "observedExitReturnRate": decimal(exit_order.get("observedReturnRate")),
+                "protectiveStopOrder": (
+                    dict(entry_order.get("protectiveStopOrder") or {})
+                    if isinstance(entry_order.get("protectiveStopOrder"), dict)
+                    else None
+                ),
                 "entryOrderId": order_id,
                 "exitOrderId": exit_order_id,
                 "holdingTime": journal_holding_time(trade.get("openedAt"), trade.get("closedAt")),
@@ -4420,6 +4647,7 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
+    threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
     threading.Thread(target=off_market_study_loop, daemon=True, name="off-market-study-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()

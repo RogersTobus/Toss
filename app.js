@@ -165,7 +165,7 @@ function percentInputValue(rate) {
 function renderStrategyConfig(config = {}) {
   const pairs = [
     ["#cfgTargetRate", percentInputValue(config.targetRate ?? 0.01)],
-    ["#cfgStopRate", percentInputValue(config.stopRate ?? -0.005)],
+    ["#cfgStopRate", percentInputValue(config.stopRate ?? -0.0045)],
     ["#cfgMaxDailyOrders", config.maxDailyOrders ?? 3],
     ["#cfgMaxOpenPositions", config.maxOpenPositions ?? 3],
     ["#cfgMaxLosses", config.maxConsecutiveLosses ?? 2],
@@ -624,7 +624,7 @@ function createJournalRow(entry, compact = false, category = null) {
   const categoryLabel = isSellView ? "매도 완료" : (isHoldingView ? "보유 중" : "매수 완료");
   const priceText = isSellView
     ? `${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 매도`
-    : `${formatTradePrice(entry)} 매수`;
+    : `${formatTradePrice(entry)} 매수${entry.protectiveStopOrder?.triggerPrice ? ` · 보호 ${formatTradePrice({ ...entry, entryPrice: entry.protectiveStopOrder.triggerPrice })}` : ""}`;
   const eventTime = isSellView ? (entry.closedAt || entry.createdAt) : (entry.openedAt || entry.createdAt);
   row.innerHTML = `
     <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(eventTime)} · ${entry.market || "-"} · ${categoryLabel} · ${priceText}</small></span>
@@ -1144,10 +1144,11 @@ function renderPaperSummary(state) {
   const capital = summary.capital || {};
   const averageReturn = Number(summary.averageReturn || 0);
   const targetRate = Number(summary.targetRate || 0.01);
-  const stopRate = Number(summary.stopRate || -0.005);
+  const stopRate = Number(summary.stopRate || -0.0045);
   const todayOrderCount = Number(summary.todayOrderCount || 0);
   const openPositionCount = Number(summary.openPositionCount || 0);
   const learningSprint = summary.paperLearningSprint || {};
+  const protectiveStops = summary.protectiveStops || {};
 
   const decision = summary.decision || {};
   const decisionCard = document.querySelector("#decisionCard");
@@ -1269,14 +1270,14 @@ function renderPaperSummary(state) {
     ? new Date(state.lastRunAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
     : "대기 중";
   document.querySelector("#analysisUpdatedAt").textContent = learningSprint.enabled
-    ? `무제한 진입 · ${updatedAt}`
+    ? `보호 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} · ${updatedAt}`
     : (summary.locked ? "오늘 거래 잠금" : updatedAt);
 
   const progress = targetRate > 0 ? Math.max(0, Math.min(100, (averageReturn / targetRate) * 100)) : 0;
   document.querySelector("#analysisPulseBar").style.width = `${summary.locked && averageReturn < 0 ? 100 : Math.max(4, progress)}%`;
   document.querySelector("#analysisPulseBar").classList.toggle("danger", averageReturn < 0);
   document.querySelector("#analysisCycleCopy").textContent = learningSprint.enabled
-    ? `${state.activeMarket} 시장 · 오늘 ${todayOrderCount}건 학습 · 점수/개별 손절 유지`
+    ? `${Number(protectiveStops.monitorIntervalSec || 1)}초 보호감시 · 예약매도 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} · 오늘 ${todayOrderCount}건 학습`
     : (summary.locked
     ? summary.lockReason
     : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`);
