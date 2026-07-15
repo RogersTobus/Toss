@@ -730,6 +730,66 @@ function formatLearningCooldown(seconds) {
   return `${Math.ceil(value / 60)}분 대기`;
 }
 
+function formatStudyPrice(value, market) {
+  const numeric = Number(value || 0);
+  if (!numeric) return "-";
+  return market === "US" ? `$${number.format(numeric)}` : won.format(numeric);
+}
+
+function renderOfflineSymbolStudies(study = {}) {
+  const list = document.querySelector("#offlineSymbolStudyList");
+  const count = document.querySelector("#symbolStudyCount");
+  if (!list) return;
+  const symbols = study.symbolStudies || [];
+  if (count) count.textContent = `${symbols.length}종목 · 3주기 완료 ${Number(study.summary?.completeSymbolCount || 0)}개`;
+  list.replaceChildren();
+  if (!symbols.length) {
+    const empty = document.createElement("div");
+    empty.className = "learning-empty";
+    empty.textContent = "휴장 연구가 끝나면 종목별 일봉·주봉·월봉 데이터가 한 묶음으로 쌓입니다.";
+    list.append(empty);
+    return;
+  }
+  symbols.forEach((symbol) => {
+    const card = document.createElement("details");
+    card.className = `symbol-study-card ${symbol.tone || "neutral"}`;
+    const summary = document.createElement("summary");
+    summary.innerHTML = `
+      <span><em>${symbol.market || "-"}</em><b>${symbol.name || symbol.symbol}</b><small>${symbol.symbol || ""} · 패턴 관찰 ${Number(symbol.patternObservationCount || 0).toLocaleString("ko-KR")}건</small></span>
+      <strong>${symbol.verdict || "분석 완료"}</strong>
+      <i>${Number(symbol.completeTimeframeCount || 0)}/3</i>
+    `;
+    card.append(summary);
+    const body = document.createElement("div");
+    body.className = "symbol-timeframe-grid";
+    (symbol.timeframes || []).forEach((timeframe) => {
+      const technical = timeframe.technical || {};
+      const backtest = timeframe.backtest || {};
+      const pattern = (timeframe.topPatterns || [])[0] || {};
+      const panel = document.createElement("article");
+      panel.className = `timeframe-study-panel ${(technical.trend || "혼조") === "상승" ? "positive" : ((technical.trend || "혼조") === "하락" ? "negative" : "neutral")}`;
+      panel.innerHTML = `
+        <div class="timeframe-study-title"><b>${timeframe.label || timeframe.timeframe}</b><em>${technical.trend || "데이터 확인 중"}</em><span>${Number(technical.barCount || 0)}봉</span></div>
+        <div class="timeframe-metric-grid">
+          <div><span>최근 종가</span><b>${formatStudyPrice(technical.lastClose, symbol.market)}</b></div>
+          <div><span>SMA 5 / 20</span><b>${formatStudyPrice(technical.sma5, symbol.market)} / ${formatStudyPrice(technical.sma20, symbol.market)}</b></div>
+          <div><span>5봉 / 20봉</span><b>${signedPercent(technical.return5 || 0)} / ${signedPercent(technical.return20 || 0)}</b></div>
+          <div><span>RSI 14</span><b>${Number(technical.rsi14 || 0).toFixed(1)}</b></div>
+          <div><span>거래량 강도</span><b>${Number(technical.volumeRatio || 0).toFixed(2)}배</b></div>
+          <div><span>변동성 20</span><b>${(Number(technical.volatility20 || 0) * 100).toFixed(2)}%</b></div>
+          <div><span>60봉 최대낙폭</span><b>${signedPercent(technical.maxDrawdown60 || 0)}</b></div>
+          <div><span>백테스트</span><b>${Number(backtest.tradeCount || 0)}회 · 승률 ${(Number(backtest.winRate || 0) * 100).toFixed(1)}%</b></div>
+          <div><span>평균 결과</span><b>${signedPercent(backtest.averageReturn || 0)} · ${backtest.researchPass || "검증"}</b></div>
+        </div>
+        <div class="timeframe-pattern-note"><span>대표 관찰 패턴</span><b>${pattern.label || "신뢰할 패턴을 수집 중입니다."}</b><small>${Number(timeframe.patternObservationCount || 0).toLocaleString("ko-KR")}개 상태 관찰</small></div>
+      `;
+      body.append(panel);
+    });
+    card.append(body);
+    list.append(card);
+  });
+}
+
 function renderLearningBrain(learning = {}, entries = []) {
   const summary = learning.summary || {};
   const globalBrain = learning.global || {};
@@ -892,6 +952,7 @@ function renderLearningBrain(learning = {}, entries = []) {
       });
     }
   }
+  renderOfflineSymbolStudies(offlineStudy);
 }
 
 function renderTradingJournal(payload = {}) {

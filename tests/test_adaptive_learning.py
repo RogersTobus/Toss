@@ -136,13 +136,32 @@ class OffMarketResearchTests(unittest.TestCase):
             candles = server.aggregate_study_candles(daily, timeframe)
             patterns = server.study_pattern_observations(candles, timeframe)
             backtest = server.study_backtest(candles, timeframe, 1)
-            analyses.append({"timeframe": timeframe, "patterns": patterns, "backtest": backtest})
+            analyses.append(
+                {
+                    "market": "KR",
+                    "symbol": "005930",
+                    "name": "삼성전자",
+                    "timeframe": timeframe,
+                    "technical": server.study_technical_snapshot(candles),
+                    "patterns": patterns[:8],
+                    "patternObservationCount": sum(int(item.get("count") or 0) for item in patterns),
+                    "backtest": backtest,
+                }
+            )
             self.assertEqual(backtest["researchPass"], "균형형")
         pattern_summary = server.summarize_study_patterns(analyses)
         backtest_summary = server.summarize_off_market_backtests(analyses)
+        symbol_catalog = server.build_symbol_study_catalog(analyses)
         self.assertGreater(pattern_summary["observationCount"], 100)
         self.assertGreater(pattern_summary["uniquePatternCount"], 0)
         self.assertGreater(backtest_summary["analysisCount"], 0)
+        self.assertEqual(len(symbol_catalog), 1)
+        self.assertEqual(symbol_catalog[0]["symbol"], "005930")
+        self.assertEqual(symbol_catalog[0]["completeTimeframeCount"], 3)
+        self.assertEqual(
+            [item["label"] for item in symbol_catalog[0]["timeframes"]],
+            ["일봉", "주봉", "월봉"],
+        )
 
     def test_backtest_influence_is_lower_than_real_trade_step(self):
         model = server.default_global_score_model()

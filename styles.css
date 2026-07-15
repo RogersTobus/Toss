@@ -1266,6 +1266,151 @@ body[data-page="journal"] .journal-page {
 .offline-study-note small { display: block; min-width: 0; }
 .offline-study-note b { font-size: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .offline-study-note small { margin-top: 2px; color: var(--muted); font-size: 7px; line-height: 1.4; overflow-wrap: anywhere; }
+.symbol-study-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  margin-top: 10px;
+  padding: 9px 2px 7px;
+  border-top: 1px solid #e5d7b9;
+}
+.symbol-study-head > div,
+.symbol-study-head b,
+.symbol-study-head span { display: block; min-width: 0; }
+.symbol-study-head b { font-size: 12px; }
+.symbol-study-head span { margin-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.4; }
+.symbol-study-head > em {
+  flex: 0 0 auto;
+  color: var(--gold-deep);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.symbol-study-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  max-height: 560px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.symbol-study-card {
+  min-width: 0;
+  border: 1px solid #e3d5b9;
+  border-left: 3px solid #b8a574;
+  border-radius: 9px;
+  background: rgba(255,255,255,.72);
+}
+.symbol-study-card.positive { border-left-color: var(--green); }
+.symbol-study-card.negative { border-left-color: var(--red); }
+.symbol-study-card > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 34px;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.symbol-study-card > summary::-webkit-details-marker { display: none; }
+.symbol-study-card > summary > span,
+.symbol-study-card > summary b,
+.symbol-study-card > summary small { display: block; min-width: 0; }
+.symbol-study-card > summary > span { position: relative; padding-left: 31px; }
+.symbol-study-card > summary > span > em {
+  position: absolute;
+  left: 0;
+  top: 1px;
+  min-width: 25px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  background: var(--gold-tint);
+  color: var(--gold-deep);
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 900;
+  text-align: center;
+}
+.symbol-study-card > summary b { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.symbol-study-card > summary small { margin-top: 2px; color: var(--muted); font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.symbol-study-card > summary > strong {
+  max-width: 150px;
+  color: var(--ink-soft);
+  font-size: 9px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.symbol-study-card > summary > i {
+  padding: 3px 5px;
+  border-radius: 6px;
+  background: var(--dark-1);
+  color: #f5e2a7;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+  text-align: center;
+}
+.symbol-study-card[open] > summary { border-bottom: 1px solid #eadfc9; background: #fff9eb; }
+.symbol-timeframe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 7px;
+  min-width: 0;
+  padding: 8px;
+}
+.timeframe-study-panel {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #e8dcc5;
+  border-top: 3px solid #b8a574;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+.timeframe-study-panel.positive { border-top-color: var(--green); }
+.timeframe-study-panel.negative { border-top-color: var(--red); }
+.timeframe-study-title {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+.timeframe-study-title b { font-size: 12px; }
+.timeframe-study-title em { color: var(--gold-deep); font-size: 9px; font-style: normal; font-weight: 900; }
+.timeframe-study-title span { color: var(--muted); font-size: 8px; }
+.timeframe-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-top: 7px;
+}
+.timeframe-metric-grid > div {
+  min-width: 0;
+  padding: 5px 6px;
+  border-radius: 6px;
+  background: rgba(239,231,210,.42);
+}
+.timeframe-metric-grid span,
+.timeframe-metric-grid b { display: block; min-width: 0; }
+.timeframe-metric-grid span { color: var(--muted); font-size: 8px; font-weight: 800; }
+.timeframe-metric-grid b { margin-top: 2px; font-size: 9px; line-height: 1.35; overflow-wrap: anywhere; }
+.timeframe-pattern-note {
+  min-width: 0;
+  margin-top: 6px;
+  padding: 6px;
+  border: 1px dashed #d9c69d;
+  border-radius: 7px;
+}
+.timeframe-pattern-note span,
+.timeframe-pattern-note b,
+.timeframe-pattern-note small { display: block; min-width: 0; }
+.timeframe-pattern-note span { color: var(--gold-deep); font-size: 8px; font-weight: 900; }
+.timeframe-pattern-note b { margin-top: 2px; font-size: 9px; line-height: 1.35; overflow-wrap: anywhere; }
+.timeframe-pattern-note small { margin-top: 3px; color: var(--muted); font-size: 8px; }
 .learning-case-archive {
   min-width: 0;
   margin-top: 8px;
@@ -1423,6 +1568,7 @@ body[data-page="journal"] .journal-page {
   .journal-review-grid { grid-template-columns: 1fr; }
   .learning-brain-body { grid-template-columns: 1fr; }
   .learning-symbol-list, .learning-memory-list { max-height: 210px; }
+  .symbol-timeframe-grid { grid-template-columns: 1fr; }
   .rule-violation-list { max-height: 160px; }
   .journal-workspace,
   .journal-workspace.detail-open { grid-template-columns: 1fr; }
@@ -1455,6 +1601,9 @@ body[data-page="journal"] .journal-page {
   .learning-subhead { align-items: flex-start; flex-direction: column; gap: 2px; }
   .offline-study-head { align-items: flex-start; flex-direction: column; }
   .offline-study-head > b { width: 100%; text-align: center; }
+  .symbol-study-head { align-items: flex-start; flex-direction: column; }
+  .symbol-study-card > summary { grid-template-columns: minmax(0, 1fr) auto; }
+  .symbol-study-card > summary > strong { grid-column: 1 / -1; grid-row: 2; justify-self: start; max-width: 100%; }
   .global-score-feature { grid-template-columns: minmax(0, 1fr) auto; }
   .global-score-feature > strong { grid-column: 1 / -1; text-align: left; }
   .learning-symbol-row { grid-template-columns: minmax(0, 1fr) auto; }

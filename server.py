@@ -2753,6 +2753,79 @@ def apply_off_market_backtest_influence(model: dict[str, Any], summary: dict[str
     return influence
 
 
+def build_symbol_study_catalog(analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group every technical result as symbol -> daily/weekly/monthly evidence."""
+    grouped: dict[str, dict[str, Any]] = {}
+    timeframe_order = {"1d": 0, "1w": 1, "1mo": 2}
+    timeframe_labels = {"1d": "일봉", "1w": "주봉", "1mo": "월봉"}
+    for analysis in analyses:
+        market = str(analysis.get("market") or "")
+        symbol = str(analysis.get("symbol") or "")
+        timeframe = str(analysis.get("timeframe") or "")
+        if not symbol or timeframe not in timeframe_order:
+            continue
+        key = f"{market}:{symbol}"
+        study = grouped.setdefault(
+            key,
+            {
+                "market": market,
+                "symbol": symbol,
+                "name": analysis.get("name") or symbol,
+                "sourceHorizons": list(analysis.get("sourceHorizons") or []),
+                "timeframes": {},
+            },
+        )
+        technical = dict(analysis.get("technical") or {})
+        backtest = dict(analysis.get("backtest") or {})
+        patterns = list(analysis.get("patterns") or [])
+        study["timeframes"][timeframe] = {
+            "timeframe": timeframe,
+            "label": timeframe_labels[timeframe],
+            "technical": technical,
+            "backtest": backtest,
+            "patternObservationCount": int(analysis.get("patternObservationCount") or 0),
+            "topPatterns": patterns[:5],
+        }
+
+    catalog: list[dict[str, Any]] = []
+    for study in grouped.values():
+        timeframes = study.get("timeframes") or {}
+        ordered = [timeframes[key] for key in sorted(timeframes, key=lambda item: timeframe_order.get(item, 99))]
+        ready = [item for item in ordered if (item.get("technical") or {}).get("status") == "ready"]
+        up_count = sum(1 for item in ready if (item.get("technical") or {}).get("trend") == "상승")
+        down_count = sum(1 for item in ready if (item.get("technical") or {}).get("trend") == "하락")
+        if up_count == 3:
+            verdict, tone = "일·주·월 상승 정렬", "positive"
+        elif down_count == 3:
+            verdict, tone = "일·주·월 하락 정렬", "negative"
+        elif up_count >= 2:
+            verdict, tone = "중장기 상승 우세", "positive"
+        elif down_count >= 2:
+            verdict, tone = "중장기 하락 우세", "negative"
+        else:
+            verdict, tone = "시간대별 혼조", "neutral"
+        study["timeframes"] = ordered
+        study["completeTimeframeCount"] = len(ready)
+        study["complete"] = len(ready) == 3
+        study["verdict"] = verdict
+        study["tone"] = tone
+        study["patternObservationCount"] = sum(
+            int(item.get("patternObservationCount") or 0) for item in ordered
+        )
+        study["backtestTradeCount"] = sum(
+            int((item.get("backtest") or {}).get("tradeCount") or 0) for item in ordered
+        )
+        catalog.append(study)
+    catalog.sort(
+        key=lambda item: (
+            0 if item.get("complete") else 1,
+            str(item.get("market") or ""),
+            str(item.get("name") or item.get("symbol") or ""),
+        )
+    )
+    return catalog
+
+
 def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
     started = now_kst()
     study_id = f"OFFLINE-{started.strftime('%Y-%m-%d')}"
@@ -2800,6 +2873,8 @@ def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
         )
         analysis["patternObservationCount"] = sum(int(item.get("count") or 0) for item in patterns)
         analysis["patterns"] = patterns[:8]
+    symbol_studies = build_symbol_study_catalog(analyses)
+    summary["completeSymbolCount"] = sum(1 for item in symbol_studies if item.get("complete"))
     with LEARNING_LOCK:
         state = load_learning_state_unlocked()
         model = state.setdefault("globalScoreModel", default_global_score_model())
@@ -2818,6 +2893,7 @@ def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
             "summary": summary,
             "patternResearch": pattern_summary,
             "journal": pattern_summary.get("journal") or [],
+            "symbolStudies": symbol_studies,
             "influence": influence,
             "analyses": analyses[-240:],
             "errors": errors[-12:],
