@@ -119,7 +119,7 @@
             <div class="bot-mode">
               <span class="bot-orb"><i></i></span>
               <div class="bot-mode-copy"><b id="botStatus">모의자산 ₩1,000,000 · 운용 대기</b><span>실제 주문은 전송되지 않습니다</span></div>
-              <em class="paper-badge">PAPER</em>
+              <em class="paper-badge" id="paperModeBadge">PAPER SPRINT</em>
             </div>
 
             <div class="capital-utilization" id="capitalUtilizationCard">
@@ -128,16 +128,16 @@
                 <strong id="capitalUtilizationStatus">진입 기회 대기</strong>
               </div>
               <div class="capital-utilization-metrics">
-                <span><small>운용 중</small><b id="capitalInvestedKrw">₩0</b></span>
-                <span><small>대기 현금</small><b id="capitalCashKrw">₩1,000,000</b></span>
-                <span><small>현재 활용률</small><b id="capitalUtilizationRate">0.0%</b></span>
+                <span><small id="capitalInvestedLabel">총 투입금</small><b id="capitalInvestedKrw">₩0</b></span>
+                <span><small id="capitalCashLabel">가상자금</small><b id="capitalCashKrw">무제한</b></span>
+                <span><small id="capitalUtilizationLabel">기준금 대비</small><b id="capitalUtilizationRate">0.0%</b></span>
               </div>
               <div class="capital-utilization-track"><i id="capitalUtilizationBar"></i><em id="capitalTargetMarker"></em></div>
               <p><span id="capitalTargetText">운용 목표 90% · 현금 예비 10%</span><b id="capitalRemainingText">추가 배정 가능 ₩900,000</b></p>
             </div>
 
             <div class="risk-row">
-              <div class="risk-head"><span>일 목표 +1% · 손실선 −0.5%</span><b id="analysisUpdatedAt">대기 중</b></div>
+              <div class="risk-head"><span>개별 목표 +1% · 개별 손절 −0.5%</span><b id="analysisUpdatedAt">대기 중</b></div>
               <div class="risk-track"><i id="analysisPulseBar"></i></div>
               <p id="analysisCycleCopy">30초 주기로 시장을 분석하고 모의 진입을 기록합니다.</p>
             </div>

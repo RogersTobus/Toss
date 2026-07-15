@@ -49,6 +49,10 @@ PAPER_MAX_CONSECUTIVE_LOSSES = 2
 PAPER_CAPITAL_TARGET_RATE = 0.90
 PAPER_CASH_RESERVE_RATE = 0.10
 PAPER_MAX_SINGLE_POSITION_RATE = 0.60
+PAPER_LEARNING_SPRINT_MODE = True
+PAPER_UNLIMITED_VIRTUAL_CAPITAL = True
+PAPER_UNLIMITED_OPEN_POSITIONS = True
+PAPER_MIN_EXPERIENCE_ENTRY_RATE = 0.30
 LEARNING_SCHEMA_VERSION = 1
 LEARNING_BASE_ENTRY_SCORE = 80
 DEFAULT_STRATEGY_CONFIG = {
@@ -75,9 +79,23 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "adaptive-capital-utilization",
-        "title": "자본 활용 90%·현금 10% 자동배분",
-        "description": "남은 포지션 자리와 진입 점수를 함께 계산해 모의자금의 90%까지 균형 배분하고, 종목별 오답노트의 비중 축소를 마지막 단계에서 모든 신규 거래에 적용합니다.",
-        "judge": "학습 비중 적용 후 주문금 확정",
+        "title": "무제한 가상자금·점수 비중 자동배분",
+        "description": "100만 원은 성과 비교 기준금으로만 사용하고, 점수를 통과한 종목마다 기준금의 30~60%를 배정합니다. 종목별 오답노트의 비중 축소는 마지막 단계에서 모든 신규 거래에 적용합니다.",
+        "judge": "자금 한도 없음 · 학습 비중 우선",
+        "enabled": True,
+    },
+    {
+        "id": "paper-learning-sprint",
+        "title": "PAPER 무제한 경험 축적",
+        "description": "일일 횟수·가상자금·동시 포지션·일 손익·연속 손실에 따른 신규 진입 잠금을 해제하고, 점수와 종목 학습 규칙을 통과한 모든 후보의 성공과 실패를 오답 표본으로 쌓습니다.",
+        "judge": "진입 제한 없음 · 개별 손절 유지",
+        "enabled": True,
+    },
+    {
+        "id": "unlimited-paper-experience",
+        "title": "무제한 가상자금 경험 랩",
+        "description": "100만 원은 성과 비교 기준으로만 유지합니다. 가상자금과 동시 포지션 수에는 상한을 두지 않고, 80점 이상과 종목별 학습 규칙을 통과한 후보는 최소 1주 이상 경험 데이터로 기록합니다.",
+        "judge": "자금·포지션 무제한 · 점수 필수",
         "enabled": True,
     },
     {
@@ -201,6 +219,7 @@ def strategy_config() -> dict[str, Any]:
         "maxDailyOrders": int(clamp(config.get("maxDailyOrders"), 1, 20, PAPER_MAX_DAILY_ORDERS)),
         "maxOpenPositions": int(clamp(config.get("maxOpenPositions"), 1, 20, PAPER_MAX_OPEN_POSITIONS)),
         "maxConsecutiveLosses": int(clamp(config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
+        "paperLearningSprint": PAPER_LEARNING_SPRINT_MODE,
         "strategies": normalize_strategies(stored_strategies),
     }
 
@@ -1252,7 +1271,7 @@ def new_paper_state() -> dict[str, Any]:
     return {
         "schemaVersion": PAPER_SCHEMA_VERSION,
         "startingCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
-        "allocationMode": "adaptive-confidence",
+        "allocationMode": "unlimited-paper-experience",
         "currency": "KRW",
         "resetAt": now_kst().strftime("%Y-%m-%dT%H:%M:%S%z"),
         "orders": [],
@@ -1277,7 +1296,7 @@ def load_paper_state() -> dict[str, Any]:
         save_paper_state(state)
         save_journal_state({"notes": {}, "reviews": {}})
     state.setdefault("startingCapitalKrw", PAPER_STARTING_CAPITAL_KRW)
-    state["allocationMode"] = "adaptive-confidence"
+    state["allocationMode"] = "unlimited-paper-experience"
     state.setdefault("currency", "KRW")
     state.setdefault("orders", [])
     return state
@@ -1461,36 +1480,33 @@ def paper_capital_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
     unrealized = sum(decimal(item.get("profit")) for item in opened)
     open_invested = sum(decimal(item.get("invested")) for item in opened)
     cash = max(0.0, starting + realized - open_invested)
-    equity = cash + open_invested + unrealized
     working_capital = max(0.0, starting + realized)
-    target_invested = working_capital * PAPER_CAPITAL_TARGET_RATE
-    remaining_deployable = max(0.0, min(cash, target_invested - open_invested))
-    cash_reserve = max(0.0, cash - remaining_deployable)
-    utilization_rate = open_invested / working_capital if working_capital else 0.0
-    if utilization_rate >= PAPER_CAPITAL_TARGET_RATE:
-        utilization_status = "충분히 활용 중"
-    elif utilization_rate >= PAPER_CAPITAL_TARGET_RATE - 0.15:
-        utilization_status = "균형 배분 중"
-    else:
-        utilization_status = "진입 기회 대기"
+    reference_capital = max(1.0, starting)
+    equity = starting + realized + unrealized
+    virtual_funding = max(0.0, open_invested - working_capital)
+    utilization_rate = open_invested / reference_capital
     return {
         "startingCapitalKrw": starting,
+        "referenceCapitalKrw": reference_capital,
         "workingCapitalKrw": working_capital,
         "cashKrw": cash,
         "openInvestedKrw": open_invested,
-        "targetInvestedKrw": target_invested,
-        "remainingDeployableKrw": remaining_deployable,
-        "cashReserveKrw": cash_reserve,
+        "targetInvestedKrw": None,
+        "remainingDeployableKrw": None,
+        "cashReserveKrw": 0.0,
+        "virtualFundingKrw": virtual_funding,
+        "fundingLimit": "UNLIMITED",
+        "referenceOnly": True,
         "realizedProfitKrw": realized,
         "unrealizedProfitKrw": unrealized,
         "equityKrw": equity,
         "returnRate": (equity - starting) / starting if starting else 0.0,
         "utilizationRate": utilization_rate,
-        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
-        "reserveRate": PAPER_CASH_RESERVE_RATE,
-        "utilizationStatus": utilization_status,
+        "targetUtilizationRate": None,
+        "reserveRate": 0.0,
+        "utilizationStatus": "무제한 경험 축적",
         "currency": "KRW",
-        "allocationMode": "adaptive-confidence",
+        "allocationMode": "unlimited-paper-experience",
     }
 
 
@@ -1506,40 +1522,28 @@ def adaptive_allocation_plan(
     open_positions: int,
     max_open_positions: int,
 ) -> dict[str, Any]:
-    """Fill the remaining PAPER capital target without bypassing learned risk cuts."""
-    working_capital = max(
-        0.0,
-        decimal(capital.get("workingCapitalKrw"))
-        or decimal(capital.get("startingCapitalKrw"))
-        or PAPER_STARTING_CAPITAL_KRW,
-    )
+    """Size each PAPER experience independently while preserving learned risk cuts."""
+    working_capital = max(1.0, decimal(capital.get("referenceCapitalKrw")) or PAPER_STARTING_CAPITAL_KRW)
     invested = max(0.0, decimal(capital.get("openInvestedKrw")))
-    available_cash = max(0.0, decimal(capital.get("cashKrw")))
-    target_invested = working_capital * PAPER_CAPITAL_TARGET_RATE
-    remaining_target = max(0.0, min(available_cash, target_invested - invested))
-    remaining_slots = max(1, int(max_open_positions) - int(open_positions))
-    confidence_rate = min(
-        PAPER_MAX_SINGLE_POSITION_RATE,
-        confidence_allocation_rate(score),
+    confidence_rate = max(
+        PAPER_MIN_EXPERIENCE_ENTRY_RATE,
+        min(PAPER_MAX_SINGLE_POSITION_RATE, confidence_allocation_rate(score)),
     )
     confidence_budget = working_capital * confidence_rate
-    balanced_slot_budget = remaining_target / remaining_slots
-    base_budget = min(
-        remaining_target,
-        max(confidence_budget, balanced_slot_budget),
-    )
+    base_budget = confidence_budget
     applied_learning_scale = clamp(learning_scale, 0.40, 1.0, 1.0)
-    planned_budget = min(available_cash, base_budget * applied_learning_scale)
+    planned_budget = base_budget * applied_learning_scale
     return {
-        "mode": "adaptive-confidence",
+        "mode": "unlimited-paper-experience",
         "workingCapitalKrw": working_capital,
-        "targetInvestedKrw": target_invested,
+        "referenceCapitalKrw": working_capital,
+        "targetInvestedKrw": None,
         "investedBeforeKrw": invested,
-        "availableCashKrw": available_cash,
-        "remainingTargetKrw": remaining_target,
-        "remainingSlots": remaining_slots,
+        "availableCashKrw": None,
+        "remainingTargetKrw": None,
+        "remainingSlots": None,
         "confidenceAllocationRate": confidence_rate,
-        "balancedSlotBudgetKrw": balanced_slot_budget,
+        "balancedSlotBudgetKrw": 0.0,
         "baseBudgetKrw": base_budget,
         "baseAllocationRate": base_budget / working_capital if working_capital else 0.0,
         "learningScale": applied_learning_scale,
@@ -1548,8 +1552,9 @@ def adaptive_allocation_plan(
         "expectedUtilizationRate": (
             (invested + planned_budget) / working_capital if working_capital else 0.0
         ),
-        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
-        "reserveRate": PAPER_CASH_RESERVE_RATE,
+        "targetUtilizationRate": None,
+        "reserveRate": 0.0,
+        "fundingLimit": "UNLIMITED",
     }
 
 
@@ -1571,7 +1576,21 @@ def trading_decision(
     if stop_rate < 0:
         stop_progress = max(0.0, min(1.0, abs(min(average_return, 0.0)) / abs(stop_rate)))
 
-    if locked and average_return >= target_rate:
+    if (
+        PAPER_LEARNING_SPRINT_MODE
+        and not PAPER_UNLIMITED_OPEN_POSITIONS
+        and open_positions >= max_open_positions
+    ):
+        mode = "학습 대기"
+        tone = "caution"
+        action = "청산 자리 발생 시 점수순 재진입"
+        reason = "동시 포지션 3개를 모두 사용 중입니다."
+    elif PAPER_LEARNING_SPRINT_MODE:
+        mode = "경험 가속"
+        tone = "safe" if average_return >= 0 else "caution"
+        action = "좋은 후보는 자금·횟수·포지션 제한 없이 진입"
+        reason = "점수와 개별 손절은 유지하고 성공·실패 표본을 빠르게 쌓습니다."
+    elif locked and average_return >= target_rate:
         mode = "목표 달성"
         tone = "safe"
         action = "오늘 신규 진입 잠금, 수익 보존"
@@ -1670,34 +1689,51 @@ def safety_rules(
             consecutive_losses += 1
         else:
             break
+    learning_sprint = PAPER_LEARNING_SPRINT_MODE
     rules = [
         {
             "key": "dailyLoss",
-            "label": "일 손실 한도",
-            "status": "잠금" if average_return <= stop_rate else "정상",
-            "tone": "danger" if average_return <= stop_rate else "safe",
-            "detail": f"현재 {percent(average_return)} / 기준 {percent(stop_rate)}",
+            "label": "일 손익 관찰" if learning_sprint else "일 손실 한도",
+            "status": "기록" if learning_sprint else ("잠금" if average_return <= stop_rate else "정상"),
+            "tone": "safe" if learning_sprint else ("danger" if average_return <= stop_rate else "safe"),
+            "detail": (
+                f"현재 {percent(average_return)} · 신규 진입 잠금 없음"
+                if learning_sprint
+                else f"현재 {percent(average_return)} / 기준 {percent(stop_rate)}"
+            ),
         },
         {
             "key": "dailyOrders",
             "label": "일 진입 횟수",
-            "status": "상한" if today_order_count >= max_daily_orders else "여유",
-            "tone": "danger" if today_order_count >= max_daily_orders else "safe",
-            "detail": f"{today_order_count}/{max_daily_orders}건 사용",
+            "status": "무제한" if learning_sprint else ("상한" if today_order_count >= max_daily_orders else "여유"),
+            "tone": "safe" if learning_sprint else ("danger" if today_order_count >= max_daily_orders else "safe"),
+            "detail": (
+                f"오늘 {today_order_count}건 · PAPER 오답 표본 축적"
+                if learning_sprint
+                else f"{today_order_count}/{max_daily_orders}건 사용"
+            ),
         },
         {
             "key": "positionCap",
             "label": "포지션 수",
-            "status": "과밀" if open_positions >= max_open_positions else "정상",
-            "tone": "danger" if open_positions >= max_open_positions else "safe",
-            "detail": f"{open_positions}/{max_open_positions}개 보유",
+            "status": "무제한" if PAPER_UNLIMITED_OPEN_POSITIONS else ("과밀" if open_positions >= max_open_positions else "정상"),
+            "tone": "safe" if PAPER_UNLIMITED_OPEN_POSITIONS else ("danger" if open_positions >= max_open_positions else "safe"),
+            "detail": (
+                f"현재 {open_positions}개 · 우수 후보 추가 진입 가능"
+                if PAPER_UNLIMITED_OPEN_POSITIONS
+                else f"{open_positions}/{max_open_positions}개 보유"
+            ),
         },
         {
             "key": "lossStreak",
             "label": "연속 손실",
-            "status": "정지" if consecutive_losses >= max_losses else "정상",
-            "tone": "danger" if consecutive_losses >= max_losses else "safe",
-            "detail": f"최근 손실 {consecutive_losses}회 / 기준 {max_losses}회",
+            "status": "학습" if learning_sprint else ("정지" if consecutive_losses >= max_losses else "정상"),
+            "tone": "safe" if learning_sprint else ("danger" if consecutive_losses >= max_losses else "safe"),
+            "detail": (
+                f"최근 손실 {consecutive_losses}회 · 종목별 오답에 반영"
+                if learning_sprint
+                else f"최근 손실 {consecutive_losses}회 / 기준 {max_losses}회"
+            ),
         },
         {
             "key": "paperMode",
@@ -1707,14 +1743,20 @@ def safety_rules(
             "detail": "실제 주문 전송 없음",
         },
     ]
-    if locked:
+    if locked and not learning_sprint:
         rules.insert(0, {"key": "lock", "label": "오늘 거래 잠금", "status": "ON", "tone": "danger", "detail": lock_reason or "운용 잠금"})
     return rules
 
 
 def safety_gate(summary: dict[str, Any]) -> dict[str, Any]:
     rules = summary.get("safetyRules") or []
-    blockers = [rule for rule in rules if rule.get("tone") == "danger" and rule.get("key") in {"lock", "dailyLoss", "positionCap", "lossStreak"}]
+    if PAPER_LEARNING_SPRINT_MODE and PAPER_UNLIMITED_OPEN_POSITIONS:
+        blocking_keys: set[str] = set()
+    elif PAPER_LEARNING_SPRINT_MODE:
+        blocking_keys = {"positionCap"}
+    else:
+        blocking_keys = {"lock", "dailyLoss", "positionCap", "lossStreak"}
+    blockers = [rule for rule in rules if rule.get("tone") == "danger" and rule.get("key") in blocking_keys]
     return {
         "blocked": bool(blockers),
         "reason": str(blockers[0].get("detail") or blockers[0].get("label")) if blockers else "신규 진입 가능",
@@ -1760,11 +1802,11 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     tech_review = technical_review(positions, results_by_symbol)
     target_hit = average_return >= target_rate
     stop_hit = average_return <= stop_rate
-    locked = target_hit or stop_hit
+    locked = (target_hit or stop_hit) and not PAPER_LEARNING_SPRINT_MODE
     lock_reason = None
-    if target_hit:
+    if target_hit and not PAPER_LEARNING_SPRINT_MODE:
         lock_reason = f"일 목표 {percent(target_rate)} 도달 · 신규 진입 잠금"
-    elif stop_hit:
+    elif stop_hit and not PAPER_LEARNING_SPRINT_MODE:
         lock_reason = f"손실폭 {percent(stop_rate)} 도달 · 신규 진입 중지"
 
     return {
@@ -1774,11 +1816,23 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "capital": capital,
         "learningCoverage": "ALL_NEW_ENTRIES",
         "capitalAllocationPolicy": {
-            "mode": "adaptive-confidence",
-            "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
-            "reserveRate": PAPER_CASH_RESERVE_RATE,
+            "mode": "unlimited-paper-experience",
+            "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
+            "fundingLimit": "UNLIMITED" if PAPER_UNLIMITED_VIRTUAL_CAPITAL else PAPER_STARTING_CAPITAL_KRW,
             "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
+            "minExperienceEntryRate": PAPER_MIN_EXPERIENCE_ENTRY_RATE,
             "learningAppliedAfterSizing": True,
+        },
+        "paperLearningSprint": {
+            "enabled": PAPER_LEARNING_SPRINT_MODE,
+            "entryLimit": "UNLIMITED" if PAPER_LEARNING_SPRINT_MODE else int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS),
+            "dailyProfitLock": False if PAPER_LEARNING_SPRINT_MODE else True,
+            "lossStreakLock": False if PAPER_LEARNING_SPRINT_MODE else True,
+            "scoreFilter": True,
+            "symbolLearning": True,
+            "individualStops": True,
+            "maxOpenPositions": "UNLIMITED" if PAPER_UNLIMITED_OPEN_POSITIONS else int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS),
+            "fundingLimit": "UNLIMITED" if PAPER_UNLIMITED_VIRTUAL_CAPITAL else PAPER_STARTING_CAPITAL_KRW,
         },
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(trade_ledger),
@@ -1926,10 +1980,11 @@ def paper_trade(
     summary["learningBrain"] = learning_brain.get("summary")
     summary["learningCoverage"] = "ALL_NEW_ENTRIES"
     summary["capitalAllocationPolicy"] = {
-        "mode": "adaptive-confidence",
-        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
-        "reserveRate": PAPER_CASH_RESERVE_RATE,
+        "mode": "unlimited-paper-experience",
+        "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
+        "fundingLimit": "UNLIMITED",
         "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
+        "minExperienceEntryRate": PAPER_MIN_EXPERIENCE_ENTRY_RATE,
         "learningAppliedAfterSizing": True,
     }
     summary["learningDecisions"] = []
@@ -1946,7 +2001,10 @@ def paper_trade(
         and paper_trading_day(item.get("createdAt")) == today
     ]
     config = strategy_config()
-    if len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS):
+    if (
+        not PAPER_LEARNING_SPRINT_MODE
+        and len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
+    ):
         return orders[-50:], summary
     existing = {(item.get("market"), item.get("symbol")) for item in open_paper_positions(orders).values()}
     capital = summary.get("capital") or {}
@@ -1994,11 +2052,14 @@ def paper_trade(
         decision["capitalAllowed"] = budget > 0
         decision["capitalPlan"] = capital_plan
         if budget <= 0:
-            decision["reason"] = f"{policy.get('reason')} · 자본 활용 목표 {PAPER_CAPITAL_TARGET_RATE * 100:.0f}% 충족"
+            decision["reason"] = f"{policy.get('reason')} · 배정액 계산 실패"
             learning_decisions.append(decision)
             continue
         shares = int(budget // price_krw)
-        if shares < 1:
+        if shares < 1 and PAPER_UNLIMITED_VIRTUAL_CAPITAL:
+            shares = 1
+            decision["reason"] = f"{policy.get('reason')} · 고가 종목 최소 1주 경험 진입"
+        elif shares < 1:
             decision["capitalAllowed"] = False
             decision["reason"] = f"{policy.get('reason')} · 배정액으로 1주 미만"
             learning_decisions.append(decision)
@@ -2033,12 +2094,12 @@ def paper_trade(
                 "confidenceAllocationRate": candidate_capital_plan.get("confidenceAllocationRate") if candidate_capital_plan else confidence_allocation_rate(candidate.get("score")),
                 "allocatedKrw": allocated_krw,
                 "capitalPolicy": {
-                    "mode": "adaptive-confidence",
-                    "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
-                    "reserveRate": PAPER_CASH_RESERVE_RATE,
+                    "mode": "unlimited-paper-experience",
+                    "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
+                    "fundingLimit": "UNLIMITED",
                     "investedBeforeKrw": candidate_capital_plan.get("investedBeforeKrw") if candidate_capital_plan else 0,
-                    "targetInvestedKrw": candidate_capital_plan.get("targetInvestedKrw") if candidate_capital_plan else 0,
-                    "remainingSlots": candidate_capital_plan.get("remainingSlots") if candidate_capital_plan else 1,
+                    "targetInvestedKrw": None,
+                    "remainingSlots": None,
                     "expectedUtilizationRate": (
                         (decimal(candidate_capital_plan.get("investedBeforeKrw")) + allocated_krw)
                         / decimal(candidate_capital_plan.get("workingCapitalKrw"))
@@ -2061,7 +2122,13 @@ def paper_trade(
                     "appliedImmediately": True,
                     "appliedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 },
-                "strategyIds": ["liquidity-momentum-filter", "score-entry-80", "adaptive-capital-utilization"],
+                "strategyIds": [
+                    "liquidity-momentum-filter",
+                    "score-entry-80",
+                    "adaptive-capital-utilization",
+                    "paper-learning-sprint",
+                    "unlimited-paper-experience",
+                ],
             }
         )
         save_paper_orders(orders)
@@ -2069,10 +2136,11 @@ def paper_trade(
     summary["learningBrain"] = learning_brain.get("summary")
     summary["learningCoverage"] = "ALL_NEW_ENTRIES"
     summary["capitalAllocationPolicy"] = {
-        "mode": "adaptive-confidence",
-        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
-        "reserveRate": PAPER_CASH_RESERVE_RATE,
+        "mode": "unlimited-paper-experience",
+        "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
+        "fundingLimit": "UNLIMITED",
         "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
+        "minExperienceEntryRate": PAPER_MIN_EXPERIENCE_ENTRY_RATE,
         "learningAppliedAfterSizing": True,
     }
     summary["learningDecisions"] = learning_decisions[:10]

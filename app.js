@@ -982,6 +982,7 @@ function renderPaperSummary(state) {
   const stopRate = Number(summary.stopRate || -0.005);
   const todayOrderCount = Number(summary.todayOrderCount || 0);
   const openPositionCount = Number(summary.openPositionCount || 0);
+  const learningSprint = summary.paperLearningSprint || {};
 
   const decision = summary.decision || {};
   const decisionCard = document.querySelector("#decisionCard");
@@ -1036,7 +1037,8 @@ function renderPaperSummary(state) {
   const investedKrw = Number(capital.openInvestedKrw || 0);
   const cashKrw = Number(capital.cashKrw || 0);
   const utilizationRate = Number(capital.utilizationRate ?? (workingCapitalKrw ? investedKrw / workingCapitalKrw : 0));
-  const targetUtilizationRate = Number(capital.targetUtilizationRate || 0.9);
+  const unlimitedFunding = capital.fundingLimit === "UNLIMITED" || summary.capitalAllocationPolicy?.fundingLimit === "UNLIMITED";
+  const targetUtilizationRate = unlimitedFunding ? 1 : Number(capital.targetUtilizationRate || 0.9);
   const remainingDeployableKrw = Number(capital.remainingDeployableKrw || 0);
   const utilizationCard = document.querySelector("#capitalUtilizationCard");
   const utilizationBar = document.querySelector("#capitalUtilizationBar");
@@ -1044,32 +1046,50 @@ function renderPaperSummary(state) {
   const utilizationStatus = document.querySelector("#capitalUtilizationStatus");
   const allocationRule = document.querySelector("#capitalAllocationRule");
   if (utilizationCard) {
-    utilizationCard.classList.toggle("target-met", utilizationRate >= targetUtilizationRate);
-    utilizationCard.classList.toggle("capital-low", utilizationRate < Math.max(0, targetUtilizationRate - 0.3));
+    utilizationCard.classList.toggle("unlimited-funding", unlimitedFunding);
+    utilizationCard.classList.toggle("target-met", !unlimitedFunding && utilizationRate >= targetUtilizationRate);
+    utilizationCard.classList.toggle("capital-low", !unlimitedFunding && utilizationRate < Math.max(0, targetUtilizationRate - 0.3));
   }
   if (utilizationBar) utilizationBar.style.width = `${Math.max(0, Math.min(100, utilizationRate * 100))}%`;
-  if (targetMarker) targetMarker.style.left = `${Math.max(0, Math.min(100, targetUtilizationRate * 100))}%`;
+  if (targetMarker) {
+    targetMarker.hidden = unlimitedFunding;
+    targetMarker.style.left = `${Math.max(0, Math.min(100, targetUtilizationRate * 100))}%`;
+  }
   if (utilizationStatus) utilizationStatus.textContent = capital.utilizationStatus || "진입 기회 대기";
   if (allocationRule) {
-    allocationRule.textContent = summary.learningCoverage === "ALL_NEW_ENTRIES"
+    allocationRule.textContent = learningSprint.enabled && unlimitedFunding
+      ? "PAPER 경험 가속 · 자금/횟수/포지션 무제한 · 점수/손절 유지"
+      : (learningSprint.enabled
+      ? "PAPER 학습 가속 · 진입 횟수 무제한 · 점수/종목 규칙 유지"
+      : (summary.learningCoverage === "ALL_NEW_ENTRIES"
       ? "모든 신규 거래 · 종목 학습 규칙 적용 후 배정"
-      : "종목 학습 규칙 확인 중";
+      : "종목 학습 규칙 확인 중"));
   }
   const investedTarget = document.querySelector("#capitalInvestedKrw");
   const cashTarget = document.querySelector("#capitalCashKrw");
   const utilizationTarget = document.querySelector("#capitalUtilizationRate");
   const targetText = document.querySelector("#capitalTargetText");
   const remainingText = document.querySelector("#capitalRemainingText");
+  const cashLabel = document.querySelector("#capitalCashLabel");
+  const utilizationLabel = document.querySelector("#capitalUtilizationLabel");
   if (investedTarget) investedTarget.textContent = plainWon(investedKrw);
-  if (cashTarget) cashTarget.textContent = plainWon(cashKrw);
+  if (cashTarget) cashTarget.textContent = unlimitedFunding ? "무제한" : plainWon(cashKrw);
   if (utilizationTarget) utilizationTarget.textContent = `${(utilizationRate * 100).toFixed(1)}%`;
-  if (targetText) targetText.textContent = `운용 목표 ${(targetUtilizationRate * 100).toFixed(0)}% · 현금 예비 ${(Number(capital.reserveRate || 0.1) * 100).toFixed(0)}%`;
+  if (cashLabel) cashLabel.textContent = unlimitedFunding ? "가상자금" : "대기 현금";
+  if (utilizationLabel) utilizationLabel.textContent = unlimitedFunding ? "기준금 대비" : "현재 활용률";
+  if (targetText) targetText.textContent = unlimitedFunding
+    ? "기준금 100만원은 성과 비교용 · 가상자금 한도 없음"
+    : `운용 목표 ${(targetUtilizationRate * 100).toFixed(0)}% · 현금 예비 ${(Number(capital.reserveRate || 0.1) * 100).toFixed(0)}%`;
   if (remainingText) {
-    remainingText.textContent = remainingDeployableKrw > 0
+    remainingText.textContent = unlimitedFunding
+      ? "점수·학습 통과 후보 계속 진입"
+      : (remainingDeployableKrw > 0
       ? `추가 배정 가능 ${plainWon(remainingDeployableKrw)}`
-      : "운용 목표 충족";
+      : "운용 목표 충족");
   }
-  document.querySelector("#botStatus").textContent = `모의자산 ${plainWon(equityKrw)} · ${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
+  const paperModeBadge = document.querySelector("#paperModeBadge");
+  if (paperModeBadge) paperModeBadge.textContent = learningSprint.enabled ? "PAPER SPRINT" : "PAPER";
+  document.querySelector("#botStatus").textContent = `${unlimitedFunding ? "모의 순자산" : "모의자산"} ${plainWon(equityKrw)} · ${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
   const positionInsight = document.querySelector("#positionInsight");
   const orderInsight = document.querySelector("#orderInsight");
   if (positionInsight) positionInsight.textContent = `${openPositionCount}개`;
@@ -1083,14 +1103,18 @@ function renderPaperSummary(state) {
   const updatedAt = state.lastRunAt
     ? new Date(state.lastRunAt).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })
     : "대기 중";
-  document.querySelector("#analysisUpdatedAt").textContent = summary.locked ? "오늘 거래 잠금" : updatedAt;
+  document.querySelector("#analysisUpdatedAt").textContent = learningSprint.enabled
+    ? `무제한 진입 · ${updatedAt}`
+    : (summary.locked ? "오늘 거래 잠금" : updatedAt);
 
   const progress = targetRate > 0 ? Math.max(0, Math.min(100, (averageReturn / targetRate) * 100)) : 0;
   document.querySelector("#analysisPulseBar").style.width = `${summary.locked && averageReturn < 0 ? 100 : Math.max(4, progress)}%`;
   document.querySelector("#analysisPulseBar").classList.toggle("danger", averageReturn < 0);
-  document.querySelector("#analysisCycleCopy").textContent = summary.locked
+  document.querySelector("#analysisCycleCopy").textContent = learningSprint.enabled
+    ? `${state.activeMarket} 시장 · 오늘 ${todayOrderCount}건 학습 · 점수/개별 손절 유지`
+    : (summary.locked
     ? summary.lockReason
-    : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`;
+    : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`);
 }
 
 function setHealthTone(element, ok, warning = false) {
