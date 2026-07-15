@@ -155,6 +155,7 @@ main {
 /* ---------- 6. Content grid ---------- */
 .content {
   min-height: 0; min-width: 0; overflow: hidden;
+  width: 100%; max-width: 2000px; justify-self: center;
   padding: clamp(14px, 2vh, 26px) clamp(16px, 2vw, 34px);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1705,4 +1706,20 @@ body[data-page="journal"] .journal-page {
   .journal-day-heading b { flex: 1 1 calc(100% - 58px); }
   .journal-day-heading span { text-align: left; }
   .journal-day-heading::after { order: 2; }
+}
+
+/* Ultrawide desktop: keep the working canvas dense enough to scan at once.
+   The top bar still spans the window, while cards stop stretching past a
+   readable line length on 2560px monitors. */
+@media (min-width: 2200px) {
+  .content { max-width: 2000px; }
+  .hero-layout {
+    grid-template-columns:
+      minmax(230px, .9fr)
+      minmax(420px, 1.45fr)
+      minmax(230px, .8fr)
+      minmax(220px, .68fr);
+  }
+  .operations-grid { grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); }
+  .performance-trend-body { grid-template-columns: minmax(0, 1fr) minmax(220px, .28fr); }
 }

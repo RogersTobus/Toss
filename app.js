@@ -245,10 +245,10 @@ function renderStrategyTower(strategies = []) {
     applyAdvice.type = "button";
     applyAdvice.className = "apply-ai-btn";
     applyAdvice.textContent = "AI 조언 반영";
-    applyAdvice.addEventListener("click", () => {
+    applyAdvice.addEventListener("click", async () => {
       judge.value = strategy.aiAdvice || "";
-      judge.focus();
-      showToast("AI 조언을 이 전략의 판단 문구에 반영했습니다.");
+      await saveStrategyConfig();
+      showToast("AI 조언을 저장했고 다음 신규 거래부터 적용합니다.");
     });
     aiWrap.append(ai, applyAdvice);
 
@@ -282,6 +282,17 @@ function renderStrategyPayload(payload = {}) {
   if (Array.isArray(payload.strategies)) renderStrategyTower(payload.strategies);
   renderOverallAdvice(payload.overallAdvice || {});
   renderCurrentStrategySummary(payload);
+  const execution = payload.executionPolicy || {};
+  const state = document.querySelector("#strategyExecutionState");
+  if (state) {
+    const revision = Number(execution.revision || 0);
+    const saved = execution.savedAt
+      ? new Date(execution.savedAt).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false })
+      : null;
+    state.textContent = saved
+      ? `실행 버전 v${revision} · ${saved} 저장 · 다음 신규 거래부터 적용`
+      : `실행 버전 v${revision} · 기본 설정 · 다음 신규 거래부터 적용`;
+  }
 }
 
 function renderCurrentStrategySummary(payload = {}) {
@@ -348,7 +359,8 @@ async function saveStrategyConfig() {
     if (!response.ok) throw new Error(payload.error || "설정 저장 실패");
     renderStrategyPayload(payload);
     if (payload.paperSummary) renderPaperSummary({ paperSummary: payload.paperSummary });
-    showToast("전략 컨트롤타워 설정을 저장했습니다.");
+    const revision = Number(payload.executionPolicy?.revision || payload.config?.revision || 0);
+    showToast(`전략 v${revision} 저장 완료 · 다음 신규 거래부터 즉시 적용`);
     loadAnalysisStatus();
   } catch (error) {
     showToast(error.message || "설정 저장에 실패했습니다.");

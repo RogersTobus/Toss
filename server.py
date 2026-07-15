@@ -11,6 +11,7 @@ import hashlib
 import math
 import mimetypes
 import os
+import re
 import subprocess
 import threading
 import time
@@ -38,6 +39,7 @@ KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_LOCK = threading.Lock()
 LEARNING_LOCK = threading.Lock()
 PAPER_LOCK = threading.RLock()
+STRATEGY_LOCK = threading.RLock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
@@ -77,6 +79,8 @@ DEFAULT_STRATEGY_CONFIG = {
     "maxDailyOrders": PAPER_MAX_DAILY_ORDERS,
     "maxOpenPositions": PAPER_MAX_OPEN_POSITIONS,
     "maxConsecutiveLosses": PAPER_MAX_CONSECUTIVE_LOSSES,
+    "revision": 0,
+    "savedAt": None,
 }
 DEFAULT_STRATEGIES = [
     {
@@ -166,6 +170,8 @@ ANALYSIS: dict[str, Any] = {
     "results": [],
     "activeMarket": "KR",
     "activeSession": "시장 확인 중",
+    "strategyRevision": 0,
+    "strategyAppliedAt": None,
     "paperOrders": [],
     "paperSummary": {
         "targetRate": PAPER_TARGET_RATE,
@@ -213,57 +219,211 @@ def normalize_strategies(raw: Any = None) -> list[dict[str, Any]]:
     strategies: list[dict[str, Any]] = []
     for base in DEFAULT_STRATEGIES:
         stored = stored_by_id.get(str(base["id"]), {})
-        execution_managed = str(base["id"]) == "hard-stop-loss"
         strategies.append(
             {
                 "id": base["id"],
-                "title": str(base["title"]) if execution_managed else clean_text(stored.get("title"), str(base["title"]), 80),
-                "description": str(base["description"]) if execution_managed else clean_text(stored.get("description"), str(base["description"]), 360),
-                "judge": str(base["judge"]) if execution_managed else clean_text(stored.get("judge"), str(base["judge"]), 120),
+                "title": clean_text(stored.get("title"), str(base["title"]), 80),
+                "description": clean_text(stored.get("description"), str(base["description"]), 360),
+                "judge": clean_text(stored.get("judge"), str(base["judge"]), 120),
                 "enabled": bool(stored.get("enabled", base["enabled"])),
             }
         )
     return strategies
 
 
-def strategy_config() -> dict[str, Any]:
-    config = dict(DEFAULT_STRATEGY_CONFIG)
-    stored_strategies = None
-    if STRATEGY_CONFIG_PATH.exists():
-        try:
-            stored = json.loads(STRATEGY_CONFIG_PATH.read_text(encoding="utf-8"))
-            if isinstance(stored, dict):
-                config.update(stored)
-                stored_strategies = stored.get("strategies")
-        except (OSError, json.JSONDecodeError):
-            pass
+def strategy_copy_text(strategy: dict[str, Any]) -> str:
+    return " ".join(
+        str(strategy.get(key) or "")
+        for key in ("title", "description", "judge")
+    ).replace("−", "-").replace("~", "-")
+
+
+def strategy_percent_values(strategy: dict[str, Any]) -> list[float]:
+    return [
+        decimal(match) / 100
+        for match in re.findall(r"([+-]?\d+(?:\.\d+)?)\s*%", strategy_copy_text(strategy))
+    ]
+
+
+def strategy_keyword_percent_values(
+    strategy: dict[str, Any], keywords: tuple[str, ...]
+) -> list[float]:
+    text = strategy_copy_text(strategy)
+    keyword_pattern = "|".join(re.escape(keyword) for keyword in keywords)
+    value_pattern = r"(?<![\d.+-])([+-]?\d+(?:\.\d+)?)\s*%"
+    matches = re.findall(
+        rf"{value_pattern}[^.!?\n]{{0,18}}(?:{keyword_pattern})",
+        text,
+    )
+    matches.extend(
+        re.findall(
+            rf"(?:{keyword_pattern})[^.!?\n]{{0,18}}{value_pattern}",
+            text,
+        )
+    )
+    return [decimal(value) / 100 for value in matches]
+
+
+def strategy_runtime_parameters(config: dict[str, Any]) -> dict[str, Any]:
+    """Translate editable strategy copy into bounded, executable parameters."""
+    strategies = {
+        str(item.get("id")): item
+        for item in config.get("strategies") or []
+        if isinstance(item, dict)
+    }
+    stop_rate = decimal(config.get("stopRate") or PAPER_STOP_RATE)
+    target_rate = decimal(config.get("targetRate") or PAPER_TARGET_RATE)
+    hard_stop = strategies.get("hard-stop-loss") or {}
+    profit = strategies.get("profit-trailing") or {}
+    time_exit = strategies.get("three-minute-exit") or {}
+    score_entry = strategies.get("score-entry-80") or {}
+    allocation = strategies.get("adaptive-capital-utilization") or {}
+    daily_risk = strategies.get("daily-risk-kill-switch") or {}
+    reentry = strategies.get("reentry-cooldown") or {}
+
+    negative_stops = [
+        value
+        for value in strategy_keyword_percent_values(
+            hard_stop, ("예약", "보호", "손절", "손실선")
+        )
+        if -0.05 <= value < 0
+    ]
+    positive_targets = [
+        value
+        for value in strategy_keyword_percent_values(
+            profit, ("목표", "도달", "익절", "부터")
+        )
+        if 0 < value <= 0.05
+    ]
+    if negative_stops:
+        stop_rate = clamp(negative_stops[-1], -0.05, -0.001, stop_rate)
+    if positive_targets:
+        target_rate = clamp(positive_targets[-1], 0.001, 0.05, target_rate)
+
+    score_matches = [
+        int(value)
+        for value in re.findall(
+            r"(\d{2,3})\s*점\s*(?:이상|기준|필요|통과)",
+            strategy_copy_text(score_entry),
+        )
+    ]
+    minute_matches = [int(value) for value in re.findall(r"(\d+)\s*분", strategy_copy_text(time_exit))]
+    reentry_minutes = [int(value) for value in re.findall(r"(\d+)\s*분", strategy_copy_text(reentry))]
+    loss_count_matches = [
+        int(number)
+        for groups in re.findall(r"(\d+)\s*회\s*연속\s*손절|연속\s*손절\s*(\d+)\s*회", strategy_copy_text(reentry))
+        for number in groups
+        if number
+    ]
+    allocation_rates = [value for value in strategy_percent_values(allocation) if value > 0]
+    daily_rates = sorted(
+        (
+            value
+            for value in strategy_keyword_percent_values(
+                daily_risk, ("손실", "중단", "도달", "신규 진입")
+            )
+            if -0.05 <= value < 0
+        ),
+        reverse=True,
+    )
+
     return {
-        "targetRate": clamp(config.get("targetRate"), 0.001, 0.05, PAPER_TARGET_RATE),
-        "stopRate": clamp(config.get("stopRate"), -0.05, -0.001, PAPER_STOP_RATE),
-        "maxDailyOrders": int(clamp(config.get("maxDailyOrders"), 1, 20, PAPER_MAX_DAILY_ORDERS)),
-        "maxOpenPositions": int(clamp(config.get("maxOpenPositions"), 1, 20, PAPER_MAX_OPEN_POSITIONS)),
-        "maxConsecutiveLosses": int(clamp(config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
-        "paperLearningSprint": PAPER_LEARNING_SPRINT_MODE,
-        "strategies": normalize_strategies(stored_strategies),
+        "targetRate": target_rate,
+        "stopRate": stop_rate,
+        "entryScoreFloor": int(clamp(score_matches[-1] if score_matches else LEARNING_BASE_ENTRY_SCORE, 50, 99, LEARNING_BASE_ENTRY_SCORE)),
+        "timeExitSeconds": int(clamp((minute_matches[-1] if minute_matches else 3) * 60, 60, 3600, 180)),
+        "timeExitMinimumReturn": 0.001,
+        "reentryCooldownSeconds": int(clamp((reentry_minutes[-1] if reentry_minutes else 10) * 60, 60, 86400, 600)),
+        "maxConsecutiveLosses": int(clamp(loss_count_matches[-1] if loss_count_matches else config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
+        "minAllocationRate": clamp(min(allocation_rates) if allocation_rates else PAPER_MIN_EXPERIENCE_ENTRY_RATE, 0.05, 1.0, PAPER_MIN_EXPERIENCE_ENTRY_RATE),
+        "maxAllocationRate": clamp(max(allocation_rates) if allocation_rates else PAPER_MAX_SINGLE_POSITION_RATE, 0.05, 1.0, PAPER_MAX_SINGLE_POSITION_RATE),
+        "dailyEntryLockRate": clamp(daily_rates[0] if daily_rates else -0.008, -0.05, -0.001, -0.008),
+        "dailyLiquidationRate": clamp(daily_rates[-1] if len(daily_rates) > 1 else -0.01, -0.05, -0.001, -0.01),
     }
 
 
+def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = config or strategy_config()
+    enabled_ids = [
+        str(item.get("id"))
+        for item in config.get("strategies") or []
+        if item.get("enabled") and item.get("id")
+    ]
+    enabled = set(enabled_ids)
+    sprint = "paper-learning-sprint" in enabled
+    unlimited = "unlimited-paper-experience" in enabled
+    return {
+        "revision": int(config.get("revision") or 0),
+        "savedAt": config.get("savedAt"),
+        "effectiveFrom": "NEXT_ENTRY",
+        "enabledIds": enabled_ids,
+        "liquidityFilter": "liquidity-momentum-filter" in enabled,
+        "scoreFilter": "score-entry-80" in enabled,
+        "adaptiveAllocation": "adaptive-capital-utilization" in enabled,
+        "learningSprint": sprint,
+        "unlimitedFunding": sprint and unlimited,
+        "unlimitedPositions": sprint and unlimited,
+        "hardStop": "hard-stop-loss" in enabled,
+        "profitTarget": "profit-trailing" in enabled,
+        "timeExit": "three-minute-exit" in enabled,
+        "dailyRisk": "daily-risk-kill-switch" in enabled,
+        "reentryCooldown": "reentry-cooldown" in enabled,
+        "extendedSession": "overnight-extended-session" in enabled,
+        "parameters": strategy_runtime_parameters(config),
+    }
+
+
+def strategy_config() -> dict[str, Any]:
+    with STRATEGY_LOCK:
+        config = dict(DEFAULT_STRATEGY_CONFIG)
+        stored_strategies = None
+        if STRATEGY_CONFIG_PATH.exists():
+            try:
+                stored = json.loads(STRATEGY_CONFIG_PATH.read_text(encoding="utf-8"))
+                if isinstance(stored, dict):
+                    config.update(stored)
+                    stored_strategies = stored.get("strategies")
+            except (OSError, json.JSONDecodeError):
+                pass
+        normalized = {
+            "targetRate": clamp(config.get("targetRate"), 0.001, 0.05, PAPER_TARGET_RATE),
+            "stopRate": clamp(config.get("stopRate"), -0.05, -0.001, PAPER_STOP_RATE),
+            "maxDailyOrders": int(clamp(config.get("maxDailyOrders"), 1, 20, PAPER_MAX_DAILY_ORDERS)),
+            "maxOpenPositions": int(clamp(config.get("maxOpenPositions"), 1, 20, PAPER_MAX_OPEN_POSITIONS)),
+            "maxConsecutiveLosses": int(clamp(config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
+            "revision": max(0, int(config.get("revision") or 0)),
+            "savedAt": config.get("savedAt"),
+            "strategies": normalize_strategies(stored_strategies),
+        }
+        normalized["paperLearningSprint"] = strategy_execution_policy(normalized)["learningSprint"]
+        return normalized
+
+
 def save_strategy_config(payload: dict[str, Any]) -> dict[str, Any]:
-    current = strategy_config()
-    if "targetRate" in payload:
-        current["targetRate"] = clamp(payload.get("targetRate"), 0.001, 0.05, current["targetRate"])
-    if "stopRate" in payload:
-        current["stopRate"] = clamp(payload.get("stopRate"), -0.05, -0.001, current["stopRate"])
-    if "maxDailyOrders" in payload:
-        current["maxDailyOrders"] = int(clamp(payload.get("maxDailyOrders"), 1, 20, current["maxDailyOrders"]))
-    if "maxOpenPositions" in payload:
-        current["maxOpenPositions"] = int(clamp(payload.get("maxOpenPositions"), 1, 20, current["maxOpenPositions"]))
-    if "maxConsecutiveLosses" in payload:
-        current["maxConsecutiveLosses"] = int(clamp(payload.get("maxConsecutiveLosses"), 1, 10, current["maxConsecutiveLosses"]))
-    if isinstance(payload.get("strategies"), list):
-        current["strategies"] = normalize_strategies(payload.get("strategies"))
-    STRATEGY_CONFIG_PATH.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
-    return current
+    with STRATEGY_LOCK:
+        current = strategy_config()
+        if "targetRate" in payload:
+            current["targetRate"] = clamp(payload.get("targetRate"), 0.001, 0.05, current["targetRate"])
+        if "stopRate" in payload:
+            current["stopRate"] = clamp(payload.get("stopRate"), -0.05, -0.001, current["stopRate"])
+        if "maxDailyOrders" in payload:
+            current["maxDailyOrders"] = int(clamp(payload.get("maxDailyOrders"), 1, 20, current["maxDailyOrders"]))
+        if "maxOpenPositions" in payload:
+            current["maxOpenPositions"] = int(clamp(payload.get("maxOpenPositions"), 1, 20, current["maxOpenPositions"]))
+        if "maxConsecutiveLosses" in payload:
+            current["maxConsecutiveLosses"] = int(clamp(payload.get("maxConsecutiveLosses"), 1, 10, current["maxConsecutiveLosses"]))
+        if isinstance(payload.get("strategies"), list):
+            current["strategies"] = normalize_strategies(payload.get("strategies"))
+        runtime = strategy_runtime_parameters(current)
+        current["targetRate"] = runtime["targetRate"]
+        current["stopRate"] = runtime["stopRate"]
+        current["maxConsecutiveLosses"] = runtime["maxConsecutiveLosses"]
+        current["revision"] = int(current.get("revision") or 0) + 1
+        current["savedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        temporary = STRATEGY_CONFIG_PATH.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(STRATEGY_CONFIG_PATH)
+        return current
 
 
 def strategy_ai_advice(strategy: dict[str, Any], analysis: dict[str, Any] | None = None) -> str:
@@ -365,13 +525,19 @@ def overall_ai_analysis(analysis: dict[str, Any] | None = None, strategies: list
 
 def strategy_payload() -> dict[str, Any]:
     config = strategy_config()
+    execution_policy = strategy_execution_policy(config)
     analysis = analysis_snapshot()
     strategies = []
     for item in config.get("strategies") or []:
         row = dict(item)
         row["aiAdvice"] = strategy_ai_advice(row, analysis)
         strategies.append(row)
-    return {"config": config, "strategies": strategies, "overallAdvice": overall_ai_analysis(analysis, strategies)}
+    return {
+        "config": config,
+        "strategies": strategies,
+        "executionPolicy": execution_policy,
+        "overallAdvice": overall_ai_analysis(analysis, strategies),
+    }
 def load_env() -> dict[str, str]:
     values: dict[str, str] = {}
     path = ROOT / ".env"
@@ -1497,7 +1663,11 @@ def period_profit_summary(trades: list[dict[str, Any]]) -> dict[str, dict[str, A
     return summary
 
 
-def paper_capital_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
+def paper_capital_summary(
+    trades: list[dict[str, Any]], execution_policy: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    policy = execution_policy or strategy_execution_policy()
+    unlimited_funding = bool(policy.get("unlimitedFunding"))
     state = load_paper_state()
     starting = decimal(state.get("startingCapitalKrw") or PAPER_STARTING_CAPITAL_KRW)
     closed = [item for item in trades if item.get("status") == "CLOSED"]
@@ -1511,28 +1681,33 @@ def paper_capital_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
     equity = starting + realized + unrealized
     virtual_funding = max(0.0, open_invested - working_capital)
     utilization_rate = open_invested / reference_capital
+    remaining_deployable = max(0.0, working_capital - open_invested)
     return {
         "startingCapitalKrw": starting,
         "referenceCapitalKrw": reference_capital,
         "workingCapitalKrw": working_capital,
         "cashKrw": cash,
         "openInvestedKrw": open_invested,
-        "targetInvestedKrw": None,
-        "remainingDeployableKrw": None,
+        "targetInvestedKrw": None if unlimited_funding else working_capital,
+        "remainingDeployableKrw": None if unlimited_funding else remaining_deployable,
         "cashReserveKrw": 0.0,
         "virtualFundingKrw": virtual_funding,
-        "fundingLimit": "UNLIMITED",
-        "referenceOnly": True,
+        "fundingLimit": "UNLIMITED" if unlimited_funding else working_capital,
+        "referenceOnly": unlimited_funding,
         "realizedProfitKrw": realized,
         "unrealizedProfitKrw": unrealized,
         "equityKrw": equity,
         "returnRate": (equity - starting) / starting if starting else 0.0,
         "utilizationRate": utilization_rate,
-        "targetUtilizationRate": None,
+        "targetUtilizationRate": None if unlimited_funding else 1.0,
         "reserveRate": 0.0,
-        "utilizationStatus": "무제한 경험 축적",
+        "utilizationStatus": (
+            "무제한 경험 축적"
+            if unlimited_funding
+            else ("운용 자금 배정 완료" if remaining_deployable <= 0 else "추가 진입 가능")
+        ),
         "currency": "KRW",
-        "allocationMode": "unlimited-paper-experience",
+        "allocationMode": "unlimited-paper-experience" if unlimited_funding else "bounded-paper-capital",
     }
 
 
@@ -1547,25 +1722,34 @@ def adaptive_allocation_plan(
     learning_scale: Any,
     open_positions: int,
     max_open_positions: int,
+    execution_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Size each PAPER experience independently while preserving learned risk cuts."""
+    policy = execution_policy or strategy_execution_policy()
+    parameters = policy.get("parameters") or {}
     working_capital = max(1.0, decimal(capital.get("referenceCapitalKrw")) or PAPER_STARTING_CAPITAL_KRW)
     invested = max(0.0, decimal(capital.get("openInvestedKrw")))
+    min_rate = decimal(parameters.get("minAllocationRate") or PAPER_MIN_EXPERIENCE_ENTRY_RATE)
+    max_rate = decimal(parameters.get("maxAllocationRate") or PAPER_MAX_SINGLE_POSITION_RATE)
     confidence_rate = max(
-        PAPER_MIN_EXPERIENCE_ENTRY_RATE,
-        min(PAPER_MAX_SINGLE_POSITION_RATE, confidence_allocation_rate(score)),
+        min_rate,
+        min(max_rate, confidence_allocation_rate(score)),
     )
+    if not policy.get("adaptiveAllocation"):
+        confidence_rate = min_rate
     confidence_budget = working_capital * confidence_rate
     base_budget = confidence_budget
     applied_learning_scale = clamp(learning_scale, 0.40, 1.0, 1.0)
     planned_budget = base_budget * applied_learning_scale
+    if not policy.get("unlimitedFunding"):
+        planned_budget = min(planned_budget, max(0.0, working_capital - invested))
     return {
-        "mode": "unlimited-paper-experience",
+        "mode": "unlimited-paper-experience" if policy.get("unlimitedFunding") else "bounded-paper-capital",
         "workingCapitalKrw": working_capital,
         "referenceCapitalKrw": working_capital,
         "targetInvestedKrw": None,
         "investedBeforeKrw": invested,
-        "availableCashKrw": None,
+        "availableCashKrw": None if policy.get("unlimitedFunding") else max(0.0, working_capital - invested),
         "remainingTargetKrw": None,
         "remainingSlots": None,
         "confidenceAllocationRate": confidence_rate,
@@ -1580,7 +1764,7 @@ def adaptive_allocation_plan(
         ),
         "targetUtilizationRate": None,
         "reserveRate": 0.0,
-        "fundingLimit": "UNLIMITED",
+        "fundingLimit": "UNLIMITED" if policy.get("unlimitedFunding") else working_capital,
     }
 
 
@@ -1593,8 +1777,10 @@ def trading_decision(
     lock_reason: str | None,
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    target_rate = decimal(config.get("targetRate"))
-    stop_rate = decimal(config.get("stopRate"))
+    policy = strategy_execution_policy(config)
+    runtime = policy.get("parameters") or {}
+    target_rate = decimal(runtime.get("targetRate") or config.get("targetRate"))
+    stop_rate = decimal(runtime.get("dailyEntryLockRate") or config.get("stopRate"))
     max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
     remaining_to_stop = average_return - stop_rate
     remaining_to_target = target_rate - average_return
@@ -1603,15 +1789,15 @@ def trading_decision(
         stop_progress = max(0.0, min(1.0, abs(min(average_return, 0.0)) / abs(stop_rate)))
 
     if (
-        PAPER_LEARNING_SPRINT_MODE
-        and not PAPER_UNLIMITED_OPEN_POSITIONS
+        policy.get("learningSprint")
+        and not policy.get("unlimitedPositions")
         and open_positions >= max_open_positions
     ):
         mode = "학습 대기"
         tone = "caution"
         action = "청산 자리 발생 시 점수순 재진입"
         reason = "동시 포지션 3개를 모두 사용 중입니다."
-    elif PAPER_LEARNING_SPRINT_MODE:
+    elif policy.get("learningSprint"):
         mode = "경험 가속"
         tone = "safe" if average_return >= 0 else "caution"
         action = "좋은 후보는 자금·횟수·포지션 제한 없이 진입"
@@ -1705,7 +1891,9 @@ def safety_rules(
     lock_reason: str | None,
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    stop_rate = decimal(config.get("stopRate"))
+    policy = strategy_execution_policy(config)
+    runtime = policy.get("parameters") or {}
+    stop_rate = decimal(runtime.get("dailyEntryLockRate") or config.get("stopRate"))
     max_daily_orders = int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
     max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
     max_losses = int(config.get("maxConsecutiveLosses") or PAPER_MAX_CONSECUTIVE_LOSSES)
@@ -1715,7 +1903,8 @@ def safety_rules(
             consecutive_losses += 1
         else:
             break
-    learning_sprint = PAPER_LEARNING_SPRINT_MODE
+    learning_sprint = bool(policy.get("learningSprint"))
+    unlimited_positions = bool(policy.get("unlimitedPositions"))
     rules = [
         {
             "key": "dailyLoss",
@@ -1742,11 +1931,11 @@ def safety_rules(
         {
             "key": "positionCap",
             "label": "포지션 수",
-            "status": "무제한" if PAPER_UNLIMITED_OPEN_POSITIONS else ("과밀" if open_positions >= max_open_positions else "정상"),
-            "tone": "safe" if PAPER_UNLIMITED_OPEN_POSITIONS else ("danger" if open_positions >= max_open_positions else "safe"),
+            "status": "무제한" if unlimited_positions else ("과밀" if open_positions >= max_open_positions else "정상"),
+            "tone": "safe" if unlimited_positions else ("danger" if open_positions >= max_open_positions else "safe"),
             "detail": (
                 f"현재 {open_positions}개 · 우수 후보 추가 진입 가능"
-                if PAPER_UNLIMITED_OPEN_POSITIONS
+                if unlimited_positions
                 else f"{open_positions}/{max_open_positions}개 보유"
             ),
         },
@@ -1776,9 +1965,10 @@ def safety_rules(
 
 def safety_gate(summary: dict[str, Any]) -> dict[str, Any]:
     rules = summary.get("safetyRules") or []
-    if PAPER_LEARNING_SPRINT_MODE and PAPER_UNLIMITED_OPEN_POSITIONS:
+    policy = summary.get("executionPolicy") or strategy_execution_policy()
+    if policy.get("learningSprint") and policy.get("unlimitedPositions"):
         blocking_keys: set[str] = set()
-    elif PAPER_LEARNING_SPRINT_MODE:
+    elif policy.get("learningSprint"):
         blocking_keys = {"positionCap"}
     else:
         blocking_keys = {"lock", "dailyLoss", "positionCap", "lossStreak"}
@@ -1792,8 +1982,10 @@ def safety_gate(summary: dict[str, Any]) -> dict[str, Any]:
 
 def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, Any]:
     config = strategy_config()
-    target_rate = decimal(config.get("targetRate"))
-    stop_rate = decimal(config.get("stopRate"))
+    execution_policy = strategy_execution_policy(config)
+    runtime = execution_policy.get("parameters") or {}
+    target_rate = decimal(runtime.get("targetRate") or config.get("targetRate"))
+    stop_rate = decimal(runtime.get("stopRate") or config.get("stopRate"))
     today = paper_trading_day()
     today_orders = [
         item for item in orders
@@ -1820,7 +2012,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
 
     results_by_symbol = {str(item.get("symbol")): item for item in results}
     trade_ledger = paper_trade_ledger(orders, results_by_symbol)
-    capital = paper_capital_summary(trade_ledger)
+    capital = paper_capital_summary(trade_ledger, execution_policy)
     position_returns = []
     for symbol, order in positions.items():
         current = results_by_symbol.get(symbol)
@@ -1834,39 +2026,41 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     )
     tech_review = technical_review(positions, results_by_symbol)
     target_hit = average_return >= target_rate
-    stop_hit = average_return <= stop_rate
-    locked = (target_hit or stop_hit) and not PAPER_LEARNING_SPRINT_MODE
+    daily_lock_rate = decimal(runtime.get("dailyEntryLockRate") or stop_rate)
+    stop_hit = average_return <= daily_lock_rate
+    locked = bool(execution_policy.get("dailyRisk")) and (target_hit or stop_hit) and not execution_policy.get("learningSprint")
     lock_reason = None
-    if target_hit and not PAPER_LEARNING_SPRINT_MODE:
+    if target_hit and locked:
         lock_reason = f"일 목표 {percent(target_rate)} 도달 · 신규 진입 잠금"
-    elif stop_hit and not PAPER_LEARNING_SPRINT_MODE:
-        lock_reason = f"손실폭 {percent(stop_rate)} 도달 · 신규 진입 중지"
+    elif stop_hit and locked:
+        lock_reason = f"통합 손실 예산 {percent(daily_lock_rate)} 도달 · 신규 진입 중지"
 
     return {
         "targetRate": target_rate,
         "stopRate": stop_rate,
         "strategyConfig": config,
+        "executionPolicy": execution_policy,
         "capital": capital,
         "learningCoverage": "GLOBAL_ALL_SYMBOLS",
         "capitalAllocationPolicy": {
-            "mode": "unlimited-paper-experience",
+            "mode": "unlimited-paper-experience" if execution_policy.get("unlimitedFunding") else "bounded-paper-capital",
             "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
-            "fundingLimit": "UNLIMITED" if PAPER_UNLIMITED_VIRTUAL_CAPITAL else PAPER_STARTING_CAPITAL_KRW,
-            "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
-            "minExperienceEntryRate": PAPER_MIN_EXPERIENCE_ENTRY_RATE,
+            "fundingLimit": "UNLIMITED" if execution_policy.get("unlimitedFunding") else PAPER_STARTING_CAPITAL_KRW,
+            "maxSinglePositionRate": runtime.get("maxAllocationRate") or PAPER_MAX_SINGLE_POSITION_RATE,
+            "minExperienceEntryRate": runtime.get("minAllocationRate") or PAPER_MIN_EXPERIENCE_ENTRY_RATE,
             "learningAppliedAfterSizing": True,
         },
         "paperLearningSprint": {
-            "enabled": PAPER_LEARNING_SPRINT_MODE,
-            "entryLimit": "UNLIMITED" if PAPER_LEARNING_SPRINT_MODE else int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS),
-            "dailyProfitLock": False if PAPER_LEARNING_SPRINT_MODE else True,
-            "lossStreakLock": False if PAPER_LEARNING_SPRINT_MODE else True,
-            "scoreFilter": True,
+            "enabled": bool(execution_policy.get("learningSprint")),
+            "entryLimit": "UNLIMITED" if execution_policy.get("learningSprint") else int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS),
+            "dailyProfitLock": not execution_policy.get("learningSprint"),
+            "lossStreakLock": not execution_policy.get("learningSprint"),
+            "scoreFilter": bool(execution_policy.get("scoreFilter")),
             "symbolLearning": False,
             "globalLearning": True,
-            "individualStops": True,
-            "maxOpenPositions": "UNLIMITED" if PAPER_UNLIMITED_OPEN_POSITIONS else int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS),
-            "fundingLimit": "UNLIMITED" if PAPER_UNLIMITED_VIRTUAL_CAPITAL else PAPER_STARTING_CAPITAL_KRW,
+            "individualStops": bool(execution_policy.get("hardStop")),
+            "maxOpenPositions": "UNLIMITED" if execution_policy.get("unlimitedPositions") else int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS),
+            "fundingLimit": "UNLIMITED" if execution_policy.get("unlimitedFunding") else PAPER_STARTING_CAPITAL_KRW,
         },
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(trade_ledger),
@@ -1953,7 +2147,8 @@ def ensure_protective_stop_order(
 
 
 def stop_reentry_cooldown_symbols(
-    orders: list[dict[str, Any]], market: str, now: datetime | None = None
+    orders: list[dict[str, Any]], market: str, now: datetime | None = None,
+    cooldown_seconds: int = PAPER_STOP_REENTRY_COOLDOWN_SECONDS,
 ) -> set[str]:
     current = now or datetime.now().astimezone()
     if current.tzinfo is None:
@@ -1972,7 +2167,7 @@ def stop_reentry_cooldown_symbols(
         if moment.tzinfo is None:
             moment = moment.replace(tzinfo=KST)
         age = (current.astimezone(KST) - moment.astimezone(KST)).total_seconds()
-        if 0 <= age < PAPER_STOP_REENTRY_COOLDOWN_SECONDS:
+        if 0 <= age < max(0, cooldown_seconds):
             blocked.add(str(order.get("symbol") or ""))
     blocked.discard("")
     return blocked
@@ -2028,8 +2223,8 @@ def close_paper_positions_if_needed(
     stop_only: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
     config = strategy_config()
-    target_rate = decimal(config.get("targetRate"))
-    stop_rate = decimal(config.get("stopRate"))
+    current_policy = strategy_execution_policy(config)
+    current_parameters = current_policy.get("parameters") or {}
     positions = open_paper_positions(orders, market)
     if not positions:
         return orders, False
@@ -2040,8 +2235,27 @@ def close_paper_positions_if_needed(
         entry = decimal(order.get("price"))
         if not entry:
             continue
-        protective, created = ensure_protective_stop_order(order, stop_rate)
-        changed = changed or created
+        entry_policy = order.get("strategyExecution") if isinstance(order.get("strategyExecution"), dict) else {}
+        fallback_ids = current_policy.get("enabledIds") or [
+            str(item.get("id")) for item in DEFAULT_STRATEGIES if item.get("enabled")
+        ]
+        if entry_policy and isinstance(order.get("strategyIds"), list):
+            entry_ids = set(order.get("strategyIds") or [])
+        elif order.get("strategyRevision") is not None and isinstance(order.get("strategyIds"), list):
+            entry_ids = set(order.get("strategyIds") or [])
+        else:
+            entry_ids = set(entry_policy.get("enabledIds") or fallback_ids)
+        entry_parameters = entry_policy.get("parameters") if isinstance(entry_policy.get("parameters"), dict) else current_parameters
+        target_rate = decimal(entry_parameters.get("targetRate") or config.get("targetRate"))
+        stop_rate = decimal(entry_parameters.get("stopRate") or config.get("stopRate"))
+        hard_stop_enabled = "hard-stop-loss" in entry_ids or isinstance(order.get("protectiveStopOrder"), dict)
+        profit_target_enabled = "profit-trailing" in entry_ids
+        time_exit_enabled = "three-minute-exit" in entry_ids
+        protective: dict[str, Any] = {}
+        created = False
+        if hard_stop_enabled:
+            protective, created = ensure_protective_stop_order(order, stop_rate)
+            changed = changed or created
         trigger_price = decimal(protective.get("triggerPrice"))
         protective_rate = decimal(protective.get("stopRate") or stop_rate)
         last = prices.get(symbol, 0.0)
@@ -2052,7 +2266,7 @@ def close_paper_positions_if_needed(
         rate = observed_rate
         exit_kind = None
         reason = None
-        if protective.get("status") == "WORKING" and trigger_price and last <= trigger_price:
+        if hard_stop_enabled and protective.get("status") == "WORKING" and trigger_price and last <= trigger_price:
             exit_kind = "손실선"
             fill_price = trigger_price
             rate = (fill_price - entry) / entry
@@ -2070,16 +2284,33 @@ def close_paper_positions_if_needed(
                     "slippageFromTriggerRate": observed_rate - protective_rate,
                 }
             )
-        elif not stop_only and observed_rate >= target_rate:
+        elif not stop_only and profit_target_enabled and observed_rate >= target_rate:
             exit_kind = "목표"
             reason = f"목표 {percent(target_rate)} 도달 · 즉시 모의청산"
-            protective.update(
-                {
-                    "status": "CANCELLED",
-                    "cancelledAt": now,
-                    "cancelReason": "목표 청산 완료",
-                }
-            )
+            if protective.get("status") == "WORKING":
+                protective.update(
+                    {
+                        "status": "CANCELLED",
+                        "cancelledAt": now,
+                        "cancelReason": "목표 청산 완료",
+                    }
+                )
+        elif not stop_only and time_exit_enabled:
+            opened_at = parse_order_time(order.get("createdAt"))
+            hold_seconds = max(0, int((datetime.now().astimezone() - opened_at).total_seconds())) if opened_at else 0
+            time_limit = int(entry_parameters.get("timeExitSeconds") or 180)
+            minimum_return = decimal(entry_parameters.get("timeExitMinimumReturn") or 0.001)
+            if hold_seconds >= time_limit and observed_rate < minimum_return:
+                exit_kind = "시간청산"
+                reason = f"{max(1, time_limit // 60)}분 내 의미 있는 상승 미달 · 즉시 모의청산"
+                if protective.get("status") == "WORKING":
+                    protective.update(
+                        {
+                            "status": "CANCELLED",
+                            "cancelledAt": now,
+                            "cancelReason": "시간청산 완료",
+                        }
+                    )
         if not exit_kind:
             continue
         orders.append(
@@ -2109,7 +2340,8 @@ def close_paper_positions_if_needed(
                 "returnRate": rate,
                 "observedReturnRate": observed_rate,
                 "profit": (fill_price - entry) * decimal(order.get("quantity") or 1),
-                "fillPolicy": protective.get("fillPolicy"),
+                "fillPolicy": protective.get("fillPolicy") or "LAST_OBSERVED_PRICE",
+                "strategyRevision": entry_policy.get("revision") or order.get("strategyRevision"),
             }
         )
         changed = True
@@ -2128,6 +2360,9 @@ def paper_trade(
 def paper_trade_locked(
     env: dict[str, str], results: list[dict[str, Any]], market: str, session: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    config = strategy_config()
+    execution_policy = strategy_execution_policy(config)
+    runtime = execution_policy.get("parameters") or {}
     orders = load_paper_orders()
     orders, _ = close_paper_positions_if_needed(env, orders, results, market, session)
     results_by_symbol = {str(item.get("symbol") or ""): item for item in results if item.get("symbol")}
@@ -2138,11 +2373,11 @@ def paper_trade_locked(
     summary["learningBrain"] = learning_brain.get("summary")
     summary["learningCoverage"] = "GLOBAL_ALL_SYMBOLS"
     summary["capitalAllocationPolicy"] = {
-        "mode": "unlimited-paper-experience",
+        "mode": "unlimited-paper-experience" if execution_policy.get("unlimitedFunding") else "bounded-paper-capital",
         "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
-        "fundingLimit": "UNLIMITED",
-        "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
-        "minExperienceEntryRate": PAPER_MIN_EXPERIENCE_ENTRY_RATE,
+        "fundingLimit": "UNLIMITED" if execution_policy.get("unlimitedFunding") else PAPER_STARTING_CAPITAL_KRW,
+        "maxSinglePositionRate": runtime.get("maxAllocationRate") or PAPER_MAX_SINGLE_POSITION_RATE,
+        "minExperienceEntryRate": runtime.get("minAllocationRate") or PAPER_MIN_EXPERIENCE_ENTRY_RATE,
         "learningAppliedAfterSizing": True,
     }
     summary["learningDecisions"] = []
@@ -2158,9 +2393,8 @@ def paper_trade_locked(
         and item.get("market") == market
         and paper_trading_day(item.get("createdAt")) == today
     ]
-    config = strategy_config()
     if (
-        not PAPER_LEARNING_SPRINT_MODE
+        not execution_policy.get("learningSprint")
         and len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
     ):
         return orders[-50:], summary
@@ -2168,6 +2402,8 @@ def paper_trade_locked(
     capital = summary.get("capital") or {}
     max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
     open_position_count = int(summary.get("openPositionCount") or 0)
+    if not execution_policy.get("unlimitedPositions") and open_position_count >= max_open_positions:
+        return orders[-50:], summary
     candidate = None
     candidate_policy = None
     candidate_capital_plan = None
@@ -2175,11 +2411,23 @@ def paper_trade_locked(
     allocation_rate = 0.0
     allocated_krw = 0.0
     learning_decisions: list[dict[str, Any]] = []
-    stop_cooldown = stop_reentry_cooldown_symbols(orders, market)
+    stop_cooldown = (
+        stop_reentry_cooldown_symbols(
+            orders,
+            market,
+            cooldown_seconds=int(runtime.get("reentryCooldownSeconds") or PAPER_STOP_REENTRY_COOLDOWN_SECONDS),
+        )
+        if execution_policy.get("reentryCooldown")
+        else set()
+    )
     ranked_candidates = sorted(
         (
             item for item in results
-            if item.get("verdict") == "정밀 분석"
+            if (
+                item.get("verdict") == "정밀 분석"
+                if execution_policy.get("liquidityFilter")
+                else item.get("verdict") != "진입 불가" and decimal(item.get("lastPrice")) > 0
+            )
             and (market, item.get("symbol")) not in existing
         ),
         key=lambda item: (decimal(item.get("score")), -decimal(item.get("rank") or 999)),
@@ -2194,12 +2442,22 @@ def paper_trade_locked(
                     "name": item.get("name") or symbol,
                     "allowed": False,
                     "capitalAllowed": False,
-                    "reason": f"예약 손절 후 {PAPER_STOP_REENTRY_COOLDOWN_SECONDS}초 재진입 대기",
+                    "reason": f"예약 손절 후 {int(runtime.get('reentryCooldownSeconds') or PAPER_STOP_REENTRY_COOLDOWN_SECONDS)}초 재진입 대기",
                     "scope": "EXECUTION_SAFETY",
                 }
             )
             continue
         policy = learning_entry_policy(symbol, item.get("score"), learning_state)
+        if execution_policy.get("scoreFilter"):
+            required_floor = int(runtime.get("entryScoreFloor") or LEARNING_BASE_ENTRY_SCORE)
+            policy["requiredScore"] = max(int(policy.get("requiredScore") or 0), required_floor)
+            policy["allowed"] = decimal(item.get("score")) >= policy["requiredScore"]
+            if not policy["allowed"]:
+                policy["reason"] = f"실행 전략 기준 · {policy['requiredScore']}점 필요 (현재 {decimal(item.get('score')):.1f}점)"
+        else:
+            policy["allowed"] = True
+            policy["requiredScore"] = 0
+            policy["reason"] = "점수 진입 전략 비활성 · 후보 필터만 적용"
         decision = dict(policy)
         decision["name"] = item.get("name") or symbol
         if not policy.get("allowed"):
@@ -2218,6 +2476,7 @@ def paper_trade_locked(
             policy.get("allocationScale"),
             open_position_count,
             max_open_positions,
+            execution_policy,
         )
         budget = decimal(capital_plan.get("plannedBudgetKrw"))
         decision["capitalAllowed"] = budget > 0
@@ -2227,7 +2486,7 @@ def paper_trade_locked(
             learning_decisions.append(decision)
             continue
         shares = int(budget // price_krw)
-        if shares < 1 and PAPER_UNLIMITED_VIRTUAL_CAPITAL:
+        if shares < 1 and execution_policy.get("unlimitedFunding"):
             shares = 1
             decision["reason"] = f"{policy.get('reason')} · 고가 종목 최소 1주 경험 진입"
         elif shares < 1:
@@ -2265,12 +2524,16 @@ def paper_trade_locked(
                 "confidenceAllocationRate": candidate_capital_plan.get("confidenceAllocationRate") if candidate_capital_plan else confidence_allocation_rate(candidate.get("score")),
                 "allocatedKrw": allocated_krw,
                 "capitalPolicy": {
-                    "mode": "unlimited-paper-experience",
-                    "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
-                    "fundingLimit": "UNLIMITED",
+                    "mode": candidate_capital_plan.get("mode") if candidate_capital_plan else (
+                        "unlimited-paper-experience" if execution_policy.get("unlimitedFunding") else "bounded-paper-capital"
+                    ),
+                    "referenceCapitalKrw": candidate_capital_plan.get("referenceCapitalKrw") if candidate_capital_plan else PAPER_STARTING_CAPITAL_KRW,
+                    "fundingLimit": candidate_capital_plan.get("fundingLimit") if candidate_capital_plan else (
+                        "UNLIMITED" if execution_policy.get("unlimitedFunding") else PAPER_STARTING_CAPITAL_KRW
+                    ),
                     "investedBeforeKrw": candidate_capital_plan.get("investedBeforeKrw") if candidate_capital_plan else 0,
-                    "targetInvestedKrw": None,
-                    "remainingSlots": None,
+                    "targetInvestedKrw": candidate_capital_plan.get("targetInvestedKrw") if candidate_capital_plan else None,
+                    "remainingSlots": candidate_capital_plan.get("remainingSlots") if candidate_capital_plan else None,
                     "expectedUtilizationRate": (
                         (decimal(candidate_capital_plan.get("investedBeforeKrw")) + allocated_krw)
                         / decimal(candidate_capital_plan.get("workingCapitalKrw"))
@@ -2298,29 +2561,26 @@ def paper_trade_locked(
                     "appliedImmediately": True,
                     "appliedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 },
-                "strategyIds": [
-                    "liquidity-momentum-filter",
-                    "score-entry-80",
-                    "adaptive-capital-utilization",
-                    "paper-learning-sprint",
-                    "unlimited-paper-experience",
-                    "hard-stop-loss",
-                ],
+                "strategyIds": list(execution_policy.get("enabledIds") or []),
+                "strategyRevision": execution_policy.get("revision"),
+                "strategySavedAt": execution_policy.get("savedAt"),
+                "strategyExecution": execution_policy,
             }
-        buy_order["protectiveStopOrder"] = build_protective_stop_order(
-            buy_order, decimal(config.get("stopRate") or PAPER_STOP_RATE)
-        )
+        if execution_policy.get("hardStop"):
+            buy_order["protectiveStopOrder"] = build_protective_stop_order(
+                buy_order, decimal(runtime.get("stopRate") or config.get("stopRate") or PAPER_STOP_RATE)
+            )
         orders.append(buy_order)
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
     summary["learningBrain"] = learning_brain.get("summary")
     summary["learningCoverage"] = "GLOBAL_ALL_SYMBOLS"
     summary["capitalAllocationPolicy"] = {
-        "mode": "unlimited-paper-experience",
+        "mode": "unlimited-paper-experience" if execution_policy.get("unlimitedFunding") else "bounded-paper-capital",
         "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
-        "fundingLimit": "UNLIMITED",
-        "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
-        "minExperienceEntryRate": PAPER_MIN_EXPERIENCE_ENTRY_RATE,
+        "fundingLimit": "UNLIMITED" if execution_policy.get("unlimitedFunding") else PAPER_STARTING_CAPITAL_KRW,
+        "maxSinglePositionRate": runtime.get("maxAllocationRate") or PAPER_MAX_SINGLE_POSITION_RATE,
+        "minExperienceEntryRate": runtime.get("minAllocationRate") or PAPER_MIN_EXPERIENCE_ENTRY_RATE,
         "learningAppliedAfterSizing": True,
     }
     summary["learningDecisions"] = learning_decisions[:10]
@@ -4608,6 +4868,8 @@ class Handler(BaseHTTPRequestHandler):
                 with ANALYSIS_LOCK:
                     results = list(ANALYSIS.get("results") or [])
                     ANALYSIS["paperSummary"] = paper_summary(orders, results)
+                    ANALYSIS["strategyRevision"] = int(config.get("revision") or 0)
+                    ANALYSIS["strategyAppliedAt"] = config.get("savedAt")
                 payload = strategy_payload()
                 payload["paperSummary"] = analysis_snapshot().get("paperSummary")
                 self.send_json(payload)
