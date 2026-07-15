@@ -330,35 +330,56 @@
             </article>
           </section>
 
-          <section class="learning-brain-card" aria-label="Orbit 종목별 학습 뇌">
+          <section class="learning-brain-card" aria-label="Orbit 전체 투자 공용 학습 뇌">
             <div class="learning-brain-head">
               <div>
                 <p class="eyebrow accent">ORBIT LEARNING BRAIN</p>
-                <h2>종목별 학습 메모리</h2>
+                <h2>전체 투자 공용 뇌</h2>
                 <span id="learningBrainUpdatedAt">거래 기억을 불러오는 중입니다.</span>
               </div>
-              <b id="learningApplyStatus">PAPER 다음 거래 즉시 적용</b>
+              <b id="learningApplyStatus">모든 종목에 다음 거래 즉시 적용</b>
             </div>
             <div class="learning-brain-summary" id="learningBrainSummary">
               <div><span>학습 거래</span><b>0건</b></div>
-              <div><span>기억 종목</span><b>0개</b></div>
-              <div><span>활성 원칙</span><b>0개</b></div>
-              <div><span>재진입 대기</span><b>0개</b></div>
+              <div><span>점수 표본</span><b>0건</b></div>
+              <div><span>기준 수정</span><b>0회</b></div>
+              <div><span>휴장 관찰</span><b>0건</b></div>
             </div>
             <div class="learning-brain-body">
-              <article class="learning-symbol-panel">
-                <div class="learning-subhead"><b>종목별 뇌</b><span>점수·비중·재진입 규칙</span></div>
-                <div class="learning-symbol-list" id="learningSymbolList">
-                  <div class="learning-empty">청산 거래가 쌓이면 종목별 특성과 적용 원칙이 생깁니다.</div>
+              <article class="learning-symbol-panel global-score-panel">
+                <div class="learning-subhead"><b>점수 판단 기준 진화</b><span id="learningGlobalRule">전역 기준을 준비 중입니다.</span></div>
+                <div class="global-score-feature-list" id="learningScoreFeatureList">
+                  <div class="learning-empty">청산 표본부터 점수 항목별 적중률을 비교합니다.</div>
                 </div>
               </article>
               <article class="learning-memory-panel">
-                <div class="learning-subhead"><b>최근 학습 기억</b><span>오답에서 바로 바뀐 것</span></div>
+                <div class="learning-subhead"><b>전체 관점 수정 기록</b><span>다른 종목에도 공통 적용</span></div>
                 <div class="learning-memory-list" id="learningMemoryList">
                   <div class="learning-empty">새로운 학습 기억을 기다리고 있습니다.</div>
                 </div>
               </article>
             </div>
+            <section class="offline-study-panel" aria-label="휴장 기술적 분석 연구일지">
+              <div class="offline-study-head">
+                <div><p class="eyebrow">OFF-MARKET RESEARCH</p><h3>휴장 기술적 분석·백테스트 일지</h3></div>
+                <b id="offlineStudyStatus">다음 휴장 학습 대기</b>
+              </div>
+              <div class="offline-study-summary" id="offlineStudySummary">
+                <div><span>분석 종목</span><b>0개</b></div>
+                <div><span>차트 분석</span><b>0건</b></div>
+                <div><span>패턴 관찰</span><b>0건</b></div>
+                <div><span>검증 패턴</span><b>0개</b></div>
+              </div>
+              <div class="offline-study-journal" id="offlineStudyJournal">
+                <div class="learning-empty">한국·미국 장이 함께 닫히면 일·주·월봉 연구를 시작합니다.</div>
+              </div>
+            </section>
+            <details class="learning-case-archive">
+              <summary>종목별 거래 사례 보관함 <span>정책은 공용 뇌가 결정하고, 종목별 기록은 근거 사례로만 보관</span></summary>
+              <div class="learning-symbol-list" id="learningSymbolList">
+                <div class="learning-empty">청산 거래가 쌓이면 종목별 사례가 남습니다.</div>
+              </div>
+            </details>
           </section>
 
           <div class="journal-workspace">

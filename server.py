@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import mimetypes
 import os
 import subprocess
@@ -53,8 +54,20 @@ PAPER_LEARNING_SPRINT_MODE = True
 PAPER_UNLIMITED_VIRTUAL_CAPITAL = True
 PAPER_UNLIMITED_OPEN_POSITIONS = True
 PAPER_MIN_EXPERIENCE_ENTRY_RATE = 0.30
-LEARNING_SCHEMA_VERSION = 1
+LEARNING_SCHEMA_VERSION = 2
 LEARNING_BASE_ENTRY_SCORE = 80
+GLOBAL_SCORE_FEATURES = {
+    "liquidity": {"label": "거래대금 순위", "maxPoints": 40.0},
+    "momentum": {"label": "당일 추세", "maxPoints": 35.0},
+    "stability": {"label": "급등락 안정성", "maxPoints": 25.0},
+}
+GLOBAL_SCORE_WEIGHT_MIN = 0.70
+GLOBAL_SCORE_WEIGHT_MAX = 1.30
+GLOBAL_SCORE_MAX_TRADE_STEP = 0.04
+GLOBAL_SCORE_LEARNING_RATE = 0.06
+OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 10
+OFF_MARKET_STUDY_CANDLE_PAGES = 3
+OFF_MARKET_STUDY_POLL_SECONDS = 300
 DEFAULT_STRATEGY_CONFIG = {
     "targetRate": PAPER_TARGET_RATE,
     "stopRate": PAPER_STOP_RATE,
@@ -72,29 +85,29 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "score-entry-80",
-        "title": "100점 평가·80점 이상 진입",
-        "description": "필수조건 통과 종목을 거래대금 강도, 상대 거래량, 돌파 유지, 시장 상태, 호가 품질로 점수화하고 80점 이상만 점수순으로 진입합니다.",
-        "judge": "점수 높은 종목 우선",
+        "title": "전역 학습형 100점 평가",
+        "description": "모든 PAPER 청산 결과로 거래대금 순위, 당일 추세, 급등락 안정성의 가중치와 진입 기준을 함께 재평가하고 다음 모든 종목에 즉시 적용합니다.",
+        "judge": "전체 거래가 다음 점수 기준을 수정",
         "enabled": True,
     },
     {
         "id": "adaptive-capital-utilization",
         "title": "무제한 가상자금·점수 비중 자동배분",
-        "description": "100만 원은 성과 비교 기준금으로만 사용하고, 점수를 통과한 종목마다 기준금의 30~60%를 배정합니다. 종목별 오답노트의 비중 축소는 마지막 단계에서 모든 신규 거래에 적용합니다.",
+        "description": "100만 원은 성과 비교 기준금으로만 사용하고, 전역 학습 점수를 통과한 종목마다 기준금의 30~60%를 배정합니다.",
         "judge": "자금 한도 없음 · 학습 비중 우선",
         "enabled": True,
     },
     {
         "id": "paper-learning-sprint",
         "title": "PAPER 무제한 경험 축적",
-        "description": "일일 횟수·가상자금·동시 포지션·일 손익·연속 손실에 따른 신규 진입 잠금을 해제하고, 점수와 종목 학습 규칙을 통과한 모든 후보의 성공과 실패를 오답 표본으로 쌓습니다.",
+        "description": "일일 횟수·가상자금·동시 포지션·일 손익·연속 손실에 따른 신규 진입 잠금을 해제하고, 전역 점수 기준을 통과한 모든 후보의 성공과 실패를 공용 오답 표본으로 쌓습니다.",
         "judge": "진입 제한 없음 · 개별 손절 유지",
         "enabled": True,
     },
     {
         "id": "unlimited-paper-experience",
         "title": "무제한 가상자금 경험 랩",
-        "description": "100만 원은 성과 비교 기준으로만 유지합니다. 가상자금과 동시 포지션 수에는 상한을 두지 않고, 80점 이상과 종목별 학습 규칙을 통과한 후보는 최소 1주 이상 경험 데이터로 기록합니다.",
+        "description": "100만 원은 성과 비교 기준으로만 유지합니다. 가상자금과 동시 포지션 수에는 상한을 두지 않고, 전역 학습 점수를 통과한 후보는 최소 1주 이상 경험 데이터로 기록합니다.",
         "judge": "자금·포지션 무제한 · 점수 필수",
         "enabled": True,
     },
@@ -1814,7 +1827,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "stopRate": stop_rate,
         "strategyConfig": config,
         "capital": capital,
-        "learningCoverage": "ALL_NEW_ENTRIES",
+        "learningCoverage": "GLOBAL_ALL_SYMBOLS",
         "capitalAllocationPolicy": {
             "mode": "unlimited-paper-experience",
             "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
@@ -1829,7 +1842,8 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
             "dailyProfitLock": False if PAPER_LEARNING_SPRINT_MODE else True,
             "lossStreakLock": False if PAPER_LEARNING_SPRINT_MODE else True,
             "scoreFilter": True,
-            "symbolLearning": True,
+            "symbolLearning": False,
+            "globalLearning": True,
             "individualStops": True,
             "maxOpenPositions": "UNLIMITED" if PAPER_UNLIMITED_OPEN_POSITIONS else int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS),
             "fundingLimit": "UNLIMITED" if PAPER_UNLIMITED_VIRTUAL_CAPITAL else PAPER_STARTING_CAPITAL_KRW,
@@ -1975,10 +1989,11 @@ def paper_trade(
     orders, _ = close_paper_positions_if_needed(env, orders, results, market, session)
     results_by_symbol = {str(item.get("symbol") or ""): item for item in results if item.get("symbol")}
     learning_state = sync_learning_brain(orders, results_by_symbol)
+    apply_global_scores(results, learning_state)
     learning_brain = learning_brain_payload(learning_state)
     summary = paper_summary(orders, results)
     summary["learningBrain"] = learning_brain.get("summary")
-    summary["learningCoverage"] = "ALL_NEW_ENTRIES"
+    summary["learningCoverage"] = "GLOBAL_ALL_SYMBOLS"
     summary["capitalAllocationPolicy"] = {
         "mode": "unlimited-paper-experience",
         "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
@@ -2112,6 +2127,9 @@ def paper_trade(
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "reason": candidate.get("reason"),
                 "entryScore": candidate.get("score"),
+                "baseEntryScore": candidate.get("baseScore"),
+                "scoreFeatures": candidate.get("scoreFeatures"),
+                "scoreAudit": candidate.get("scoreAudit"),
                 "learningPolicy": {
                     "requiredScore": candidate_policy.get("requiredScore") if candidate_policy else LEARNING_BASE_ENTRY_SCORE,
                     "candidateScore": candidate_policy.get("candidateScore") if candidate_policy else candidate.get("score"),
@@ -2119,6 +2137,8 @@ def paper_trade(
                     "status": candidate_policy.get("status") if candidate_policy else "신규 학습",
                     "traits": candidate_policy.get("traits") if candidate_policy else ["표본 수집"],
                     "reason": candidate_policy.get("reason") if candidate_policy else "신규 종목 기본 기준",
+                    "scope": "GLOBAL_ALL_SYMBOLS",
+                    "globalSampleCount": candidate_policy.get("globalSampleCount") if candidate_policy else 0,
                     "appliedImmediately": True,
                     "appliedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 },
@@ -2134,7 +2154,7 @@ def paper_trade(
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
     summary["learningBrain"] = learning_brain.get("summary")
-    summary["learningCoverage"] = "ALL_NEW_ENTRIES"
+    summary["learningCoverage"] = "GLOBAL_ALL_SYMBOLS"
     summary["capitalAllocationPolicy"] = {
         "mode": "unlimited-paper-experience",
         "referenceCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
@@ -2162,6 +2182,8 @@ def usd_krw_rate(env: dict[str, str]) -> float:
 
 
 def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
+    with LEARNING_LOCK:
+        score_model = normalize_global_score_model(load_learning_state_unlocked().get("globalScoreModel"))
     query = urllib.parse.urlencode(
         {
             "type": "MARKET_TRADING_AMOUNT",
@@ -2197,17 +2219,7 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
         else:
             momentum_score = 5
         stability_score = 25 if -0.03 < rate < 0.12 else 8
-        score = round(min(100, liquidity_score + momentum_score + stability_score))
-        if rate >= 0.12 or rate <= -0.08:
-            verdict, reason = "진입 불가", f"급등락 추격 위험 · 평가 {score}점"
-        elif score >= 80:
-            verdict, reason = "정밀 분석", f"80점 이상 · 거래대금·상승 추세 평가 {score}점"
-        elif score >= 60:
-            verdict, reason = "관찰", f"방향성 확인 필요 · 평가 {score}점"
-        else:
-            verdict, reason = "진입 보류", f"전략 기준 미달 · 평가 {score}점"
-        results.append(
-            {
+        result = {
                 "rank": row.get("rank"),
                 "symbol": row.get("symbol"),
                 "name": names.get(str(row.get("symbol"))) or row.get("symbol"),
@@ -2219,12 +2231,648 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
                 "lastPrice": normalized_price,
                 "dailyRate": rate,
                 "tradingAmount": row.get("tradingAmount"),
-                "score": score,
-                "verdict": verdict,
-                "reason": reason,
+                "scoreComponents": {
+                    "liquidity": liquidity_score,
+                    "momentum": momentum_score,
+                    "stability": stability_score,
+                },
+            }
+        results.append(apply_global_score_to_candidate(result, score_model))
+    return results
+
+
+def study_universe(env: dict[str, str], market: str) -> list[dict[str, Any]]:
+    universe: dict[str, dict[str, Any]] = {}
+    for duration in ("1d", "1w", "1mo"):
+        query = urllib.parse.urlencode(
+            {
+                "type": "MARKET_TRADING_AMOUNT",
+                "marketCountry": market,
+                "duration": duration,
+                "excludeInvestmentCaution": "true",
+                "count": str(OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON),
             }
         )
-    return results
+        rows = (toss_get(f"/api/v1/rankings?{query}", env).get("result") or {}).get("rankings") or []
+        for row in rows:
+            symbol = str(row.get("symbol") or "")
+            if not symbol:
+                continue
+            item = universe.setdefault(
+                symbol,
+                {"symbol": symbol, "name": symbol, "market": market, "sourceHorizons": []},
+            )
+            item["sourceHorizons"].append(duration)
+        time.sleep(0.22)
+    symbols = list(universe)
+    if symbols:
+        stocks = toss_get(
+            f"/api/v1/stocks?{urllib.parse.urlencode({'symbols': ','.join(symbols)})}", env
+        ).get("result") or []
+        names = {str(item.get("symbol") or ""): item.get("name") for item in stocks}
+        for symbol, item in universe.items():
+            item["name"] = names.get(symbol) or symbol
+    return list(universe.values())
+
+
+def study_daily_candles(env: dict[str, str], symbol: str) -> list[dict[str, Any]]:
+    by_timestamp: dict[str, dict[str, Any]] = {}
+    before = None
+    for _ in range(OFF_MARKET_STUDY_CANDLE_PAGES):
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "interval": "1d",
+            "count": 200,
+            "adjusted": "true",
+        }
+        if before:
+            params["before"] = before
+        result = toss_get(f"/api/v1/candles?{urllib.parse.urlencode(params)}", env).get("result") or {}
+        candles = result.get("candles") or []
+        for raw in candles:
+            timestamp = str(raw.get("timestamp") or "")
+            if not timestamp:
+                continue
+            by_timestamp[timestamp] = {
+                "timestamp": timestamp,
+                "open": decimal(raw.get("openPrice")),
+                "high": decimal(raw.get("highPrice")),
+                "low": decimal(raw.get("lowPrice")),
+                "close": decimal(raw.get("closePrice")),
+                "volume": decimal(raw.get("volume")),
+            }
+        next_before = result.get("nextBefore")
+        if not next_before or next_before == before or not candles:
+            break
+        before = str(next_before)
+        time.sleep(0.23)
+    return sorted(by_timestamp.values(), key=lambda item: str(item.get("timestamp") or ""))
+
+
+def aggregate_study_candles(candles: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
+    if timeframe == "1d":
+        return list(candles)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for candle in candles:
+        moment = parse_order_time(candle.get("timestamp"))
+        if not moment:
+            continue
+        if timeframe == "1w":
+            iso_year, iso_week, _ = moment.isocalendar()
+            key = f"{iso_year}-W{iso_week:02d}"
+        else:
+            key = moment.strftime("%Y-%m")
+        grouped.setdefault(key, []).append(candle)
+    aggregated = []
+    for bucket in grouped.values():
+        bucket.sort(key=lambda item: str(item.get("timestamp") or ""))
+        aggregated.append(
+            {
+                "timestamp": bucket[-1].get("timestamp"),
+                "open": decimal(bucket[0].get("open")),
+                "high": max(decimal(item.get("high")) for item in bucket),
+                "low": min(decimal(item.get("low")) for item in bucket),
+                "close": decimal(bucket[-1].get("close")),
+                "volume": sum(decimal(item.get("volume")) for item in bucket),
+            }
+        )
+    return sorted(aggregated, key=lambda item: str(item.get("timestamp") or ""))
+
+
+def study_technical_snapshot(candles: list[dict[str, Any]]) -> dict[str, Any]:
+    closes = [decimal(item.get("close")) for item in candles if decimal(item.get("close")) > 0]
+    volumes = [decimal(item.get("volume")) for item in candles]
+    if len(closes) < 5:
+        return {"status": "insufficient", "barCount": len(closes)}
+    latest = closes[-1]
+    sma5 = sum(closes[-5:]) / min(5, len(closes))
+    long_window = closes[-min(20, len(closes)):]
+    sma20 = sum(long_window) / len(long_window)
+    returns = [
+        (closes[index] / closes[index - 1]) - 1
+        for index in range(max(1, len(closes) - 20), len(closes))
+        if closes[index - 1]
+    ]
+    average_return = sum(returns) / len(returns) if returns else 0.0
+    variance = sum((value - average_return) ** 2 for value in returns) / len(returns) if returns else 0.0
+    gains = [max(0.0, value) for value in returns[-14:]]
+    losses = [max(0.0, -value) for value in returns[-14:]]
+    average_gain = sum(gains) / len(gains) if gains else 0.0
+    average_loss = sum(losses) / len(losses) if losses else 0.0
+    rsi = 100.0 if average_loss <= 0 else 100 - (100 / (1 + (average_gain / average_loss)))
+    volume_window = [value for value in volumes[-20:] if value >= 0]
+    volume_average = sum(volume_window) / len(volume_window) if volume_window else 0.0
+    peak = closes[max(0, len(closes) - 60)]
+    max_drawdown = 0.0
+    for value in closes[-60:]:
+        peak = max(peak, value)
+        if peak:
+            max_drawdown = min(max_drawdown, (value / peak) - 1)
+    trend = "상승" if latest > sma20 and sma5 > sma20 else ("하락" if latest < sma20 and sma5 < sma20 else "혼조")
+    return {
+        "status": "ready",
+        "barCount": len(closes),
+        "lastClose": latest,
+        "sma5": sma5,
+        "sma20": sma20,
+        "return5": (latest / closes[-6]) - 1 if len(closes) >= 6 and closes[-6] else 0.0,
+        "return20": (latest / closes[-21]) - 1 if len(closes) >= 21 and closes[-21] else 0.0,
+        "volatility20": math.sqrt(max(0.0, variance)),
+        "volumeRatio": (volumes[-1] / volume_average) if volume_average and volumes else 0.0,
+        "rsi14": rsi,
+        "maxDrawdown60": max_drawdown,
+        "trend": trend,
+    }
+
+
+def study_pattern_observations(candles: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
+    if len(candles) < 26:
+        return []
+    buckets: dict[str, dict[str, Any]] = {}
+    target_rate = {"1d": 0.03, "1w": 0.07, "1mo": 0.15}[timeframe]
+    stop_rate = {"1d": -0.02, "1w": -0.04, "1mo": -0.08}[timeframe]
+    for index in range(20, len(candles) - 5):
+        window = candles[index - 19: index + 1]
+        closes = [decimal(item.get("close")) for item in window]
+        volumes = [decimal(item.get("volume")) for item in window]
+        current = candles[index]
+        close = decimal(current.get("close"))
+        if close <= 0 or any(value <= 0 for value in closes):
+            continue
+        sma5 = sum(closes[-5:]) / 5
+        sma20 = sum(closes) / 20
+        return5 = (close / closes[-6]) - 1
+        returns14 = [(closes[i] / closes[i - 1]) - 1 for i in range(6, 20)]
+        gains = [max(0.0, value) for value in returns14]
+        losses = [max(0.0, -value) for value in returns14]
+        avg_gain = sum(gains) / len(gains) if gains else 0.0
+        avg_loss = sum(losses) / len(losses) if losses else 0.0
+        rsi = 100.0 if avg_loss <= 0 else 100 - (100 / (1 + (avg_gain / avg_loss)))
+        average_volume = sum(volumes) / len(volumes) if volumes else 0.0
+        volume_ratio = decimal(current.get("volume")) / average_volume if average_volume else 1.0
+        ranges = [
+            (decimal(item.get("high")) - decimal(item.get("low"))) / decimal(item.get("close"))
+            for item in window
+            if decimal(item.get("close")) > 0
+        ]
+        current_range = ranges[-1] if ranges else 0.0
+        average_range = sum(ranges) / len(ranges) if ranges else 0.0
+        range_ratio = current_range / average_range if average_range else 1.0
+        candle_range = decimal(current.get("high")) - decimal(current.get("low"))
+        close_position = (
+            (close - decimal(current.get("low"))) / candle_range if candle_range > 0 else 0.5
+        )
+        trend = "상승정렬" if close > sma20 and sma5 > sma20 else ("하락정렬" if close < sma20 and sma5 < sma20 else "혼조")
+        momentum = "강한상승" if return5 >= 0.05 else ("상승" if return5 > 0 else ("강한하락" if return5 <= -0.05 else "하락"))
+        volume = "거래량급증" if volume_ratio >= 1.50 else ("거래량고갈" if volume_ratio <= 0.65 else "거래량보통")
+        volatility = "변동성확대" if range_ratio >= 1.40 else ("변동성축소" if range_ratio <= 0.70 else "변동성보통")
+        rsi_zone = "과매수" if rsi >= 70 else ("과매도" if rsi <= 30 else "RSI중립")
+        close_zone = "고가마감" if close_position >= 0.75 else ("저가마감" if close_position <= 0.25 else "중간마감")
+        key = "|".join((trend, momentum, volume, volatility, rsi_zone, close_zone))
+        label = " · ".join((trend, momentum, volume, volatility, rsi_zone, close_zone))
+        future = candles[index + 1: index + 6]
+        future_returns = {
+            "return1": (decimal(future[0].get("close")) / close) - 1,
+            "return3": (decimal(future[2].get("close")) / close) - 1,
+            "return5": (decimal(future[4].get("close")) / close) - 1,
+        }
+        target_hit = any(decimal(item.get("high")) >= close * (1 + target_rate) for item in future)
+        stop_hit = any(decimal(item.get("low")) <= close * (1 + stop_rate) for item in future)
+        bucket = buckets.setdefault(
+            key,
+            {
+                "key": key,
+                "label": label,
+                "timeframe": timeframe,
+                "count": 0,
+                "win1": 0,
+                "win3": 0,
+                "win5": 0,
+                "return1Sum": 0.0,
+                "return3Sum": 0.0,
+                "return5Sum": 0.0,
+                "targetHitCount": 0,
+                "stopHitCount": 0,
+            },
+        )
+        bucket["count"] += 1
+        for horizon in (1, 3, 5):
+            value = future_returns[f"return{horizon}"]
+            bucket[f"return{horizon}Sum"] += value
+            if value > 0:
+                bucket[f"win{horizon}"] += 1
+        if target_hit:
+            bucket["targetHitCount"] += 1
+        if stop_hit:
+            bucket["stopHitCount"] += 1
+    return list(buckets.values())
+
+
+def summarize_study_patterns(analyses: list[dict[str, Any]]) -> dict[str, Any]:
+    combined: dict[str, dict[str, Any]] = {}
+    observation_count = 0
+    for analysis in analyses:
+        for raw in analysis.get("patterns") or []:
+            timeframe = str(raw.get("timeframe") or analysis.get("timeframe") or "")
+            key = f"{timeframe}:{raw.get('key')}"
+            bucket = combined.setdefault(
+                key,
+                {
+                    "key": raw.get("key"),
+                    "label": raw.get("label"),
+                    "timeframe": timeframe,
+                    "count": 0,
+                    "win1": 0,
+                    "win3": 0,
+                    "win5": 0,
+                    "return1Sum": 0.0,
+                    "return3Sum": 0.0,
+                    "return5Sum": 0.0,
+                    "targetHitCount": 0,
+                    "stopHitCount": 0,
+                    "symbolCount": 0,
+                },
+            )
+            count = int(raw.get("count") or 0)
+            observation_count += count
+            bucket["count"] += count
+            bucket["symbolCount"] += 1
+            for field in (
+                "win1",
+                "win3",
+                "win5",
+                "targetHitCount",
+                "stopHitCount",
+            ):
+                bucket[field] += int(raw.get(field) or 0)
+            for field in ("return1Sum", "return3Sum", "return5Sum"):
+                bucket[field] += decimal(raw.get(field))
+    catalog = []
+    for bucket in combined.values():
+        count = int(bucket.get("count") or 0)
+        if not count:
+            continue
+        bucket["winRate1"] = int(bucket.get("win1") or 0) / count
+        bucket["winRate3"] = int(bucket.get("win3") or 0) / count
+        bucket["winRate5"] = int(bucket.get("win5") or 0) / count
+        bucket["averageReturn1"] = decimal(bucket.get("return1Sum")) / count
+        bucket["averageReturn3"] = decimal(bucket.get("return3Sum")) / count
+        bucket["averageReturn5"] = decimal(bucket.get("return5Sum")) / count
+        bucket["targetHitRate"] = int(bucket.get("targetHitCount") or 0) / count
+        bucket["stopHitRate"] = int(bucket.get("stopHitCount") or 0) / count
+        bucket["confidenceScore"] = min(1.0, count / 50) * abs(decimal(bucket.get("averageReturn5")))
+        catalog.append(bucket)
+    reliable = [item for item in catalog if int(item.get("count") or 0) >= 20 and int(item.get("symbolCount") or 0) >= 3]
+    positive = sorted(
+        (item for item in reliable if decimal(item.get("averageReturn5")) > 0),
+        key=lambda item: (decimal(item.get("averageReturn5")) * math.sqrt(int(item.get("count") or 0)), decimal(item.get("winRate5"))),
+        reverse=True,
+    )[:12]
+    negative = sorted(
+        (item for item in reliable if decimal(item.get("averageReturn5")) < 0),
+        key=lambda item: (decimal(item.get("averageReturn5")) * math.sqrt(int(item.get("count") or 0)), -decimal(item.get("winRate5"))),
+    )[:12]
+    journal = []
+    for kind, rows in (("재현 후보", positive), ("실패 가설", negative)):
+        for item in rows[:6]:
+            journal.append(
+                {
+                    "kind": kind,
+                    "timeframe": item.get("timeframe"),
+                    "pattern": item.get("label"),
+                    "observationCount": item.get("count"),
+                    "symbolCount": item.get("symbolCount"),
+                    "winRate5": item.get("winRate5"),
+                    "averageReturn5": item.get("averageReturn5"),
+                    "targetHitRate": item.get("targetHitRate"),
+                    "stopHitRate": item.get("stopHitRate"),
+                    "note": (
+                        f"{item.get('timeframe')} {item.get('label')} 이후 5봉 평균 "
+                        f"{decimal(item.get('averageReturn5')) * 100:+.2f}% · 승률 {decimal(item.get('winRate5')) * 100:.1f}% "
+                        f"({int(item.get('count') or 0)}회, {int(item.get('symbolCount') or 0)}종목)"
+                    ),
+                }
+            )
+    return {
+        "observationCount": observation_count,
+        "uniquePatternCount": len(catalog),
+        "reliablePatternCount": len(reliable),
+        "positive": positive,
+        "negative": negative,
+        "journal": journal,
+    }
+
+
+def study_backtest(
+    candles: list[dict[str, Any]], timeframe: str, research_pass: int = 1
+) -> dict[str, Any]:
+    profiles = (
+        {
+            "name": "보수형",
+            "settings": {
+                "1d": {"target": 0.02, "stop": -0.01, "hold": 3},
+                "1w": {"target": 0.05, "stop": -0.03, "hold": 3},
+                "1mo": {"target": 0.10, "stop": -0.06, "hold": 2},
+            },
+        },
+        {
+            "name": "균형형",
+            "settings": {
+                "1d": {"target": 0.03, "stop": -0.02, "hold": 5},
+                "1w": {"target": 0.07, "stop": -0.04, "hold": 4},
+                "1mo": {"target": 0.15, "stop": -0.08, "hold": 3},
+            },
+        },
+        {
+            "name": "공격형",
+            "settings": {
+                "1d": {"target": 0.05, "stop": -0.03, "hold": 10},
+                "1w": {"target": 0.12, "stop": -0.06, "hold": 6},
+                "1mo": {"target": 0.25, "stop": -0.10, "hold": 5},
+            },
+        },
+    )
+    profile = profiles[max(0, min(2, int(research_pass)))]
+    settings = profile["settings"][timeframe]
+    if len(candles) < 12:
+        return {"tradeCount": 0, "winCount": 0, "winRate": 0.0, "averageReturn": 0.0, "returnSum": 0.0}
+    returns: list[float] = []
+    index = 10
+    while index < len(candles) - 1:
+        closes = [decimal(item.get("close")) for item in candles[: index + 1]]
+        entry = closes[-1]
+        short = sum(closes[-5:]) / min(5, len(closes))
+        long_values = closes[-min(20, len(closes)):]
+        long = sum(long_values) / len(long_values)
+        momentum = (entry / closes[-6]) - 1 if len(closes) >= 6 and closes[-6] else 0.0
+        volume_values = [decimal(item.get("volume")) for item in candles[max(0, index - 19): index + 1]]
+        average_volume = sum(volume_values) / len(volume_values) if volume_values else 0.0
+        volume_ratio = decimal(candles[index].get("volume")) / average_volume if average_volume else 1.0
+        signal = entry > long and short > long and 0 < momentum < 0.20 and volume_ratio >= 0.80
+        if not signal or entry <= 0:
+            index += 1
+            continue
+        exit_index = min(len(candles) - 1, index + int(settings["hold"]))
+        result = None
+        for future_index in range(index + 1, exit_index + 1):
+            future = candles[future_index]
+            if decimal(future.get("low")) <= entry * (1 + decimal(settings["stop"])):
+                result = decimal(settings["stop"])
+                exit_index = future_index
+                break
+            if decimal(future.get("high")) >= entry * (1 + decimal(settings["target"])):
+                result = decimal(settings["target"])
+                exit_index = future_index
+                break
+        if result is None:
+            result = (decimal(candles[exit_index].get("close")) / entry) - 1
+        returns.append(result)
+        index = exit_index + 1
+    wins = [value for value in returns if value > 0]
+    losses = [value for value in returns if value <= 0]
+    equity = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    for value in returns:
+        equity *= 1 + value
+        peak = max(peak, equity)
+        max_drawdown = min(max_drawdown, (equity / peak) - 1 if peak else 0.0)
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    return {
+        "tradeCount": len(returns),
+        "winCount": len(wins),
+        "winRate": len(wins) / len(returns) if returns else 0.0,
+        "averageReturn": sum(returns) / len(returns) if returns else 0.0,
+        "returnSum": sum(returns),
+        "profitFactor": gross_profit / gross_loss if gross_loss else (None if not gross_profit else 99.0),
+        "maxDrawdown": max_drawdown,
+        "targetRate": settings["target"],
+        "stopRate": settings["stop"],
+        "holdingBars": settings["hold"],
+        "researchPass": profile["name"],
+    }
+
+
+def summarize_off_market_backtests(analyses: list[dict[str, Any]]) -> dict[str, Any]:
+    timeframes: dict[str, dict[str, Any]] = {}
+    total_trades = 0
+    total_wins = 0
+    total_return = 0.0
+    for analysis in analyses:
+        timeframe = str(analysis.get("timeframe") or "")
+        backtest = analysis.get("backtest") or {}
+        trades = int(backtest.get("tradeCount") or 0)
+        wins = int(backtest.get("winCount") or 0)
+        return_sum = decimal(backtest.get("returnSum"))
+        bucket = timeframes.setdefault(timeframe, {"tradeCount": 0, "winCount": 0, "returnSum": 0.0, "analysisCount": 0})
+        bucket["tradeCount"] += trades
+        bucket["winCount"] += wins
+        bucket["returnSum"] += return_sum
+        bucket["analysisCount"] += 1
+        total_trades += trades
+        total_wins += wins
+        total_return += return_sum
+    for bucket in timeframes.values():
+        trades = int(bucket.get("tradeCount") or 0)
+        bucket["winRate"] = int(bucket.get("winCount") or 0) / trades if trades else 0.0
+        bucket["averageReturn"] = decimal(bucket.get("returnSum")) / trades if trades else 0.0
+    return {
+        "analysisCount": len(analyses),
+        "tradeCount": total_trades,
+        "winCount": total_wins,
+        "winRate": total_wins / total_trades if total_trades else 0.0,
+        "averageReturn": total_return / total_trades if total_trades else 0.0,
+        "timeframes": timeframes,
+    }
+
+
+def apply_off_market_backtest_influence(model: dict[str, Any], summary: dict[str, Any], study_id: str) -> dict[str, Any]:
+    refreshed = normalize_global_score_model(model)
+    total_trades = int(summary.get("tradeCount") or 0)
+    timeframe_results = summary.get("timeframes") or {}
+    positive = sum(
+        1 for item in timeframe_results.values()
+        if int(item.get("tradeCount") or 0) >= 5
+        and decimal(item.get("winRate")) >= 0.55
+        and decimal(item.get("averageReturn")) > 0
+    )
+    negative = sum(
+        1 for item in timeframe_results.values()
+        if int(item.get("tradeCount") or 0) >= 5
+        and (decimal(item.get("winRate")) < 0.45 or decimal(item.get("averageReturn")) < 0)
+    )
+    momentum_step = 0.0
+    if total_trades >= 20 and positive >= 2:
+        momentum_step = 0.01
+    elif total_trades >= 20 and negative >= 2:
+        momentum_step = -0.01
+    before = decimal((refreshed.get("effectiveWeights") or {}).get("momentum") or 1.0)
+    if momentum_step:
+        refreshed.setdefault("weights", {})["momentum"] = clamp(
+            decimal((refreshed.get("weights") or {}).get("momentum") or 1.0) + momentum_step,
+            GLOBAL_SCORE_WEIGHT_MIN,
+            GLOBAL_SCORE_WEIGHT_MAX,
+            1.0,
+        )
+        refresh_global_score_model(refreshed)
+    after = decimal((refreshed.get("effectiveWeights") or {}).get("momentum") or 1.0)
+    influence = {
+        "applied": bool(momentum_step),
+        "eligible": total_trades >= 20,
+        "tradeCount": total_trades,
+        "positiveTimeframes": positive,
+        "negativeTimeframes": negative,
+        "feature": "momentum",
+        "label": GLOBAL_SCORE_FEATURES["momentum"]["label"],
+        "before": before,
+        "after": after,
+        "delta": after - before,
+        "capPerStudy": 0.01,
+        "reason": "일·주·월봉 중 두 개 이상에서 같은 방향이 반복될 때만 저강도로 반영",
+    }
+    if momentum_step:
+        revision = {
+            "id": hashlib.sha1(f"offline:{study_id}".encode("utf-8")).hexdigest()[:12],
+            "tradeKey": study_id,
+            "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "result": "휴장 백테스트",
+            "summary": f"한국·미국 일·주·월봉 {total_trades}회 검증: 당일 추세 기준 {'강화' if momentum_step > 0 else '약화'} ({before:.3f}→{after:.3f})",
+            "changes": [{"key": "momentum", "label": GLOBAL_SCORE_FEATURES["momentum"]["label"], "before": before, "after": after, "delta": after - before, "direction": "강화" if momentum_step > 0 else "약화"}],
+            "scope": "OFF_MARKET_BACKTEST",
+            "sampleCount": int(refreshed.get("sampleCount") or 0),
+        }
+        refreshed["revisionCount"] = int(refreshed.get("revisionCount") or 0) + 1
+        refreshed["offlineRevisionCount"] = int(refreshed.get("offlineRevisionCount") or 0) + 1
+        refreshed.setdefault("revisions", []).append(revision)
+        refreshed["revisions"] = refreshed.get("revisions", [])[-50:]
+        refreshed["lastChange"] = revision
+        refreshed["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    model.clear()
+    model.update(refreshed)
+    return influence
+
+
+def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
+    started = now_kst()
+    study_id = f"OFFLINE-{started.strftime('%Y-%m-%d')}"
+    research_pass = started.toordinal() % 3
+    research_pass_name = ("보수형", "균형형", "공격형")[research_pass]
+    analyses: list[dict[str, Any]] = []
+    errors: list[str] = []
+    universe_count = 0
+    for market in ("KR", "US"):
+        try:
+            universe = study_universe(env, market)
+        except Exception as exc:
+            errors.append(f"{market} 유니버스: {str(exc)[:180]}")
+            continue
+        universe_count += len(universe)
+        for stock in universe:
+            try:
+                daily = study_daily_candles(env, str(stock.get("symbol") or ""))
+                for timeframe in ("1d", "1w", "1mo"):
+                    candles = aggregate_study_candles(daily, timeframe)
+                    analyses.append(
+                        {
+                            "market": market,
+                            "symbol": stock.get("symbol"),
+                            "name": stock.get("name"),
+                            "sourceHorizons": stock.get("sourceHorizons"),
+                            "timeframe": timeframe,
+                            "technical": study_technical_snapshot(candles),
+                            "backtest": study_backtest(candles, timeframe, research_pass),
+                            "patterns": study_pattern_observations(candles, timeframe),
+                        }
+                    )
+            except Exception as exc:
+                errors.append(f"{market} {stock.get('symbol')}: {str(exc)[:180]}")
+            time.sleep(0.23)
+    summary = summarize_off_market_backtests(analyses)
+    pattern_summary = summarize_study_patterns(analyses)
+    summary["patternObservationCount"] = int(pattern_summary.get("observationCount") or 0)
+    summary["reliablePatternCount"] = int(pattern_summary.get("reliablePatternCount") or 0)
+    for analysis in analyses:
+        patterns = sorted(
+            analysis.get("patterns") or [],
+            key=lambda item: int(item.get("count") or 0),
+            reverse=True,
+        )
+        analysis["patternObservationCount"] = sum(int(item.get("count") or 0) for item in patterns)
+        analysis["patterns"] = patterns[:8]
+    with LEARNING_LOCK:
+        state = load_learning_state_unlocked()
+        model = state.setdefault("globalScoreModel", default_global_score_model())
+        influence = apply_off_market_backtest_influence(model, summary, study_id)
+        completed = now_kst()
+        study = {
+            "id": study_id,
+            "status": "completed" if analyses else "error",
+            "lastRunDate": started.strftime("%Y-%m-%d"),
+            "startedAt": started.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "completedAt": completed.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "markets": ["KR", "US"],
+            "timeframes": ["1d", "1w", "1mo"],
+            "researchPass": research_pass_name,
+            "universeCount": universe_count,
+            "summary": summary,
+            "patternResearch": pattern_summary,
+            "journal": pattern_summary.get("journal") or [],
+            "influence": influence,
+            "analyses": analyses[-240:],
+            "errors": errors[-12:],
+            "nextRun": "다음 한국·미국 동시 휴장 구간의 새 거래일",
+        }
+        state["globalScoreModel"] = model
+        state["offlineStudy"] = study
+        history = list(state.get("offlineStudyHistory") or [])
+        history.append(
+            {
+                "id": study.get("id"),
+                "status": study.get("status"),
+                "completedAt": study.get("completedAt"),
+                "researchPass": study.get("researchPass"),
+                "universeCount": study.get("universeCount"),
+                "summary": study.get("summary"),
+                "journal": (study.get("journal") or [])[:6],
+                "influence": study.get("influence"),
+            }
+        )
+        state["offlineStudyHistory"] = history[-30:]
+        state["updatedAt"] = completed.strftime("%Y-%m-%dT%H:%M:%S%z")
+        save_learning_state_unlocked(state)
+    return study
+
+
+def off_market_study_loop() -> None:
+    time.sleep(15)
+    while True:
+        try:
+            env = load_env()
+            active_market, _ = market_schedule(env)
+            today = now_kst().strftime("%Y-%m-%d")
+            with LEARNING_LOCK:
+                state = load_learning_state_unlocked()
+                last_run_date = str((state.get("offlineStudy") or {}).get("lastRunDate") or "")
+            if active_market is None and last_run_date != today:
+                run_off_market_study(env)
+        except Exception as exc:
+            try:
+                with LEARNING_LOCK:
+                    state = load_learning_state_unlocked()
+                    study = dict(state.get("offlineStudy") or {})
+                    study.update(
+                        {
+                            "status": "error",
+                            "lastAttemptAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                            "lastError": str(exc)[:500],
+                        }
+                    )
+                    state["offlineStudy"] = study
+                    save_learning_state_unlocked(state)
+            except OSError:
+                pass
+        time.sleep(OFF_MARKET_STUDY_POLL_SECONDS)
 
 
 def analysis_loop() -> None:
@@ -2417,7 +3065,7 @@ def automatic_journal_note(
         learning_line = (
             f"학습 적용: 최소 {int(learning_policy.get('requiredScore') or LEARNING_BASE_ENTRY_SCORE)}점 · "
             f"기본 비중의 {decimal(learning_policy.get('allocationScale') or 1) * 100:.0f}% · "
-            f"{clean_text(learning_policy.get('reason'), '종목별 학습 규칙 통과', 140)}"
+            f"{clean_text(learning_policy.get('reason'), '전체 종목 공용 학습 기준 통과', 140)}"
         )
 
     if not is_closed:
@@ -2597,10 +3245,330 @@ def build_daily_mistake_note(
     }
 
 
+def default_global_score_model() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "scope": "GLOBAL_ALL_SYMBOLS",
+        "sampleCount": 0,
+        "winCount": 0,
+        "lossCount": 0,
+        "returnSum": 0.0,
+        "entryThreshold": LEARNING_BASE_ENTRY_SCORE,
+        "weights": {key: 1.0 for key in GLOBAL_SCORE_FEATURES},
+        "effectiveWeights": {key: 1.0 for key in GLOBAL_SCORE_FEATURES},
+        "featureStats": {
+            key: {
+                "count": 0,
+                "winCount": 0,
+                "lossCount": 0,
+                "winnerValueSum": 0.0,
+                "loserValueSum": 0.0,
+                "outcomeWeightedSum": 0.0,
+            }
+            for key in GLOBAL_SCORE_FEATURES
+        },
+        "revisionCount": 0,
+        "revisions": [],
+        "lastChange": None,
+        "updatedAt": None,
+    }
+
+
+def refresh_global_score_model(model: dict[str, Any]) -> dict[str, Any]:
+    samples = max(0, int(model.get("sampleCount") or 0))
+    wins = max(0, int(model.get("winCount") or 0))
+    raw_weights = model.setdefault("weights", {})
+    stats_by_feature = model.setdefault("featureStats", {})
+    confidence = 0.0 if samples <= 0 else min(1.0, max(0.25, samples / 8))
+    effective_weights: dict[str, float] = {}
+    feature_view: list[dict[str, Any]] = []
+    for key, config in GLOBAL_SCORE_FEATURES.items():
+        weight = clamp(
+            raw_weights.get(key),
+            GLOBAL_SCORE_WEIGHT_MIN,
+            GLOBAL_SCORE_WEIGHT_MAX,
+            1.0,
+        )
+        raw_weights[key] = weight
+        effective = 1.0 + ((weight - 1.0) * confidence)
+        effective_weights[key] = effective
+        stats = stats_by_feature.setdefault(
+            key,
+            {
+                "count": 0,
+                "winCount": 0,
+                "lossCount": 0,
+                "winnerValueSum": 0.0,
+                "loserValueSum": 0.0,
+                "outcomeWeightedSum": 0.0,
+            },
+        )
+        feature_wins = max(0, int(stats.get("winCount") or 0))
+        feature_losses = max(0, int(stats.get("lossCount") or 0))
+        winner_average = decimal(stats.get("winnerValueSum")) / feature_wins if feature_wins else 0.0
+        loser_average = decimal(stats.get("loserValueSum")) / feature_losses if feature_losses else 0.0
+        stats["winnerAverage"] = winner_average
+        stats["loserAverage"] = loser_average
+        stats["edge"] = winner_average - loser_average if feature_wins and feature_losses else 0.0
+        feature_view.append(
+            {
+                "key": key,
+                "label": config["label"],
+                "maxPoints": config["maxPoints"],
+                "weight": weight,
+                "effectiveWeight": effective,
+                "winnerAverage": winner_average,
+                "loserAverage": loser_average,
+                "edge": stats["edge"],
+                "sampleCount": int(stats.get("count") or 0),
+            }
+        )
+    model["effectiveWeights"] = effective_weights
+    win_rate = wins / samples if samples else 0.0
+    average_return = decimal(model.get("returnSum")) / samples if samples else 0.0
+    if samples < 4:
+        threshold = LEARNING_BASE_ENTRY_SCORE
+        phase = "초기 관찰"
+    elif win_rate < 0.35 or average_return < -0.004:
+        threshold = 83
+        phase = "전역 기준 강화"
+    elif win_rate < 0.50 or average_return < 0:
+        threshold = 82
+        phase = "손실 조건 재검증"
+    elif win_rate >= 0.65 and average_return >= 0.002:
+        threshold = 78
+        phase = "우세 조건 확장 검증"
+    else:
+        threshold = LEARNING_BASE_ENTRY_SCORE
+        phase = "균형 검증"
+    feature_view.sort(key=lambda item: decimal(item.get("effectiveWeight")), reverse=True)
+    model.update(
+        {
+            "scope": "GLOBAL_ALL_SYMBOLS",
+            "sampleCount": samples,
+            "winCount": wins,
+            "lossCount": max(0, int(model.get("lossCount") or 0)),
+            "winRate": win_rate,
+            "averageReturn": average_return,
+            "confidence": confidence,
+            "entryThreshold": threshold,
+            "phase": phase,
+            "features": feature_view,
+            "strongestFeature": feature_view[0] if feature_view else None,
+            "weakestFeature": feature_view[-1] if feature_view else None,
+            "globalRule": f"모든 종목에 전역 가중치 적용 · {threshold}점 이상 진입",
+        }
+    )
+    return model
+
+
+def normalize_global_score_model(raw: Any) -> dict[str, Any]:
+    base = default_global_score_model()
+    if isinstance(raw, dict):
+        for key in (
+            "version",
+            "scope",
+            "sampleCount",
+            "winCount",
+            "lossCount",
+            "returnSum",
+            "entryThreshold",
+            "revisionCount",
+            "offlineRevisionCount",
+            "lastChange",
+            "updatedAt",
+        ):
+            if key in raw:
+                base[key] = raw.get(key)
+        if isinstance(raw.get("weights"), dict):
+            base["weights"].update(raw.get("weights") or {})
+        if isinstance(raw.get("featureStats"), dict):
+            for key, stats in (raw.get("featureStats") or {}).items():
+                if key in base["featureStats"] and isinstance(stats, dict):
+                    base["featureStats"][key].update(stats)
+        base["revisions"] = list(raw.get("revisions") or [])[-50:]
+    return refresh_global_score_model(base)
+
+
+def global_score_audit(
+    components: dict[str, Any],
+    model: dict[str, Any],
+) -> dict[str, Any]:
+    refreshed = refresh_global_score_model(model)
+    effective = refreshed.get("effectiveWeights") or {}
+    numerator = 0.0
+    denominator = 0.0
+    feature_values: dict[str, float] = {}
+    component_points: dict[str, float] = {}
+    for key, config in GLOBAL_SCORE_FEATURES.items():
+        max_points = decimal(config.get("maxPoints"))
+        points = clamp(components.get(key), 0, max_points, 0)
+        weight = clamp(effective.get(key), 0.5, 1.5, 1.0)
+        numerator += points * weight
+        denominator += max_points * weight
+        component_points[key] = points
+        feature_values[key] = points / max_points if max_points else 0.0
+    base_score = round(sum(component_points.values()), 1)
+    adaptive_score = round(100 * numerator / denominator, 1) if denominator else base_score
+    return {
+        "scope": "GLOBAL_ALL_SYMBOLS",
+        "baseScore": base_score,
+        "adaptiveScore": adaptive_score,
+        "delta": round(adaptive_score - base_score, 1),
+        "entryThreshold": int(refreshed.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE),
+        "sampleCount": int(refreshed.get("sampleCount") or 0),
+        "confidence": decimal(refreshed.get("confidence")),
+        "components": component_points,
+        "features": feature_values,
+        "weights": dict(effective),
+        "phase": refreshed.get("phase"),
+    }
+
+
+def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
+    components = item.get("scoreComponents") if isinstance(item.get("scoreComponents"), dict) else {}
+    audit = global_score_audit(components, model)
+    score = decimal(audit.get("adaptiveScore"))
+    threshold = int(audit.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE)
+    rate = decimal(item.get("dailyRate"))
+    if rate >= 0.12 or rate <= -0.08:
+        verdict, reason = "진입 불가", f"급등락 추격 위험 · 전역 학습 평가 {score:.1f}점"
+    elif score >= threshold:
+        verdict, reason = "정밀 분석", f"전역 학습 {threshold}점 통과 · 기본 {audit['baseScore']:.1f} → {score:.1f}점"
+    elif score >= max(60, threshold - 20):
+        verdict, reason = "관찰", f"전역 기준 {threshold}점 미달 · 기본 {audit['baseScore']:.1f} → {score:.1f}점"
+    else:
+        verdict, reason = "진입 보류", f"전역 전략 기준 미달 · 기본 {audit['baseScore']:.1f} → {score:.1f}점"
+    item.update(
+        {
+            "baseScore": audit.get("baseScore"),
+            "score": score,
+            "scoreFeatures": audit.get("features"),
+            "scoreAudit": audit,
+            "verdict": verdict,
+            "reason": reason,
+        }
+    )
+    return item
+
+
+def apply_global_scores(results: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    model = normalize_global_score_model(state.get("globalScoreModel"))
+    for item in results:
+        apply_global_score_to_candidate(item, model)
+    return results
+
+
+def update_global_score_model(
+    model: dict[str, Any],
+    entry_order: dict[str, Any],
+    return_rate: float,
+    violation: dict[str, Any] | None,
+    trade_key: str,
+) -> dict[str, Any] | None:
+    features = entry_order.get("scoreFeatures")
+    if not isinstance(features, dict) or not any(key in features for key in GLOBAL_SCORE_FEATURES):
+        return None
+    refreshed = normalize_global_score_model(model)
+    before_effective = dict(refreshed.get("effectiveWeights") or {})
+    before_threshold = int(refreshed.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE)
+    outcome = 1.0 if return_rate > 0 else -1.0
+    if violation:
+        outcome = -1.0
+    strength = clamp(abs(return_rate) / max(PAPER_TARGET_RATE, 0.0001), 0.5, 1.25, 0.5)
+    weights = refreshed.setdefault("weights", {})
+    stats_by_feature = refreshed.setdefault("featureStats", {})
+    for key in GLOBAL_SCORE_FEATURES:
+        if key not in features:
+            continue
+        value = clamp(features.get(key), 0, 1, 0.5)
+        step = clamp(
+            GLOBAL_SCORE_LEARNING_RATE * outcome * strength * (value - 0.5),
+            -GLOBAL_SCORE_MAX_TRADE_STEP,
+            GLOBAL_SCORE_MAX_TRADE_STEP,
+            0,
+        )
+        weights[key] = clamp(
+            decimal(weights.get(key) or 1.0) + step,
+            GLOBAL_SCORE_WEIGHT_MIN,
+            GLOBAL_SCORE_WEIGHT_MAX,
+            1.0,
+        )
+        stats = stats_by_feature.setdefault(key, {})
+        stats["count"] = int(stats.get("count") or 0) + 1
+        stats["outcomeWeightedSum"] = decimal(stats.get("outcomeWeightedSum")) + (outcome * value)
+        if outcome > 0:
+            stats["winCount"] = int(stats.get("winCount") or 0) + 1
+            stats["winnerValueSum"] = decimal(stats.get("winnerValueSum")) + value
+        else:
+            stats["lossCount"] = int(stats.get("lossCount") or 0) + 1
+            stats["loserValueSum"] = decimal(stats.get("loserValueSum")) + value
+
+    refreshed["sampleCount"] = int(refreshed.get("sampleCount") or 0) + 1
+    if outcome > 0:
+        refreshed["winCount"] = int(refreshed.get("winCount") or 0) + 1
+    else:
+        refreshed["lossCount"] = int(refreshed.get("lossCount") or 0) + 1
+    refreshed["returnSum"] = decimal(refreshed.get("returnSum")) + return_rate
+    refresh_global_score_model(refreshed)
+    after_effective = refreshed.get("effectiveWeights") or {}
+    changes = []
+    for key, config in GLOBAL_SCORE_FEATURES.items():
+        before = decimal(before_effective.get(key) or 1.0)
+        after = decimal(after_effective.get(key) or 1.0)
+        changes.append(
+            {
+                "key": key,
+                "label": config.get("label"),
+                "before": before,
+                "after": after,
+                "delta": after - before,
+                "direction": "강화" if after > before else ("약화" if after < before else "유지"),
+            }
+        )
+    changes.sort(key=lambda item: abs(decimal(item.get("delta"))), reverse=True)
+    meaningful = [item for item in changes if abs(decimal(item.get("delta"))) >= 0.0005]
+    main_change = meaningful[0] if meaningful else changes[0]
+    symbol_name = str(entry_order.get("name") or entry_order.get("symbol") or "거래")
+    result_label = "수익 재현" if outcome > 0 else ("규칙 오답" if violation else "손실 학습")
+    summary = (
+        f"{symbol_name} {result_label}: {main_change['label']} 기준을 {main_change['direction']} "
+        f"({main_change['before']:.3f}→{main_change['after']:.3f})"
+    )
+    revision = {
+        "id": hashlib.sha1(f"global:{trade_key}".encode("utf-8")).hexdigest()[:12],
+        "tradeKey": trade_key,
+        "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "market": entry_order.get("market"),
+        "symbol": entry_order.get("symbol"),
+        "name": symbol_name,
+        "result": result_label,
+        "returnRate": return_rate,
+        "summary": summary,
+        "changes": changes,
+        "thresholdBefore": before_threshold,
+        "thresholdAfter": int(refreshed.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE),
+        "sampleCount": int(refreshed.get("sampleCount") or 0),
+        "scope": "GLOBAL_ALL_SYMBOLS",
+    }
+    refreshed["revisionCount"] = int(refreshed.get("revisionCount") or 0) + 1
+    refreshed.setdefault("revisions", []).append(revision)
+    refreshed["revisions"] = refreshed.get("revisions", [])[-50:]
+    refreshed["lastChange"] = revision
+    refreshed["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    model.clear()
+    model.update(refreshed)
+    return revision
+
+
 def default_learning_state() -> dict[str, Any]:
     return {
         "schemaVersion": LEARNING_SCHEMA_VERSION,
         "processedTrades": [],
+        "scoreModelProcessedTrades": [],
+        "globalScoreModel": default_global_score_model(),
+        "offlineStudy": {},
+        "offlineStudyHistory": [],
         "symbols": {},
         "memories": [],
         "updatedAt": None,
@@ -2619,6 +3587,10 @@ def load_learning_state_unlocked() -> dict[str, Any]:
     return {
         "schemaVersion": LEARNING_SCHEMA_VERSION,
         "processedTrades": list(raw.get("processedTrades") or []),
+        "scoreModelProcessedTrades": list(raw.get("scoreModelProcessedTrades") or []),
+        "globalScoreModel": normalize_global_score_model(raw.get("globalScoreModel")),
+        "offlineStudy": dict(raw.get("offlineStudy") or {}),
+        "offlineStudyHistory": list(raw.get("offlineStudyHistory") or [])[-30:],
         "symbols": dict(raw.get("symbols") or {}),
         "memories": list(raw.get("memories") or []),
         "updatedAt": raw.get("updatedAt"),
@@ -2750,20 +3722,20 @@ def learning_observation(
     if violation:
         return (
             f"{name}은 손절선보다 {decimal(violation.get('excessRate')) * 100:.2f}%p 불리하게 청산돼 "
-            "진입 점수와 비중을 즉시 강화했습니다."
+            "전체 종목 공용 점수에서 과신한 조건을 낮추는 오답 표본으로 반영했습니다."
         )
     if return_rate > 0:
-        return f"{name}의 수익 조건을 기억하되 기준을 자동 완화하지 않고 같은 조건의 재현성을 확인합니다."
+        return f"{name}의 수익 조건을 일반화해 다른 종목에서도 같은 차트·거래량 조건이 재현되는지 확인합니다."
     if int(profile.get("consecutiveLosses") or 0) >= 2:
-        return f"{name}에서 연속 손실이 확인돼 재진입 대기와 비중 축소를 즉시 적용했습니다."
-    return f"{name}의 손실은 계획 범위에서 끝났지만 다음 진입의 추세 지속성을 더 엄격히 확인합니다."
+        return f"{name}의 연속 손실을 종목 제한이 아닌 전체 진입 관점의 재검증 표본으로 저장했습니다."
+    return f"{name}의 손실 조건을 일반화해 다음 모든 종목에서 같은 추세·거래량 조합을 더 의심합니다."
 
 
 def sync_learning_brain(
     orders: list[dict[str, Any]],
     results_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Absorb every newly closed PAPER trade and persist symbol-specific risk memory."""
+    """Absorb every closed PAPER trade into both the global brain and case archive."""
     results_by_symbol = results_by_symbol or {}
     ledger = paper_trade_ledger(orders, results_by_symbol)
     orders_by_id = {str(item.get("id") or ""): item for item in orders if item.get("id")}
@@ -2771,6 +3743,8 @@ def sync_learning_brain(
     with LEARNING_LOCK:
         state = load_learning_state_unlocked()
         processed = set(str(item) for item in state.get("processedTrades") or [])
+        score_processed = set(str(item) for item in state.get("scoreModelProcessedTrades") or [])
+        global_model = state.setdefault("globalScoreModel", default_global_score_model())
         changed = False
         closed_trades = sorted(
             (item for item in ledger if item.get("status") == "CLOSED"),
@@ -2780,7 +3754,7 @@ def sync_learning_brain(
             entry_id = str(trade.get("entryOrderId") or "")
             exit_id = str(trade.get("exitOrderId") or "")
             trade_key = f"{entry_id}:{exit_id}"
-            if not entry_id or trade_key in processed:
+            if not entry_id or (trade_key in processed and trade_key in score_processed):
                 continue
             entry_order = orders_by_id.get(entry_id) or {}
             exit_order = orders_by_id.get(exit_id) or {}
@@ -2813,6 +3787,13 @@ def sync_learning_brain(
                 },
                 stop_rate,
             )
+            if trade_key not in score_processed:
+                update_global_score_model(global_model, entry_order, return_rate, violation, trade_key)
+                state.setdefault("scoreModelProcessedTrades", []).append(trade_key)
+                score_processed.add(trade_key)
+                changed = True
+            if trade_key in processed:
+                continue
             profile = state.setdefault("symbols", {}).setdefault(
                 symbol,
                 {
@@ -2881,7 +3862,8 @@ def sync_learning_brain(
                 "returnRate": return_rate,
                 "profit": profit,
                 "observation": learning_observation(name, return_rate, violation, profile),
-                "appliedRule": profile.get("primaryRule"),
+                "appliedRule": "전체 종목 공용 점수 모델의 근거 사례로 반영",
+                "scope": "CASE_ARCHIVE",
                 "requiredScore": profile.get("requiredScore"),
                 "allocationScale": profile.get("allocationScale"),
                 "appliedImmediately": True,
@@ -2896,6 +3878,7 @@ def sync_learning_brain(
             refresh_symbol_learning(profile)
             if before != json.dumps(profile, ensure_ascii=False, sort_keys=True):
                 changed = True
+        state["globalScoreModel"] = normalize_global_score_model(global_model)
         if changed:
             state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             save_learning_state_unlocked(state)
@@ -2903,20 +3886,22 @@ def sync_learning_brain(
 
 
 def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any]) -> dict[str, Any]:
-    profile = (state.get("symbols") or {}).get(symbol) or {}
-    required_score = int(profile.get("requiredScore") or LEARNING_BASE_ENTRY_SCORE)
-    allocation_scale = clamp(profile.get("allocationScale"), 0.40, 1.0, 1.0)
-    cooldown_remaining = learning_time_remaining(profile.get("cooldownUntil"))
+    model = normalize_global_score_model(state.get("globalScoreModel"))
+    required_score = int(model.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE)
+    allocation_scale = 1.0
+    cooldown_remaining = 0
     candidate_score = decimal(score)
-    allowed = cooldown_remaining <= 0 and candidate_score >= required_score
-    if cooldown_remaining > 0:
-        reason = f"종목 학습 규칙 · 재진입 {max(1, (cooldown_remaining + 59) // 60)}분 대기"
-    elif candidate_score < required_score:
-        reason = f"종목 학습 규칙 · {required_score}점 필요 (현재 {candidate_score:.0f}점)"
-    elif profile:
-        reason = f"종목 학습 통과 · {required_score}점 기준 · 비중 {allocation_scale * 100:.0f}% 적용"
+    allowed = candidate_score >= required_score
+    if candidate_score < required_score:
+        reason = f"전역 학습 기준 · {required_score}점 필요 (현재 {candidate_score:.1f}점)"
     else:
-        reason = f"신규 종목 · 기본 {LEARNING_BASE_ENTRY_SCORE}점 기준"
+        reason = f"전체 거래 공용 뇌 통과 · {required_score}점 기준 · 모든 종목 동일 적용"
+    strongest = model.get("strongestFeature") or {}
+    weakest = model.get("weakestFeature") or {}
+    traits = [
+        f"강화 {strongest.get('label') or '표본 수집'}",
+        f"재검증 {weakest.get('label') or '표본 수집'}",
+    ]
     return {
         "symbol": symbol,
         "allowed": allowed,
@@ -2925,29 +3910,21 @@ def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any]) -> dic
         "candidateScore": candidate_score,
         "allocationScale": allocation_scale,
         "cooldownRemainingSec": cooldown_remaining,
-        "status": profile.get("status") or "신규 학습",
-        "traits": profile.get("traits") or ["표본 수집"],
+        "status": model.get("phase") or "초기 관찰",
+        "traits": traits,
+        "scope": "GLOBAL_ALL_SYMBOLS",
+        "globalSampleCount": int(model.get("sampleCount") or 0),
         "appliedImmediately": True,
     }
 
 
 def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
     symbols: list[dict[str, Any]] = []
-    active_rules = 0
-    cooldown_count = 0
     for raw in (state.get("symbols") or {}).values():
         profile = dict(raw)
         remaining = learning_time_remaining(profile.get("cooldownUntil"))
         profile["cooldownActive"] = remaining > 0
         profile["cooldownRemainingSec"] = remaining
-        if remaining > 0:
-            cooldown_count += 1
-        if (
-            remaining > 0
-            or int(profile.get("requiredScore") or LEARNING_BASE_ENTRY_SCORE) > LEARNING_BASE_ENTRY_SCORE
-            or decimal(profile.get("allocationScale") or 1) < 1
-        ):
-            active_rules += 1
         symbols.append(profile)
     risk_order = {"critical": 3, "caution": 2, "watch": 1, "stable": 0}
     symbols.sort(
@@ -2955,50 +3932,54 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
         reverse=True,
     )
     memories = list(reversed(state.get("memories") or []))
+    global_model = normalize_global_score_model(state.get("globalScoreModel"))
+    global_view = json.loads(json.dumps(global_model, ensure_ascii=False))
+    global_view["revisions"] = list(reversed(global_model.get("revisions") or []))[:40]
+    offline_study = state.get("offlineStudy") if isinstance(state.get("offlineStudy"), dict) else {}
     return {
         "updatedAt": state.get("updatedAt"),
         "summary": {
             "learnedTradeCount": len(state.get("processedTrades") or []),
+            "scoreSampleCount": int(global_model.get("sampleCount") or 0),
             "symbolCount": len(symbols),
             "memoryCount": len(memories),
-            "activeRuleCount": active_rules,
-            "cooldownCount": cooldown_count,
+            "activeRuleCount": int(global_model.get("revisionCount") or 0),
+            "cooldownCount": 0,
             "mode": "PAPER_ONLY",
             "immediateApply": True,
-            "coverage": "ALL_NEW_ENTRIES",
+            "coverage": "GLOBAL_ALL_SYMBOLS",
+            "scope": "GLOBAL_ALL_SYMBOLS",
         },
+        "global": global_view,
+        "offlineStudy": offline_study,
+        "offlineStudyHistory": list(reversed(state.get("offlineStudyHistory") or []))[:30],
         "symbols": symbols,
         "memories": memories[:40],
     }
 
 
 def apply_brain_to_mistake_note(note: dict[str, Any], brain: dict[str, Any]) -> None:
-    profiles = {str(item.get("symbol") or ""): item for item in brain.get("symbols") or []}
+    model = brain.get("global") or {}
+    last_change = model.get("lastChange") or {}
     applied_rules = []
-    for symbol in note.get("symbols") or []:
-        profile = profiles.get(str(symbol))
-        if not profile:
-            continue
-        if (
-            int(profile.get("requiredScore") or LEARNING_BASE_ENTRY_SCORE) <= LEARNING_BASE_ENTRY_SCORE
-            and decimal(profile.get("allocationScale") or 1) >= 1
-            and not profile.get("cooldownActive")
-        ):
-            continue
+    if int(model.get("sampleCount") or 0) > 0:
         applied_rules.append(
             {
-                "symbol": symbol,
-                "name": profile.get("name") or symbol,
-                "rule": profile.get("primaryRule"),
-                "requiredScore": profile.get("requiredScore"),
-                "allocationScale": profile.get("allocationScale"),
-                "cooldownActive": profile.get("cooldownActive"),
+                "scope": "GLOBAL_ALL_SYMBOLS",
+                "name": "전체 투자 공용 뇌",
+                "rule": model.get("globalRule"),
+                "requiredScore": model.get("entryThreshold"),
+                "sampleCount": model.get("sampleCount"),
+                "lastChange": last_change.get("summary"),
             }
         )
     note["appliedRules"] = applied_rules
     note["appliedImmediately"] = bool(applied_rules)
     if applied_rules:
-        note["nextRule"] = " / ".join(f"{item['name']}: {item['rule']}" for item in applied_rules[:3])
+        note["nextRule"] = (
+            f"전체 종목 공용: {model.get('globalRule')}"
+            + (f" · 최근 수정 {last_change.get('summary')}" if last_change.get("summary") else "")
+        )
 
 
 def build_trading_journal() -> dict[str, Any]:
@@ -3063,6 +4044,8 @@ def build_trading_journal() -> dict[str, Any]:
         entry = {
                 "id": order_id,
                 "createdAt": str(trade.get("closedAt") or trade.get("openedAt") or ""),
+                "openedAt": str(trade.get("openedAt") or ""),
+                "closedAt": str(trade.get("closedAt") or ""),
                 "tradingDay": paper_trading_day(trade.get("closedAt") or trade.get("openedAt")),
                 "market": trade.get("market"),
                 "symbol": symbol,
@@ -3085,6 +4068,9 @@ def build_trading_journal() -> dict[str, Any]:
                 "exitOrderId": exit_order_id,
                 "holdingTime": journal_holding_time(trade.get("openedAt"), trade.get("closedAt")),
                 "entryScore": decimal(entry_order.get("entryScore")),
+                "baseEntryScore": decimal(entry_order.get("baseEntryScore")),
+                "scoreFeatures": entry_order.get("scoreFeatures") if isinstance(entry_order.get("scoreFeatures"), dict) else None,
+                "scoreAudit": entry_order.get("scoreAudit") if isinstance(entry_order.get("scoreAudit"), dict) else None,
                 "allocationRate": decimal(entry_order.get("allocationRate")),
                 "learningPolicy": entry_order.get("learningPolicy") if isinstance(entry_order.get("learningPolicy"), dict) else None,
                 "memo": automatic_note["memo"] if use_automatic else user_memo or automatic_note["memo"],
@@ -3358,5 +4344,6 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "0.0.0.0")
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
+    threading.Thread(target=off_market_study_loop, daemon=True, name="off-market-study-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()

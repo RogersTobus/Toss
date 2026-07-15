@@ -606,21 +606,30 @@ function formatTradePrice(entry) {
   return won.format(price);
 }
 
-function createJournalRow(entry, compact = false) {
+function createJournalRow(entry, compact = false, category = null) {
   const row = document.createElement("button");
   row.type = "button";
   const violation = entry.ruleViolation || null;
-  row.className = `journal-row ${entry.side === "SELL" ? "sell" : "buy"}${compact ? " compact" : ""}${violation ? " has-violation" : ""}`;
+  const view = category || (entry.status === "청산" ? "SELL_DONE" : "HOLDING");
+  const isSellView = view === "SELL_DONE";
+  const isHoldingView = view === "HOLDING";
+  row.className = `journal-row ${isSellView ? "sell" : "buy"}${isHoldingView ? " holding" : ""}${compact ? " compact" : ""}${violation && isSellView ? " has-violation" : ""}`;
   row.dataset.journalId = entry.id;
   const isOpen = selectedJournalEntry?.id === entry.id;
   row.classList.toggle("is-open", isOpen);
   row.setAttribute("aria-expanded", String(isOpen));
-  const status = violation ? `${violation.label} 위반` : (entry.review || entry.exitKind || entry.status || "기록");
-  const priceText = entry.side === "SELL" ? `${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 청산` : `${formatTradePrice(entry)} 진입`;
+  const status = isSellView
+    ? (violation ? `${violation.label} 위반` : "매도 완료")
+    : (isHoldingView ? "보유 중" : "매수 완료");
+  const categoryLabel = isSellView ? "매도 완료" : (isHoldingView ? "보유 중" : "매수 완료");
+  const priceText = isSellView
+    ? `${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 매도`
+    : `${formatTradePrice(entry)} 매수`;
+  const eventTime = isSellView ? (entry.closedAt || entry.createdAt) : (entry.openedAt || entry.createdAt);
   row.innerHTML = `
-    <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(entry.createdAt)} · ${entry.market || "-"} · ${entry.sideLabel || entry.side || "-"} · ${priceText}</small></span>
+    <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(eventTime)} · ${entry.market || "-"} · ${categoryLabel} · ${priceText}</small></span>
     <em class="${Number(entry.returnRate || 0) >= 0 ? "positive-text" : "negative-text"}">${signedPercent(entry.returnRate || 0)}</em>
-    <strong class="${violation ? `violation-${violation.severity || "minor"}` : ""}">${status}</strong>
+    <strong class="${violation && isSellView ? `violation-${violation.severity || "minor"}` : ""}">${status}</strong>
   `;
   row.addEventListener("click", () => openJournalEditor(entry));
   return row;
@@ -723,18 +732,20 @@ function formatLearningCooldown(seconds) {
 
 function renderLearningBrain(learning = {}, entries = []) {
   const summary = learning.summary || {};
+  const globalBrain = learning.global || {};
+  const offlineStudy = learning.offlineStudy || {};
   const symbols = learning.symbols || [];
-  const memories = learning.memories || [];
+  const memories = globalBrain.revisions || [];
   const updated = document.querySelector("#learningBrainUpdatedAt");
   const applyStatus = document.querySelector("#learningApplyStatus");
   if (updated) {
     updated.textContent = learning.updatedAt
-      ? `${formatJournalTime(learning.updatedAt)} · 거래가 끝날 때마다 뇌 용량 자동 확장`
-      : "첫 청산 거래부터 종목별 기억을 쌓습니다.";
+      ? `${formatJournalTime(learning.updatedAt)} · 거래와 휴장 연구가 전체 관점을 계속 수정`
+      : "첫 청산 거래부터 모든 종목에 통하는 공용 기준을 쌓습니다.";
   }
   if (applyStatus) {
-    applyStatus.textContent = summary.immediateApply && summary.coverage === "ALL_NEW_ENTRIES"
-      ? "모든 신규 PAPER 거래 즉시 적용"
+    applyStatus.textContent = summary.immediateApply && summary.coverage === "GLOBAL_ALL_SYMBOLS"
+      ? "모든 종목의 다음 PAPER 거래 즉시 적용"
       : (summary.immediateApply ? "PAPER 다음 거래 즉시 적용" : "학습 준비 중");
     applyStatus.classList.toggle("is-live", Boolean(summary.immediateApply));
   }
@@ -743,9 +754,9 @@ function renderLearningBrain(learning = {}, entries = []) {
   if (summaryTarget) {
     const items = [
       ["학습 거래", `${Number(summary.learnedTradeCount || 0)}건`],
-      ["기억 종목", `${Number(summary.symbolCount || 0)}개`],
-      ["활성 원칙", `${Number(summary.activeRuleCount || 0)}개`],
-      ["재진입 대기", `${Number(summary.cooldownCount || 0)}개`],
+      ["점수 표본", `${Number(summary.scoreSampleCount || 0)}건`],
+      ["기준 수정", `${Number(globalBrain.revisionCount || 0)}회`],
+      ["휴장 관찰", `${Number(offlineStudy.summary?.patternObservationCount || 0).toLocaleString("ko-KR")}건`],
     ];
     summaryTarget.replaceChildren();
     items.forEach(([label, value]) => {
@@ -755,13 +766,42 @@ function renderLearningBrain(learning = {}, entries = []) {
     });
   }
 
+  const globalRule = document.querySelector("#learningGlobalRule");
+  if (globalRule) {
+    globalRule.textContent = `${globalBrain.phase || "초기 관찰"} · ${Number(globalBrain.entryThreshold || 80)}점 기준 · 실거래 표본 ${Number(globalBrain.sampleCount || 0)}건`;
+  }
+  const featureList = document.querySelector("#learningScoreFeatureList");
+  if (featureList) {
+    featureList.replaceChildren();
+    const features = globalBrain.features || [];
+    if (!features.length) {
+      const empty = document.createElement("div");
+      empty.className = "learning-empty";
+      empty.textContent = "청산 표본부터 점수 항목별 적중률을 비교합니다.";
+      featureList.append(empty);
+    } else {
+      features.forEach((feature) => {
+        const weight = Number(feature.effectiveWeight || 1);
+        const delta = weight - 1;
+        const row = document.createElement("div");
+        row.className = `global-score-feature ${delta > 0.002 ? "up" : (delta < -0.002 ? "down" : "flat")}`;
+        row.innerHTML = `
+          <span><b>${feature.label || feature.key}</b><small>승리 평균 ${(Number(feature.winnerAverage || 0) * 100).toFixed(0)} · 손실 평균 ${(Number(feature.loserAverage || 0) * 100).toFixed(0)} · ${Number(feature.sampleCount || 0)}표본</small></span>
+          <em>${delta > 0.002 ? "강화" : (delta < -0.002 ? "약화" : "기본")}</em>
+          <strong>${weight.toFixed(3)}배</strong>
+        `;
+        featureList.append(row);
+      });
+    }
+  }
+
   const symbolList = document.querySelector("#learningSymbolList");
   if (symbolList) {
     symbolList.replaceChildren();
     if (!symbols.length) {
       const empty = document.createElement("div");
       empty.className = "learning-empty";
-      empty.textContent = "청산 거래가 쌓이면 종목별 특성과 적용 원칙이 생깁니다.";
+      empty.textContent = "청산 거래가 쌓이면 종목별 근거 사례가 남습니다.";
       symbolList.append(empty);
     } else {
       const latestBySymbol = new Map();
@@ -772,15 +812,12 @@ function renderLearningBrain(learning = {}, entries = []) {
         const row = document.createElement("button");
         row.type = "button";
         row.className = `learning-symbol-row ${profile.riskLevel || "stable"}`;
-        const traits = (profile.traits || []).join(" · ") || "표본 수집";
-        const rule = profile.cooldownActive
-          ? formatLearningCooldown(profile.cooldownRemainingSec)
-          : (profile.primaryRule || "기본 기준 유지");
+        const traits = (profile.traits || []).join(" · ") || "사례 수집";
         row.innerHTML = `
           <span><b>${profile.name || profile.symbol}</b><small>${profile.market || "-"} · ${Number(profile.tradeCount || 0)}회 · 승률 ${(Number(profile.winRate || 0) * 100).toFixed(0)}% · ${traits}</small></span>
-          <em><small>최소 점수</small><b>${Number(profile.requiredScore || 80)}점</b></em>
-          <em><small>배정 비중</small><b>${(Number(profile.allocationScale || 1) * 100).toFixed(0)}%</b></em>
-          <strong>${rule}</strong>
+          <em><small>평균 수익률</small><b>${signedPercent(profile.averageReturn || 0)}</b></em>
+          <em><small>평균 진입</small><b>${Number(profile.averageScore || 0).toFixed(0)}점</b></em>
+          <strong>공용 뇌의 근거 사례</strong>
         `;
         const entry = latestBySymbol.get(profile.symbol);
         if (entry) row.addEventListener("click", () => showJournalEditor(entry));
@@ -790,25 +827,71 @@ function renderLearningBrain(learning = {}, entries = []) {
   }
 
   const memoryList = document.querySelector("#learningMemoryList");
-  if (!memoryList) return;
-  memoryList.replaceChildren();
-  if (!memories.length) {
-    const empty = document.createElement("div");
-    empty.className = "learning-empty";
-    empty.textContent = "새로운 학습 기억을 기다리고 있습니다.";
-    memoryList.append(empty);
-    return;
+  if (memoryList) {
+    memoryList.replaceChildren();
+    if (!memories.length) {
+      const empty = document.createElement("div");
+      empty.className = "learning-empty";
+      empty.textContent = "구조화된 점수 표본이 청산되면 전체 관점 수정 기록이 생깁니다.";
+      memoryList.append(empty);
+    } else {
+      memories.slice(0, 8).forEach((memory) => {
+        const item = document.createElement("div");
+        item.className = `learning-memory-item ${memory.result === "규칙 오답" || memory.result === "손실 학습" ? "mistake" : ""}`;
+        const threshold = memory.thresholdAfter && memory.thresholdBefore !== memory.thresholdAfter
+          ? ` · 기준 ${memory.thresholdBefore}→${memory.thresholdAfter}점`
+          : "";
+        item.innerHTML = `
+          <div><b>${memory.name || (memory.scope === "OFF_MARKET_BACKTEST" ? "휴장 연구" : "전체 투자 관점")}</b><em>${memory.result || "학습"}</em></div>
+          <p>${memory.summary || "거래 결과로 공용 점수 기준을 다시 계산했습니다."}</p>
+          <small>${memory.scope === "OFF_MARKET_BACKTEST" ? "저강도 검증 반영" : "다음 모든 종목 즉시 적용"}${threshold}</small>
+        `;
+        memoryList.append(item);
+      });
+    }
   }
-  memories.slice(0, 6).forEach((memory) => {
-    const item = document.createElement("div");
-    item.className = `learning-memory-item ${memory.result === "규칙 오답" ? "mistake" : ""}`;
-    item.innerHTML = `
-      <div><b>${memory.name || memory.symbol}</b><em>${memory.result || "학습"}</em></div>
-      <p>${memory.observation || "거래 결과를 학습했습니다."}</p>
-      <small>즉시 적용 · ${memory.appliedRule || "기본 기준 유지"}</small>
-    `;
-    memoryList.append(item);
-  });
+
+  const offlineStatus = document.querySelector("#offlineStudyStatus");
+  const offlineSummary = document.querySelector("#offlineStudySummary");
+  const offlineJournal = document.querySelector("#offlineStudyJournal");
+  if (offlineStatus) {
+    offlineStatus.textContent = offlineStudy.status === "completed"
+      ? `${offlineStudy.researchPass || "검증"} 완료 · ${formatJournalTime(offlineStudy.completedAt)}`
+      : (offlineStudy.status === "error" ? "연구 오류 · 다음 주기 재시도" : "다음 휴장 학습 대기");
+    offlineStatus.classList.toggle("is-live", offlineStudy.status === "completed");
+  }
+  if (offlineSummary) {
+    const studySummary = offlineStudy.summary || {};
+    const items = [
+      ["분석 종목", `${Number(offlineStudy.universeCount || 0)}개`],
+      ["차트 분석", `${Number(studySummary.analysisCount || 0)}건`],
+      ["패턴 관찰", `${Number(studySummary.patternObservationCount || 0).toLocaleString("ko-KR")}건`],
+      ["검증 패턴", `${Number(studySummary.reliablePatternCount || 0)}개`],
+    ];
+    offlineSummary.replaceChildren();
+    items.forEach(([label, value]) => {
+      const box = document.createElement("div");
+      box.innerHTML = `<span>${label}</span><b>${value}</b>`;
+      offlineSummary.append(box);
+    });
+  }
+  if (offlineJournal) {
+    offlineJournal.replaceChildren();
+    const journal = offlineStudy.journal || [];
+    if (!journal.length) {
+      const empty = document.createElement("div");
+      empty.className = "learning-empty";
+      empty.textContent = offlineStudy.lastError || "한국·미국 장이 함께 닫히면 일·주·월봉 패턴 연구를 시작합니다.";
+      offlineJournal.append(empty);
+    } else {
+      journal.slice(0, 10).forEach((note) => {
+        const item = document.createElement("div");
+        item.className = `offline-study-note ${note.kind === "실패 가설" ? "rejected" : "validated"}`;
+        item.innerHTML = `<em>${note.kind || "연구"}</em><span><b>${note.pattern || "패턴"}</b><small>${note.note || "관찰 결과를 기록했습니다."}</small></span>`;
+        offlineJournal.append(item);
+      });
+    }
+  }
 }
 
 function renderTradingJournal(payload = {}) {
@@ -867,7 +950,28 @@ function renderTradingJournal(payload = {}) {
       heading.className = "journal-day-heading";
       heading.innerHTML = `<b>${formatTradingDay(day)}</b><span>${Number(daySummary.count || dayEntries.length)}건 · ${signedWon(daySummary.totalProfit || 0)} · 승률 ${signedPercent(daySummary.winRate || 0)}</span>`;
       group.append(heading);
-      dayEntries.forEach((entry) => group.append(createJournalRow(entry, true)));
+      const categories = [
+        { key: "BUY_DONE", label: "매수 완료", entries: dayEntries },
+        { key: "SELL_DONE", label: "매도 완료", entries: dayEntries.filter((entry) => entry.status === "청산") },
+        { key: "HOLDING", label: "보유 중", entries: dayEntries.filter((entry) => entry.status !== "청산") },
+      ];
+      categories.forEach((category) => {
+        const section = document.createElement("div");
+        section.className = `journal-status-group ${category.key.toLowerCase().replace("_", "-")}`;
+        const categoryHead = document.createElement("div");
+        categoryHead.className = "journal-status-heading";
+        categoryHead.innerHTML = `<b>${category.label}</b><span>${category.entries.length}건</span>`;
+        section.append(categoryHead);
+        if (category.entries.length) {
+          category.entries.forEach((entry) => section.append(createJournalRow(entry, true, category.key)));
+        } else {
+          const empty = document.createElement("div");
+          empty.className = "journal-status-empty";
+          empty.textContent = `${category.label} 기록 없음`;
+          section.append(empty);
+        }
+        group.append(section);
+      });
       list.append(group);
     });
   });
@@ -1058,12 +1162,12 @@ function renderPaperSummary(state) {
   if (utilizationStatus) utilizationStatus.textContent = capital.utilizationStatus || "진입 기회 대기";
   if (allocationRule) {
     allocationRule.textContent = learningSprint.enabled && unlimitedFunding
-      ? "PAPER 경험 가속 · 자금/횟수/포지션 무제한 · 점수/손절 유지"
+      ? "PAPER 경험 가속 · 자금/횟수/포지션 무제한 · 전역 학습점수/손절 유지"
       : (learningSprint.enabled
-      ? "PAPER 학습 가속 · 진입 횟수 무제한 · 점수/종목 규칙 유지"
-      : (summary.learningCoverage === "ALL_NEW_ENTRIES"
-      ? "모든 신규 거래 · 종목 학습 규칙 적용 후 배정"
-      : "종목 학습 규칙 확인 중"));
+      ? "PAPER 학습 가속 · 진입 횟수 무제한 · 전체 투자 공용 점수 유지"
+      : (summary.learningCoverage === "GLOBAL_ALL_SYMBOLS"
+      ? "모든 신규 거래 · 전역 학습 점수 적용 후 배정"
+      : "전체 투자 공용 학습 기준 확인 중"));
   }
   const investedTarget = document.querySelector("#capitalInvestedKrw");
   const cashTarget = document.querySelector("#capitalCashKrw");
