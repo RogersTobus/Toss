@@ -2038,13 +2038,15 @@ def close_paper_positions_if_needed(
     now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     for symbol, order in list(positions.items()):
         entry = decimal(order.get("price"))
-        last = prices.get(symbol, 0.0)
-        if not entry or not last:
+        if not entry:
             continue
         protective, created = ensure_protective_stop_order(order, stop_rate)
         changed = changed or created
         trigger_price = decimal(protective.get("triggerPrice"))
         protective_rate = decimal(protective.get("stopRate") or stop_rate)
+        last = prices.get(symbol, 0.0)
+        if not last:
+            continue
         observed_rate = (last - entry) / entry
         fill_price = last
         rate = observed_rate

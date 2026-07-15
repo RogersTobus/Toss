@@ -49,6 +49,18 @@ class ProtectiveStopTests(unittest.TestCase):
         self.assertAlmostEqual(protective["triggerPrice"], 99.55)
 
     @patch("server.strategy_config", return_value={"targetRate": 0.01, "stopRate": -0.0045})
+    @patch("server.refresh_position_prices", return_value={})
+    def test_existing_position_gets_protection_even_without_a_fresh_quote(self, _prices, _config):
+        orders = [self.buy()]
+        updated, changed = server.close_paper_positions_if_needed(
+            {}, orders, [], "US", "US premarket", stop_only=True
+        )
+        self.assertTrue(changed)
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(updated[0]["protectiveStopOrder"]["status"], "WORKING")
+        self.assertAlmostEqual(updated[0]["protectiveStopOrder"]["triggerPrice"], 99.55)
+
+    @patch("server.strategy_config", return_value={"targetRate": 0.01, "stopRate": -0.0045})
     @patch("server.refresh_position_prices", return_value={"TEST": 97.0})
     def test_gap_executes_pre_registered_paper_stop_at_trigger_price(self, _prices, _config):
         orders = [self.buy()]
