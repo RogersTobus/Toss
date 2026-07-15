@@ -46,6 +46,9 @@ PAPER_STOP_RATE = -0.005
 PAPER_MAX_DAILY_ORDERS = 3
 PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
+PAPER_CAPITAL_TARGET_RATE = 0.90
+PAPER_CASH_RESERVE_RATE = 0.10
+PAPER_MAX_SINGLE_POSITION_RATE = 0.60
 LEARNING_SCHEMA_VERSION = 1
 LEARNING_BASE_ENTRY_SCORE = 80
 DEFAULT_STRATEGY_CONFIG = {
@@ -68,6 +71,13 @@ DEFAULT_STRATEGIES = [
         "title": "100점 평가·80점 이상 진입",
         "description": "필수조건 통과 종목을 거래대금 강도, 상대 거래량, 돌파 유지, 시장 상태, 호가 품질로 점수화하고 80점 이상만 점수순으로 진입합니다.",
         "judge": "점수 높은 종목 우선",
+        "enabled": True,
+    },
+    {
+        "id": "adaptive-capital-utilization",
+        "title": "자본 활용 90%·현금 10% 자동배분",
+        "description": "남은 포지션 자리와 진입 점수를 함께 계산해 모의자금의 90%까지 균형 배분하고, 종목별 오답노트의 비중 축소를 마지막 단계에서 모든 신규 거래에 적용합니다.",
+        "judge": "학습 비중 적용 후 주문금 확정",
         "enabled": True,
     },
     {
@@ -1242,7 +1252,7 @@ def new_paper_state() -> dict[str, Any]:
     return {
         "schemaVersion": PAPER_SCHEMA_VERSION,
         "startingCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
-        "allocationMode": "confidence",
+        "allocationMode": "adaptive-confidence",
         "currency": "KRW",
         "resetAt": now_kst().strftime("%Y-%m-%dT%H:%M:%S%z"),
         "orders": [],
@@ -1267,7 +1277,7 @@ def load_paper_state() -> dict[str, Any]:
         save_paper_state(state)
         save_journal_state({"notes": {}, "reviews": {}})
     state.setdefault("startingCapitalKrw", PAPER_STARTING_CAPITAL_KRW)
-    state.setdefault("allocationMode", "confidence")
+    state["allocationMode"] = "adaptive-confidence"
     state.setdefault("currency", "KRW")
     state.setdefault("orders", [])
     return state
@@ -1452,22 +1462,95 @@ def paper_capital_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
     open_invested = sum(decimal(item.get("invested")) for item in opened)
     cash = max(0.0, starting + realized - open_invested)
     equity = cash + open_invested + unrealized
+    working_capital = max(0.0, starting + realized)
+    target_invested = working_capital * PAPER_CAPITAL_TARGET_RATE
+    remaining_deployable = max(0.0, min(cash, target_invested - open_invested))
+    cash_reserve = max(0.0, cash - remaining_deployable)
+    utilization_rate = open_invested / working_capital if working_capital else 0.0
+    if utilization_rate >= PAPER_CAPITAL_TARGET_RATE:
+        utilization_status = "충분히 활용 중"
+    elif utilization_rate >= PAPER_CAPITAL_TARGET_RATE - 0.15:
+        utilization_status = "균형 배분 중"
+    else:
+        utilization_status = "진입 기회 대기"
     return {
         "startingCapitalKrw": starting,
+        "workingCapitalKrw": working_capital,
         "cashKrw": cash,
         "openInvestedKrw": open_invested,
+        "targetInvestedKrw": target_invested,
+        "remainingDeployableKrw": remaining_deployable,
+        "cashReserveKrw": cash_reserve,
         "realizedProfitKrw": realized,
         "unrealizedProfitKrw": unrealized,
         "equityKrw": equity,
         "returnRate": (equity - starting) / starting if starting else 0.0,
+        "utilizationRate": utilization_rate,
+        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
+        "reserveRate": PAPER_CASH_RESERVE_RATE,
+        "utilizationStatus": utilization_status,
         "currency": "KRW",
-        "allocationMode": "confidence",
+        "allocationMode": "adaptive-confidence",
     }
 
 
 def confidence_allocation_rate(score: Any) -> float:
     normalized = clamp(score, 80, 100, 80)
     return 0.15 + ((normalized - 80) / 20) * 0.45
+
+
+def adaptive_allocation_plan(
+    capital: dict[str, Any],
+    score: Any,
+    learning_scale: Any,
+    open_positions: int,
+    max_open_positions: int,
+) -> dict[str, Any]:
+    """Fill the remaining PAPER capital target without bypassing learned risk cuts."""
+    working_capital = max(
+        0.0,
+        decimal(capital.get("workingCapitalKrw"))
+        or decimal(capital.get("startingCapitalKrw"))
+        or PAPER_STARTING_CAPITAL_KRW,
+    )
+    invested = max(0.0, decimal(capital.get("openInvestedKrw")))
+    available_cash = max(0.0, decimal(capital.get("cashKrw")))
+    target_invested = working_capital * PAPER_CAPITAL_TARGET_RATE
+    remaining_target = max(0.0, min(available_cash, target_invested - invested))
+    remaining_slots = max(1, int(max_open_positions) - int(open_positions))
+    confidence_rate = min(
+        PAPER_MAX_SINGLE_POSITION_RATE,
+        confidence_allocation_rate(score),
+    )
+    confidence_budget = working_capital * confidence_rate
+    balanced_slot_budget = remaining_target / remaining_slots
+    base_budget = min(
+        remaining_target,
+        max(confidence_budget, balanced_slot_budget),
+    )
+    applied_learning_scale = clamp(learning_scale, 0.40, 1.0, 1.0)
+    planned_budget = min(available_cash, base_budget * applied_learning_scale)
+    return {
+        "mode": "adaptive-confidence",
+        "workingCapitalKrw": working_capital,
+        "targetInvestedKrw": target_invested,
+        "investedBeforeKrw": invested,
+        "availableCashKrw": available_cash,
+        "remainingTargetKrw": remaining_target,
+        "remainingSlots": remaining_slots,
+        "confidenceAllocationRate": confidence_rate,
+        "balancedSlotBudgetKrw": balanced_slot_budget,
+        "baseBudgetKrw": base_budget,
+        "baseAllocationRate": base_budget / working_capital if working_capital else 0.0,
+        "learningScale": applied_learning_scale,
+        "plannedBudgetKrw": planned_budget,
+        "plannedAllocationRate": planned_budget / working_capital if working_capital else 0.0,
+        "expectedUtilizationRate": (
+            (invested + planned_budget) / working_capital if working_capital else 0.0
+        ),
+        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
+        "reserveRate": PAPER_CASH_RESERVE_RATE,
+    }
 
 
 
@@ -1689,6 +1772,14 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "stopRate": stop_rate,
         "strategyConfig": config,
         "capital": capital,
+        "learningCoverage": "ALL_NEW_ENTRIES",
+        "capitalAllocationPolicy": {
+            "mode": "adaptive-confidence",
+            "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
+            "reserveRate": PAPER_CASH_RESERVE_RATE,
+            "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
+            "learningAppliedAfterSizing": True,
+        },
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(trade_ledger),
         "technicalReview": tech_review,
@@ -1833,6 +1924,14 @@ def paper_trade(
     learning_brain = learning_brain_payload(learning_state)
     summary = paper_summary(orders, results)
     summary["learningBrain"] = learning_brain.get("summary")
+    summary["learningCoverage"] = "ALL_NEW_ENTRIES"
+    summary["capitalAllocationPolicy"] = {
+        "mode": "adaptive-confidence",
+        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
+        "reserveRate": PAPER_CASH_RESERVE_RATE,
+        "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
+        "learningAppliedAfterSizing": True,
+    }
     summary["learningDecisions"] = []
     gate = safety_gate(summary)
     if summary["locked"] or gate["blocked"]:
@@ -1851,10 +1950,11 @@ def paper_trade(
         return orders[-50:], summary
     existing = {(item.get("market"), item.get("symbol")) for item in open_paper_positions(orders).values()}
     capital = summary.get("capital") or {}
-    starting_capital = decimal(capital.get("startingCapitalKrw") or PAPER_STARTING_CAPITAL_KRW)
-    available_cash = decimal(capital.get("cashKrw"))
+    max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
+    open_position_count = int(summary.get("openPositionCount") or 0)
     candidate = None
     candidate_policy = None
+    candidate_capital_plan = None
     quantity = 0
     allocation_rate = 0.0
     allocated_krw = 0.0
@@ -1873,23 +1973,44 @@ def paper_trade(
         policy = learning_entry_policy(symbol, item.get("score"), learning_state)
         decision = dict(policy)
         decision["name"] = item.get("name") or symbol
-        learning_decisions.append(decision)
         if not policy.get("allowed"):
+            decision["capitalAllowed"] = False
+            learning_decisions.append(decision)
             continue
         price_krw = decimal(item.get("lastPrice"))
         if price_krw <= 0:
+            decision["capitalAllowed"] = False
+            decision["reason"] = f"{policy.get('reason')} · 가격 확인 실패"
+            learning_decisions.append(decision)
             continue
-        base_confidence_rate = confidence_allocation_rate(item.get("score"))
-        confidence_rate = max(0.05, base_confidence_rate * decimal(policy.get("allocationScale") or 1))
-        budget = min(available_cash, starting_capital * confidence_rate)
+        capital_plan = adaptive_allocation_plan(
+            capital,
+            item.get("score"),
+            policy.get("allocationScale"),
+            open_position_count,
+            max_open_positions,
+        )
+        budget = decimal(capital_plan.get("plannedBudgetKrw"))
+        decision["capitalAllowed"] = budget > 0
+        decision["capitalPlan"] = capital_plan
+        if budget <= 0:
+            decision["reason"] = f"{policy.get('reason')} · 자본 활용 목표 {PAPER_CAPITAL_TARGET_RATE * 100:.0f}% 충족"
+            learning_decisions.append(decision)
+            continue
         shares = int(budget // price_krw)
         if shares < 1:
+            decision["capitalAllowed"] = False
+            decision["reason"] = f"{policy.get('reason')} · 배정액으로 1주 미만"
+            learning_decisions.append(decision)
             continue
+        learning_decisions.append(decision)
         candidate = item
         candidate_policy = policy
+        candidate_capital_plan = capital_plan
         quantity = shares
-        allocation_rate = confidence_rate
         allocated_krw = price_krw * shares
+        working_capital = decimal(capital_plan.get("workingCapitalKrw"))
+        allocation_rate = allocated_krw / working_capital if working_capital else 0.0
         break
     if candidate:
         orders.append(
@@ -1907,8 +2028,25 @@ def paper_trade(
                 "sourcePrice": candidate.get("sourcePrice"),
                 "fxRate": candidate.get("fxRate") or 1,
                 "allocationRate": allocation_rate,
-                "baseAllocationRate": confidence_allocation_rate(candidate.get("score")),
+                "plannedAllocationRate": candidate_capital_plan.get("plannedAllocationRate") if candidate_capital_plan else allocation_rate,
+                "baseAllocationRate": candidate_capital_plan.get("baseAllocationRate") if candidate_capital_plan else confidence_allocation_rate(candidate.get("score")),
+                "confidenceAllocationRate": candidate_capital_plan.get("confidenceAllocationRate") if candidate_capital_plan else confidence_allocation_rate(candidate.get("score")),
                 "allocatedKrw": allocated_krw,
+                "capitalPolicy": {
+                    "mode": "adaptive-confidence",
+                    "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
+                    "reserveRate": PAPER_CASH_RESERVE_RATE,
+                    "investedBeforeKrw": candidate_capital_plan.get("investedBeforeKrw") if candidate_capital_plan else 0,
+                    "targetInvestedKrw": candidate_capital_plan.get("targetInvestedKrw") if candidate_capital_plan else 0,
+                    "remainingSlots": candidate_capital_plan.get("remainingSlots") if candidate_capital_plan else 1,
+                    "expectedUtilizationRate": (
+                        (decimal(candidate_capital_plan.get("investedBeforeKrw")) + allocated_krw)
+                        / decimal(candidate_capital_plan.get("workingCapitalKrw"))
+                        if candidate_capital_plan and decimal(candidate_capital_plan.get("workingCapitalKrw"))
+                        else allocation_rate
+                    ),
+                    "learningAppliedAfterSizing": True,
+                },
                 "status": "FILLED",
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "reason": candidate.get("reason"),
@@ -1923,12 +2061,20 @@ def paper_trade(
                     "appliedImmediately": True,
                     "appliedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 },
-                "strategyIds": ["liquidity-momentum-filter", "score-entry-80"],
+                "strategyIds": ["liquidity-momentum-filter", "score-entry-80", "adaptive-capital-utilization"],
             }
         )
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
     summary["learningBrain"] = learning_brain.get("summary")
+    summary["learningCoverage"] = "ALL_NEW_ENTRIES"
+    summary["capitalAllocationPolicy"] = {
+        "mode": "adaptive-confidence",
+        "targetUtilizationRate": PAPER_CAPITAL_TARGET_RATE,
+        "reserveRate": PAPER_CASH_RESERVE_RATE,
+        "maxSinglePositionRate": PAPER_MAX_SINGLE_POSITION_RATE,
+        "learningAppliedAfterSizing": True,
+    }
     summary["learningDecisions"] = learning_decisions[:10]
     return orders[-50:], summary
 
@@ -2751,6 +2897,7 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
             "cooldownCount": cooldown_count,
             "mode": "PAPER_ONLY",
             "immediateApply": True,
+            "coverage": "ALL_NEW_ENTRIES",
         },
         "symbols": symbols,
         "memories": memories[:40],

@@ -733,7 +733,9 @@ function renderLearningBrain(learning = {}, entries = []) {
       : "첫 청산 거래부터 종목별 기억을 쌓습니다.";
   }
   if (applyStatus) {
-    applyStatus.textContent = summary.immediateApply ? "PAPER 다음 거래 즉시 적용" : "학습 준비 중";
+    applyStatus.textContent = summary.immediateApply && summary.coverage === "ALL_NEW_ENTRIES"
+      ? "모든 신규 PAPER 거래 즉시 적용"
+      : (summary.immediateApply ? "PAPER 다음 거래 즉시 적용" : "학습 준비 중");
     applyStatus.classList.toggle("is-live", Boolean(summary.immediateApply));
   }
 
@@ -1030,6 +1032,43 @@ function renderPaperSummary(state) {
   });
 
   const equityKrw = Number(capital.equityKrw ?? capital.startingCapitalKrw ?? 1_000_000);
+  const workingCapitalKrw = Number(capital.workingCapitalKrw ?? capital.startingCapitalKrw ?? 1_000_000);
+  const investedKrw = Number(capital.openInvestedKrw || 0);
+  const cashKrw = Number(capital.cashKrw || 0);
+  const utilizationRate = Number(capital.utilizationRate ?? (workingCapitalKrw ? investedKrw / workingCapitalKrw : 0));
+  const targetUtilizationRate = Number(capital.targetUtilizationRate || 0.9);
+  const remainingDeployableKrw = Number(capital.remainingDeployableKrw || 0);
+  const utilizationCard = document.querySelector("#capitalUtilizationCard");
+  const utilizationBar = document.querySelector("#capitalUtilizationBar");
+  const targetMarker = document.querySelector("#capitalTargetMarker");
+  const utilizationStatus = document.querySelector("#capitalUtilizationStatus");
+  const allocationRule = document.querySelector("#capitalAllocationRule");
+  if (utilizationCard) {
+    utilizationCard.classList.toggle("target-met", utilizationRate >= targetUtilizationRate);
+    utilizationCard.classList.toggle("capital-low", utilizationRate < Math.max(0, targetUtilizationRate - 0.3));
+  }
+  if (utilizationBar) utilizationBar.style.width = `${Math.max(0, Math.min(100, utilizationRate * 100))}%`;
+  if (targetMarker) targetMarker.style.left = `${Math.max(0, Math.min(100, targetUtilizationRate * 100))}%`;
+  if (utilizationStatus) utilizationStatus.textContent = capital.utilizationStatus || "진입 기회 대기";
+  if (allocationRule) {
+    allocationRule.textContent = summary.learningCoverage === "ALL_NEW_ENTRIES"
+      ? "모든 신규 거래 · 종목 학습 규칙 적용 후 배정"
+      : "종목 학습 규칙 확인 중";
+  }
+  const investedTarget = document.querySelector("#capitalInvestedKrw");
+  const cashTarget = document.querySelector("#capitalCashKrw");
+  const utilizationTarget = document.querySelector("#capitalUtilizationRate");
+  const targetText = document.querySelector("#capitalTargetText");
+  const remainingText = document.querySelector("#capitalRemainingText");
+  if (investedTarget) investedTarget.textContent = plainWon(investedKrw);
+  if (cashTarget) cashTarget.textContent = plainWon(cashKrw);
+  if (utilizationTarget) utilizationTarget.textContent = `${(utilizationRate * 100).toFixed(1)}%`;
+  if (targetText) targetText.textContent = `운용 목표 ${(targetUtilizationRate * 100).toFixed(0)}% · 현금 예비 ${(Number(capital.reserveRate || 0.1) * 100).toFixed(0)}%`;
+  if (remainingText) {
+    remainingText.textContent = remainingDeployableKrw > 0
+      ? `추가 배정 가능 ${plainWon(remainingDeployableKrw)}`
+      : "운용 목표 충족";
+  }
   document.querySelector("#botStatus").textContent = `모의자산 ${plainWon(equityKrw)} · ${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
   const positionInsight = document.querySelector("#positionInsight");
   const orderInsight = document.querySelector("#orderInsight");
