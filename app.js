@@ -696,7 +696,7 @@ function renderJournalPerformance(summary = {}) {
   if (days.length < 2 || recentClosed < 3) {
     label = "표본 부족";
     insight = "청산 표본이 더 쌓여야 발전 여부를 안정적으로 판정할 수 있습니다.";
-  } else if (winDelta >= .05 && returnDelta >= 0) {
+  } else if (winDelta >= .05 && returnDelta >= 0 && recentProfit > 0) {
     tone = "improving";
     label = "개선 중";
     insight = "최근 구간의 승률과 투자 대비 손익이 함께 개선되고 있습니다.";
@@ -704,6 +704,8 @@ function renderJournalPerformance(summary = {}) {
     tone = "declining";
     label = "후퇴 경계";
     insight = "최근 승률 또는 손익 효율이 낮아져 진입 조건을 다시 점검할 구간입니다.";
+  } else if (winDelta > 0 && recentProfit < 0) {
+    insight = "승률은 회복됐지만 누적 손익이 아직 적자라 개선으로 확정하지 않고 박스권으로 봅니다.";
   }
 
   card.className = `performance-trend-card ${tone}`;
