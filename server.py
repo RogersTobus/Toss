@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent
 PAPER_PATH = ROOT / "paper_state.json"
 REPORT_PATH = ROOT / "report_state.json"
 JOURNAL_PATH = ROOT / "journal_state.json"
+LEARNING_PATH = ROOT / "learning_state.json"
 STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
 DEPLOY_STATE_PATH = ROOT / ".deploy" / "last_sync.json"
 BASE_URL = "https://openapi.tossinvest.com"
@@ -34,6 +35,7 @@ KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_LOCK = threading.Lock()
+LEARNING_LOCK = threading.Lock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
@@ -44,6 +46,8 @@ PAPER_STOP_RATE = -0.005
 PAPER_MAX_DAILY_ORDERS = 3
 PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
+LEARNING_SCHEMA_VERSION = 1
+LEARNING_BASE_ENTRY_SCORE = 80
 DEFAULT_STRATEGY_CONFIG = {
     "targetRate": PAPER_TARGET_RATE,
     "stopRate": PAPER_STOP_RATE,
@@ -1807,6 +1811,8 @@ def close_paper_positions_if_needed(
                 "createdAt": now,
                 "reason": reason,
                 "exitKind": exit_kind,
+                "stopRate": stop_rate,
+                "targetRate": target_rate,
                 "returnRate": rate,
                 "profit": (last - entry) * decimal(order.get("quantity") or 1),
             }
@@ -1822,7 +1828,12 @@ def paper_trade(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     orders = load_paper_orders()
     orders, _ = close_paper_positions_if_needed(env, orders, results, market, session)
+    results_by_symbol = {str(item.get("symbol") or ""): item for item in results if item.get("symbol")}
+    learning_state = sync_learning_brain(orders, results_by_symbol)
+    learning_brain = learning_brain_payload(learning_state)
     summary = paper_summary(orders, results)
+    summary["learningBrain"] = learning_brain.get("summary")
+    summary["learningDecisions"] = []
     gate = safety_gate(summary)
     if summary["locked"] or gate["blocked"]:
         return orders[-50:], summary
@@ -1843,9 +1854,11 @@ def paper_trade(
     starting_capital = decimal(capital.get("startingCapitalKrw") or PAPER_STARTING_CAPITAL_KRW)
     available_cash = decimal(capital.get("cashKrw"))
     candidate = None
+    candidate_policy = None
     quantity = 0
     allocation_rate = 0.0
     allocated_krw = 0.0
+    learning_decisions: list[dict[str, Any]] = []
     ranked_candidates = sorted(
         (
             item for item in results
@@ -1856,15 +1869,24 @@ def paper_trade(
         reverse=True,
     )
     for item in ranked_candidates:
+        symbol = str(item.get("symbol") or "")
+        policy = learning_entry_policy(symbol, item.get("score"), learning_state)
+        decision = dict(policy)
+        decision["name"] = item.get("name") or symbol
+        learning_decisions.append(decision)
+        if not policy.get("allowed"):
+            continue
         price_krw = decimal(item.get("lastPrice"))
         if price_krw <= 0:
             continue
-        confidence_rate = confidence_allocation_rate(item.get("score"))
+        base_confidence_rate = confidence_allocation_rate(item.get("score"))
+        confidence_rate = max(0.05, base_confidence_rate * decimal(policy.get("allocationScale") or 1))
         budget = min(available_cash, starting_capital * confidence_rate)
         shares = int(budget // price_krw)
         if shares < 1:
             continue
         candidate = item
+        candidate_policy = policy
         quantity = shares
         allocation_rate = confidence_rate
         allocated_krw = price_krw * shares
@@ -1885,16 +1907,29 @@ def paper_trade(
                 "sourcePrice": candidate.get("sourcePrice"),
                 "fxRate": candidate.get("fxRate") or 1,
                 "allocationRate": allocation_rate,
+                "baseAllocationRate": confidence_allocation_rate(candidate.get("score")),
                 "allocatedKrw": allocated_krw,
                 "status": "FILLED",
                 "createdAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "reason": candidate.get("reason"),
                 "entryScore": candidate.get("score"),
+                "learningPolicy": {
+                    "requiredScore": candidate_policy.get("requiredScore") if candidate_policy else LEARNING_BASE_ENTRY_SCORE,
+                    "candidateScore": candidate_policy.get("candidateScore") if candidate_policy else candidate.get("score"),
+                    "allocationScale": candidate_policy.get("allocationScale") if candidate_policy else 1.0,
+                    "status": candidate_policy.get("status") if candidate_policy else "신규 학습",
+                    "traits": candidate_policy.get("traits") if candidate_policy else ["표본 수집"],
+                    "reason": candidate_policy.get("reason") if candidate_policy else "신규 종목 기본 기준",
+                    "appliedImmediately": True,
+                    "appliedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                },
                 "strategyIds": ["liquidity-momentum-filter", "score-entry-80"],
             }
         )
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
+    summary["learningBrain"] = learning_brain.get("summary")
+    summary["learningDecisions"] = learning_decisions[:10]
     return orders[-50:], summary
 
 
@@ -2162,6 +2197,14 @@ def automatic_journal_note(
     if allocation_rate:
         entry_facts.append(f"모의자금 {allocation_rate * 100:.1f}% 배정")
     entry_context = f" ({', '.join(entry_facts)})" if entry_facts else ""
+    learning_policy = entry_order.get("learningPolicy") if isinstance(entry_order.get("learningPolicy"), dict) else {}
+    learning_line = ""
+    if learning_policy:
+        learning_line = (
+            f"학습 적용: 최소 {int(learning_policy.get('requiredScore') or LEARNING_BASE_ENTRY_SCORE)}점 · "
+            f"기본 비중의 {decimal(learning_policy.get('allocationScale') or 1) * 100:.0f}% · "
+            f"{clean_text(learning_policy.get('reason'), '종목별 학습 규칙 통과', 140)}"
+        )
 
     if not is_closed:
         review = "관찰 필요"
@@ -2196,15 +2239,18 @@ def automatic_journal_note(
         result_line = f"결과: {percent(return_rate)} · 확정손익 {money(profit)} · 보유 {duration}"
         tags = ["자동 작성", "개선 필요"]
 
-    memo = "\n".join(
+    memo_lines = [f"진입: {entry_reason}{entry_context}"]
+    if learning_line:
+        memo_lines.append(learning_line)
+    memo_lines.extend(
         [
-            f"진입: {entry_reason}{entry_context}",
             f"청산: {exit_reason}",
             result_line,
             f"복기: {evaluation}",
             f"다음 개선: {improvement}",
         ]
     )
+    memo = "\n".join(memo_lines)
     return {"memo": memo, "review": review, "tags": tags}
 
 
@@ -2226,7 +2272,8 @@ def journal_rule_violation(entry: dict[str, Any], stop_rate: float) -> dict[str,
     if entry.get("status") != "청산" or entry.get("exitKind") != "손실선":
         return None
     return_rate = decimal(entry.get("returnRate"))
-    excess_rate = decimal(stop_rate) - return_rate
+    limit_rate = decimal(entry.get("stopRateAtExit") or stop_rate)
+    excess_rate = limit_rate - return_rate
     tolerance = 0.001  # 0.10%p까지는 호가/수집 오차로 보고 손절 준수로 처리
     if excess_rate <= tolerance:
         return None
@@ -2250,7 +2297,7 @@ def journal_rule_violation(entry: dict[str, Any], stop_rate: float) -> dict[str,
         "name": entry.get("name") or entry.get("symbol"),
         "severity": severity,
         "label": label,
-        "limitRate": stop_rate,
+        "limitRate": limit_rate,
         "returnRate": return_rate,
         "excessRate": excess_rate,
         "profit": decimal(entry.get("profit")),
@@ -2331,8 +2378,412 @@ def build_daily_mistake_note(
             "profit": profit,
             "returnRate": return_rate,
         },
+        "symbols": sorted({str(item.get("symbol") or "") for item in closed if item.get("symbol")}),
         "violations": violations,
     }
+
+
+def default_learning_state() -> dict[str, Any]:
+    return {
+        "schemaVersion": LEARNING_SCHEMA_VERSION,
+        "processedTrades": [],
+        "symbols": {},
+        "memories": [],
+        "updatedAt": None,
+    }
+
+
+def load_learning_state_unlocked() -> dict[str, Any]:
+    if not LEARNING_PATH.exists():
+        return default_learning_state()
+    try:
+        raw = json.loads(LEARNING_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return default_learning_state()
+    if not isinstance(raw, dict):
+        return default_learning_state()
+    return {
+        "schemaVersion": LEARNING_SCHEMA_VERSION,
+        "processedTrades": list(raw.get("processedTrades") or []),
+        "symbols": dict(raw.get("symbols") or {}),
+        "memories": list(raw.get("memories") or []),
+        "updatedAt": raw.get("updatedAt"),
+    }
+
+
+def save_learning_state_unlocked(state: dict[str, Any]) -> None:
+    temporary = LEARNING_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(LEARNING_PATH)
+
+
+def learning_severity_rank(value: Any) -> int:
+    return {"minor": 1, "major": 2, "critical": 3}.get(str(value or ""), 0)
+
+
+def learning_cooldown_minutes(severity: str) -> int:
+    return {"minor": 10, "major": 30, "critical": 60}.get(severity, 0)
+
+
+def learning_time_remaining(value: Any, now: datetime | None = None) -> int:
+    moment = parse_order_time(value)
+    if not moment:
+        return 0
+    now = now or datetime.now(KST)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=KST)
+    return max(0, int((moment.astimezone(KST) - now.astimezone(KST)).total_seconds()))
+
+
+def refresh_symbol_learning(profile: dict[str, Any]) -> None:
+    trades = max(0, int(profile.get("tradeCount") or 0))
+    wins = max(0, int(profile.get("winCount") or 0))
+    violations = profile.get("violationCounts") or {}
+    critical = int(violations.get("critical") or 0)
+    major = int(violations.get("major") or 0)
+    minor = int(violations.get("minor") or 0)
+    consecutive_losses = max(0, int(profile.get("consecutiveLosses") or 0))
+    win_rate = wins / trades if trades else 0.0
+    average_return = decimal(profile.get("returnSum")) / trades if trades else 0.0
+    average_score = decimal(profile.get("scoreSum")) / trades if trades else 0.0
+    average_holding = decimal(profile.get("holdingSecondsTotal")) / trades if trades else 0.0
+    score_penalty = 0
+    allocation_scale = 1.0
+
+    if critical:
+        score_penalty = max(score_penalty, 8)
+        allocation_scale = min(allocation_scale, 0.50)
+    elif major:
+        score_penalty = max(score_penalty, 5)
+        allocation_scale = min(allocation_scale, 0.65)
+    elif minor:
+        score_penalty = max(score_penalty, 2)
+        allocation_scale = min(allocation_scale, 0.80)
+    if consecutive_losses >= 2:
+        score_penalty += 4
+        allocation_scale = min(allocation_scale, 0.50)
+    if trades >= 3 and win_rate < 0.40:
+        score_penalty += 4
+        allocation_scale = min(allocation_scale, 0.65)
+    if trades >= 3 and average_return < -0.005:
+        score_penalty += 3
+        allocation_scale = min(allocation_scale, 0.60)
+
+    required_score = min(99, LEARNING_BASE_ENTRY_SCORE + score_penalty)
+    cooldown_remaining = learning_time_remaining(profile.get("cooldownUntil"))
+    cooldown_active = cooldown_remaining > 0
+    if cooldown_active:
+        status = "재진입 대기"
+    elif required_score > LEARNING_BASE_ENTRY_SCORE or allocation_scale < 1:
+        status = "강화 적용"
+    elif trades < 3:
+        status = "표본 수집"
+    else:
+        status = "검증 유지"
+
+    if critical:
+        risk_level = "critical"
+    elif major or consecutive_losses >= 2 or (trades >= 3 and win_rate < 0.40):
+        risk_level = "caution"
+    elif minor:
+        risk_level = "watch"
+    else:
+        risk_level = "stable"
+
+    traits: list[str] = []
+    if average_holding and average_holding < 180:
+        traits.append("초단기 반응")
+    if average_score >= 95:
+        traits.append("고득점 진입")
+    if critical or major or minor:
+        traits.append(f"손절오차 {critical + major + minor}회")
+    if trades >= 2 and win_rate >= 0.60:
+        traits.append("수익 재현")
+    elif trades >= 2 and win_rate < 0.40:
+        traits.append("진입 선별 필요")
+    if not traits:
+        traits.append("표본 수집")
+
+    if cooldown_active:
+        primary_rule = f"재진입 {max(1, (cooldown_remaining + 59) // 60)}분 대기"
+    elif required_score > LEARNING_BASE_ENTRY_SCORE or allocation_scale < 1:
+        primary_rule = f"{required_score}점 이상 · 기본 비중의 {allocation_scale * 100:.0f}%"
+    else:
+        primary_rule = f"{LEARNING_BASE_ENTRY_SCORE}점 기준 유지 · 추가 표본 수집"
+
+    profile.update(
+        {
+            "winRate": win_rate,
+            "averageReturn": average_return,
+            "averageScore": average_score,
+            "averageHoldingSec": average_holding,
+            "requiredScore": required_score,
+            "allocationScale": allocation_scale,
+            "status": status,
+            "riskLevel": risk_level,
+            "traits": traits[:4],
+            "primaryRule": primary_rule,
+        }
+    )
+
+
+def learning_observation(
+    name: str,
+    return_rate: float,
+    violation: dict[str, Any] | None,
+    profile: dict[str, Any],
+) -> str:
+    if violation:
+        return (
+            f"{name}은 손절선보다 {decimal(violation.get('excessRate')) * 100:.2f}%p 불리하게 청산돼 "
+            "진입 점수와 비중을 즉시 강화했습니다."
+        )
+    if return_rate > 0:
+        return f"{name}의 수익 조건을 기억하되 기준을 자동 완화하지 않고 같은 조건의 재현성을 확인합니다."
+    if int(profile.get("consecutiveLosses") or 0) >= 2:
+        return f"{name}에서 연속 손실이 확인돼 재진입 대기와 비중 축소를 즉시 적용했습니다."
+    return f"{name}의 손실은 계획 범위에서 끝났지만 다음 진입의 추세 지속성을 더 엄격히 확인합니다."
+
+
+def sync_learning_brain(
+    orders: list[dict[str, Any]],
+    results_by_symbol: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Absorb every newly closed PAPER trade and persist symbol-specific risk memory."""
+    results_by_symbol = results_by_symbol or {}
+    ledger = paper_trade_ledger(orders, results_by_symbol)
+    orders_by_id = {str(item.get("id") or ""): item for item in orders if item.get("id")}
+    stop_rate = decimal(strategy_config().get("stopRate") or PAPER_STOP_RATE)
+    with LEARNING_LOCK:
+        state = load_learning_state_unlocked()
+        processed = set(str(item) for item in state.get("processedTrades") or [])
+        changed = False
+        closed_trades = sorted(
+            (item for item in ledger if item.get("status") == "CLOSED"),
+            key=lambda item: str(item.get("closedAt") or ""),
+        )
+        for trade in closed_trades:
+            entry_id = str(trade.get("entryOrderId") or "")
+            exit_id = str(trade.get("exitOrderId") or "")
+            trade_key = f"{entry_id}:{exit_id}"
+            if not entry_id or trade_key in processed:
+                continue
+            entry_order = orders_by_id.get(entry_id) or {}
+            exit_order = orders_by_id.get(exit_id) or {}
+            symbol = str(trade.get("symbol") or entry_order.get("symbol") or "")
+            if not symbol:
+                continue
+            name = str(entry_order.get("name") or exit_order.get("name") or symbol)
+            market = str(trade.get("market") or entry_order.get("market") or "")
+            return_rate = decimal(trade.get("returnRate"))
+            profit = decimal(trade.get("profit"))
+            invested = decimal(trade.get("invested"))
+            entry_score = decimal(entry_order.get("entryScore"))
+            opened = parse_order_time(trade.get("openedAt"))
+            closed = parse_order_time(trade.get("closedAt"))
+            holding_seconds = max(0, int((closed - opened).total_seconds())) if opened and closed else 0
+            limit_rate = decimal(exit_order.get("stopRate") or stop_rate)
+            violation = journal_rule_violation(
+                {
+                    "id": entry_id,
+                    "tradingDay": paper_trading_day(trade.get("closedAt")),
+                    "createdAt": trade.get("closedAt"),
+                    "market": market,
+                    "symbol": symbol,
+                    "name": name,
+                    "status": "청산",
+                    "exitKind": exit_order.get("exitKind"),
+                    "returnRate": return_rate,
+                    "profit": profit,
+                    "stopRateAtExit": limit_rate,
+                },
+                stop_rate,
+            )
+            profile = state.setdefault("symbols", {}).setdefault(
+                symbol,
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "market": market,
+                    "tradeCount": 0,
+                    "winCount": 0,
+                    "lossCount": 0,
+                    "consecutiveLosses": 0,
+                    "totalProfit": 0.0,
+                    "totalInvested": 0.0,
+                    "returnSum": 0.0,
+                    "scoreSum": 0.0,
+                    "holdingSecondsTotal": 0,
+                    "violationCounts": {"minor": 0, "major": 0, "critical": 0},
+                    "worstViolationSeverity": None,
+                    "cooldownUntil": None,
+                    "recentResults": [],
+                },
+            )
+            profile["name"] = name
+            profile["market"] = market
+            profile["tradeCount"] = int(profile.get("tradeCount") or 0) + 1
+            profile["totalProfit"] = decimal(profile.get("totalProfit")) + profit
+            profile["totalInvested"] = decimal(profile.get("totalInvested")) + invested
+            profile["returnSum"] = decimal(profile.get("returnSum")) + return_rate
+            profile["scoreSum"] = decimal(profile.get("scoreSum")) + entry_score
+            profile["holdingSecondsTotal"] = int(profile.get("holdingSecondsTotal") or 0) + holding_seconds
+            profile["lastTradeAt"] = str(trade.get("closedAt") or "")
+            if return_rate > 0:
+                profile["winCount"] = int(profile.get("winCount") or 0) + 1
+                profile["consecutiveLosses"] = 0
+            else:
+                profile["lossCount"] = int(profile.get("lossCount") or 0) + 1
+                profile["consecutiveLosses"] = int(profile.get("consecutiveLosses") or 0) + 1
+
+            recent = list(profile.get("recentResults") or [])
+            recent.append({"closedAt": trade.get("closedAt"), "returnRate": return_rate, "profit": profit})
+            profile["recentResults"] = recent[-12:]
+            cooldown_minutes = 0
+            if violation:
+                severity = str(violation.get("severity") or "minor")
+                counts = profile.setdefault("violationCounts", {"minor": 0, "major": 0, "critical": 0})
+                counts[severity] = int(counts.get(severity) or 0) + 1
+                if learning_severity_rank(severity) >= learning_severity_rank(profile.get("worstViolationSeverity")):
+                    profile["worstViolationSeverity"] = severity
+                profile["lastViolationAt"] = str(trade.get("closedAt") or "")
+                cooldown_minutes = learning_cooldown_minutes(severity)
+            if int(profile.get("consecutiveLosses") or 0) >= 2:
+                cooldown_minutes = max(cooldown_minutes, 20)
+            if cooldown_minutes and closed:
+                cooldown_until = closed.astimezone(KST) + timedelta(minutes=cooldown_minutes)
+                profile["cooldownUntil"] = cooldown_until.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+            refresh_symbol_learning(profile)
+            memory = {
+                "id": hashlib.sha1(trade_key.encode("utf-8")).hexdigest()[:12],
+                "tradeKey": trade_key,
+                "createdAt": str(trade.get("closedAt") or ""),
+                "tradingDay": paper_trading_day(trade.get("closedAt")),
+                "market": market,
+                "symbol": symbol,
+                "name": name,
+                "result": "규칙 오답" if violation else ("수익 재현" if return_rate > 0 else "손실 학습"),
+                "returnRate": return_rate,
+                "profit": profit,
+                "observation": learning_observation(name, return_rate, violation, profile),
+                "appliedRule": profile.get("primaryRule"),
+                "requiredScore": profile.get("requiredScore"),
+                "allocationScale": profile.get("allocationScale"),
+                "appliedImmediately": True,
+            }
+            state.setdefault("memories", []).append(memory)
+            state.setdefault("processedTrades", []).append(trade_key)
+            processed.add(trade_key)
+            changed = True
+
+        for profile in state.get("symbols", {}).values():
+            before = json.dumps(profile, ensure_ascii=False, sort_keys=True)
+            refresh_symbol_learning(profile)
+            if before != json.dumps(profile, ensure_ascii=False, sort_keys=True):
+                changed = True
+        if changed:
+            state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            save_learning_state_unlocked(state)
+        return json.loads(json.dumps(state, ensure_ascii=False))
+
+
+def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any]) -> dict[str, Any]:
+    profile = (state.get("symbols") or {}).get(symbol) or {}
+    required_score = int(profile.get("requiredScore") or LEARNING_BASE_ENTRY_SCORE)
+    allocation_scale = clamp(profile.get("allocationScale"), 0.40, 1.0, 1.0)
+    cooldown_remaining = learning_time_remaining(profile.get("cooldownUntil"))
+    candidate_score = decimal(score)
+    allowed = cooldown_remaining <= 0 and candidate_score >= required_score
+    if cooldown_remaining > 0:
+        reason = f"종목 학습 규칙 · 재진입 {max(1, (cooldown_remaining + 59) // 60)}분 대기"
+    elif candidate_score < required_score:
+        reason = f"종목 학습 규칙 · {required_score}점 필요 (현재 {candidate_score:.0f}점)"
+    elif profile:
+        reason = f"종목 학습 통과 · {required_score}점 기준 · 비중 {allocation_scale * 100:.0f}% 적용"
+    else:
+        reason = f"신규 종목 · 기본 {LEARNING_BASE_ENTRY_SCORE}점 기준"
+    return {
+        "symbol": symbol,
+        "allowed": allowed,
+        "reason": reason,
+        "requiredScore": required_score,
+        "candidateScore": candidate_score,
+        "allocationScale": allocation_scale,
+        "cooldownRemainingSec": cooldown_remaining,
+        "status": profile.get("status") or "신규 학습",
+        "traits": profile.get("traits") or ["표본 수집"],
+        "appliedImmediately": True,
+    }
+
+
+def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
+    symbols: list[dict[str, Any]] = []
+    active_rules = 0
+    cooldown_count = 0
+    for raw in (state.get("symbols") or {}).values():
+        profile = dict(raw)
+        remaining = learning_time_remaining(profile.get("cooldownUntil"))
+        profile["cooldownActive"] = remaining > 0
+        profile["cooldownRemainingSec"] = remaining
+        if remaining > 0:
+            cooldown_count += 1
+        if (
+            remaining > 0
+            or int(profile.get("requiredScore") or LEARNING_BASE_ENTRY_SCORE) > LEARNING_BASE_ENTRY_SCORE
+            or decimal(profile.get("allocationScale") or 1) < 1
+        ):
+            active_rules += 1
+        symbols.append(profile)
+    risk_order = {"critical": 3, "caution": 2, "watch": 1, "stable": 0}
+    symbols.sort(
+        key=lambda item: (risk_order.get(str(item.get("riskLevel")), 0), int(item.get("tradeCount") or 0)),
+        reverse=True,
+    )
+    memories = list(reversed(state.get("memories") or []))
+    return {
+        "updatedAt": state.get("updatedAt"),
+        "summary": {
+            "learnedTradeCount": len(state.get("processedTrades") or []),
+            "symbolCount": len(symbols),
+            "memoryCount": len(memories),
+            "activeRuleCount": active_rules,
+            "cooldownCount": cooldown_count,
+            "mode": "PAPER_ONLY",
+            "immediateApply": True,
+        },
+        "symbols": symbols,
+        "memories": memories[:40],
+    }
+
+
+def apply_brain_to_mistake_note(note: dict[str, Any], brain: dict[str, Any]) -> None:
+    profiles = {str(item.get("symbol") or ""): item for item in brain.get("symbols") or []}
+    applied_rules = []
+    for symbol in note.get("symbols") or []:
+        profile = profiles.get(str(symbol))
+        if not profile:
+            continue
+        if (
+            int(profile.get("requiredScore") or LEARNING_BASE_ENTRY_SCORE) <= LEARNING_BASE_ENTRY_SCORE
+            and decimal(profile.get("allocationScale") or 1) >= 1
+            and not profile.get("cooldownActive")
+        ):
+            continue
+        applied_rules.append(
+            {
+                "symbol": symbol,
+                "name": profile.get("name") or symbol,
+                "rule": profile.get("primaryRule"),
+                "requiredScore": profile.get("requiredScore"),
+                "allocationScale": profile.get("allocationScale"),
+                "cooldownActive": profile.get("cooldownActive"),
+            }
+        )
+    note["appliedRules"] = applied_rules
+    note["appliedImmediately"] = bool(applied_rules)
+    if applied_rules:
+        note["nextRule"] = " / ".join(f"{item['name']}: {item['rule']}" for item in applied_rules[:3])
 
 
 def build_trading_journal() -> dict[str, Any]:
@@ -2341,6 +2792,8 @@ def build_trading_journal() -> dict[str, Any]:
         analysis = dict(ANALYSIS)
     results = analysis.get("results") or []
     results_by_symbol = {str(item.get("symbol")): item for item in results}
+    learning_state = sync_learning_brain(orders, results_by_symbol)
+    learning_brain = learning_brain_payload(learning_state)
     state = load_journal_state()
     notes = state.get("notes") or {}
     trade_ledger = paper_trade_ledger(orders, results_by_symbol)
@@ -2412,11 +2865,13 @@ def build_trading_journal() -> dict[str, Any]:
                 "verdict": verdict,
                 "reason": reason,
                 "exitKind": exit_order.get("exitKind"),
+                "stopRateAtExit": decimal(exit_order.get("stopRate") or stop_rate),
                 "entryOrderId": order_id,
                 "exitOrderId": exit_order_id,
                 "holdingTime": journal_holding_time(trade.get("openedAt"), trade.get("closedAt")),
                 "entryScore": decimal(entry_order.get("entryScore")),
                 "allocationRate": decimal(entry_order.get("allocationRate")),
+                "learningPolicy": entry_order.get("learningPolicy") if isinstance(entry_order.get("learningPolicy"), dict) else None,
                 "memo": automatic_note["memo"] if use_automatic else user_memo or automatic_note["memo"],
                 "review": automatic_note["review"] if use_automatic else user_review or automatic_note["review"],
                 "tags": automatic_note["tags"] if use_automatic else user_tags or automatic_note["tags"],
@@ -2480,6 +2935,8 @@ def build_trading_journal() -> dict[str, Any]:
         reverse=True,
     )
     mistake_notes = [build_daily_mistake_note(day, entries, stop_rate) for day in note_days]
+    for note in mistake_notes:
+        apply_brain_to_mistake_note(note, learning_brain)
     active_mistake_note = next(
         (item for item in mistake_notes if item.get("tradingDay") == active_trading_day),
         build_daily_mistake_note(active_trading_day, entries, stop_rate),
@@ -2513,6 +2970,7 @@ def build_trading_journal() -> dict[str, Any]:
             "days": mistake_notes,
             "violations": all_violations,
         },
+        "learning": learning_brain,
     }
 
 def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:

@@ -659,7 +659,11 @@ function renderMistakeNotebook(payload = {}) {
   if (mini) mini.dataset.tone = tone;
   if (miniHeadline) miniHeadline.textContent = headline;
   if (miniCopy) miniCopy.textContent = note.nextRule || reflection;
-  if (miniCount) miniCount.textContent = violations.length ? `위반 ${violations.length}건` : "규칙 확인 완료";
+  if (miniCount) {
+    miniCount.textContent = note.appliedImmediately
+      ? `위반 ${violations.length} · 즉시 적용`
+      : (violations.length ? `위반 ${violations.length}건` : "규칙 확인 완료");
+  }
 
   const card = document.querySelector("#mistakeNoteCard");
   if (card) card.className = `mistake-note-card ${tone}`;
@@ -710,6 +714,101 @@ function renderMistakeNotebook(payload = {}) {
   });
 }
 
+function formatLearningCooldown(seconds) {
+  const value = Math.max(0, Number(seconds || 0));
+  if (!value) return "대기 없음";
+  if (value < 60) return `${Math.ceil(value)}초 대기`;
+  return `${Math.ceil(value / 60)}분 대기`;
+}
+
+function renderLearningBrain(learning = {}, entries = []) {
+  const summary = learning.summary || {};
+  const symbols = learning.symbols || [];
+  const memories = learning.memories || [];
+  const updated = document.querySelector("#learningBrainUpdatedAt");
+  const applyStatus = document.querySelector("#learningApplyStatus");
+  if (updated) {
+    updated.textContent = learning.updatedAt
+      ? `${formatJournalTime(learning.updatedAt)} · 거래가 끝날 때마다 뇌 용량 자동 확장`
+      : "첫 청산 거래부터 종목별 기억을 쌓습니다.";
+  }
+  if (applyStatus) {
+    applyStatus.textContent = summary.immediateApply ? "PAPER 다음 거래 즉시 적용" : "학습 준비 중";
+    applyStatus.classList.toggle("is-live", Boolean(summary.immediateApply));
+  }
+
+  const summaryTarget = document.querySelector("#learningBrainSummary");
+  if (summaryTarget) {
+    const items = [
+      ["학습 거래", `${Number(summary.learnedTradeCount || 0)}건`],
+      ["기억 종목", `${Number(summary.symbolCount || 0)}개`],
+      ["활성 원칙", `${Number(summary.activeRuleCount || 0)}개`],
+      ["재진입 대기", `${Number(summary.cooldownCount || 0)}개`],
+    ];
+    summaryTarget.replaceChildren();
+    items.forEach(([label, value]) => {
+      const box = document.createElement("div");
+      box.innerHTML = `<span>${label}</span><b>${value}</b>`;
+      summaryTarget.append(box);
+    });
+  }
+
+  const symbolList = document.querySelector("#learningSymbolList");
+  if (symbolList) {
+    symbolList.replaceChildren();
+    if (!symbols.length) {
+      const empty = document.createElement("div");
+      empty.className = "learning-empty";
+      empty.textContent = "청산 거래가 쌓이면 종목별 특성과 적용 원칙이 생깁니다.";
+      symbolList.append(empty);
+    } else {
+      const latestBySymbol = new Map();
+      entries.forEach((entry) => {
+        if (!latestBySymbol.has(entry.symbol)) latestBySymbol.set(entry.symbol, entry);
+      });
+      symbols.forEach((profile) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = `learning-symbol-row ${profile.riskLevel || "stable"}`;
+        const traits = (profile.traits || []).join(" · ") || "표본 수집";
+        const rule = profile.cooldownActive
+          ? formatLearningCooldown(profile.cooldownRemainingSec)
+          : (profile.primaryRule || "기본 기준 유지");
+        row.innerHTML = `
+          <span><b>${profile.name || profile.symbol}</b><small>${profile.market || "-"} · ${Number(profile.tradeCount || 0)}회 · 승률 ${(Number(profile.winRate || 0) * 100).toFixed(0)}% · ${traits}</small></span>
+          <em><small>최소 점수</small><b>${Number(profile.requiredScore || 80)}점</b></em>
+          <em><small>배정 비중</small><b>${(Number(profile.allocationScale || 1) * 100).toFixed(0)}%</b></em>
+          <strong>${rule}</strong>
+        `;
+        const entry = latestBySymbol.get(profile.symbol);
+        if (entry) row.addEventListener("click", () => showJournalEditor(entry));
+        symbolList.append(row);
+      });
+    }
+  }
+
+  const memoryList = document.querySelector("#learningMemoryList");
+  if (!memoryList) return;
+  memoryList.replaceChildren();
+  if (!memories.length) {
+    const empty = document.createElement("div");
+    empty.className = "learning-empty";
+    empty.textContent = "새로운 학습 기억을 기다리고 있습니다.";
+    memoryList.append(empty);
+    return;
+  }
+  memories.slice(0, 6).forEach((memory) => {
+    const item = document.createElement("div");
+    item.className = `learning-memory-item ${memory.result === "규칙 오답" ? "mistake" : ""}`;
+    item.innerHTML = `
+      <div><b>${memory.name || memory.symbol}</b><em>${memory.result || "학습"}</em></div>
+      <p>${memory.observation || "거래 결과를 학습했습니다."}</p>
+      <small>즉시 적용 · ${memory.appliedRule || "기본 기준 유지"}</small>
+    `;
+    memoryList.append(item);
+  });
+}
+
 function renderTradingJournal(payload = {}) {
   const summary = payload.summary || {};
   const entries = payload.entries || [];
@@ -724,6 +823,7 @@ function renderTradingJournal(payload = {}) {
   renderJournalSummary(document.querySelector("#journalSummary"), summary, false);
   renderJournalSummary(document.querySelector("#journalPageSummary"), summary, true);
   renderMistakeNotebook(payload);
+  renderLearningBrain(payload.learning || {}, entries);
 
   const miniList = document.querySelector("#tradingJournalList");
   const allList = document.querySelector("#journalAllList");
@@ -776,7 +876,8 @@ function setEditorValues(prefix, entry) {
   if (!editor) return;
   editor.hidden = false;
   const title = `${entry.name || entry.symbol} ${entry.sideLabel || "매매"} 메모`;
-  const meta = `${formatJournalTime(entry.createdAt)} · ${entry.reason || "진입 사유 없음"}`;
+  const learningMeta = entry.learningPolicy?.reason ? ` · 학습: ${entry.learningPolicy.reason}` : "";
+  const meta = `${formatJournalTime(entry.createdAt)} · ${entry.reason || "진입 사유 없음"}${learningMeta}`;
   const titleEl = document.querySelector(prefix === "page" ? "#journalPageEditorTitle" : "#journalEditorTitle");
   const metaEl = document.querySelector(prefix === "page" ? "#journalPageEditorMeta" : "#journalEditorMeta");
   const memoEl = document.querySelector(prefix === "page" ? "#journalPageMemo" : "#journalMemo");

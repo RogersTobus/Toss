@@ -990,6 +990,146 @@ body[data-page="journal"] .journal-page {
   line-height: 1.45;
   text-align: center;
 }
+.learning-brain-card {
+  min-width: 0;
+  padding: 14px 15px;
+  border: 1px solid #dacaa6;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(145deg, #fffdf7 0%, #fbf2dc 100%);
+  box-shadow: var(--shadow-soft);
+}
+.learning-brain-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.learning-brain-head h2 { margin: 2px 0 3px; font-size: 16px; }
+.learning-brain-head span { color: var(--muted); font-size: 10px; }
+.learning-brain-head > b {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  border-radius: 999px;
+  background: var(--dark-1);
+  color: #f5e2a7;
+  font-size: 9px;
+  white-space: nowrap;
+}
+.learning-brain-head > b.is-live::before { content: "●"; margin-right: 5px; color: var(--lime); }
+.learning-brain-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 10px;
+}
+.learning-brain-summary > div {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid rgba(190, 158, 79, .23);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .58);
+}
+.learning-brain-summary span,
+.learning-brain-summary b { display: block; min-width: 0; }
+.learning-brain-summary span { color: var(--muted); font-size: 8px; font-weight: 800; }
+.learning-brain-summary b { margin-top: 2px; font-size: 12px; }
+.learning-brain-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr);
+  gap: 10px;
+  margin-top: 9px;
+  min-width: 0;
+}
+.learning-symbol-panel,
+.learning-memory-panel {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(190, 158, 79, .23);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .52);
+}
+.learning-subhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 2px 7px;
+}
+.learning-subhead b { font-size: 11px; }
+.learning-subhead span { color: var(--muted); font-size: 8px; }
+.learning-symbol-list,
+.learning-memory-list {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  max-height: 174px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.learning-symbol-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 62px 62px minmax(105px, auto);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 43px;
+  padding: 6px 8px;
+  border: 1px solid #e8dcc3;
+  border-left: 3px solid #bea75f;
+  border-radius: 8px;
+  background: #fffdf8;
+  color: var(--ink);
+  text-align: left;
+}
+.learning-symbol-row:hover,
+.learning-symbol-row:focus-visible { background: #fff6e2; border-color: #d2b66d; outline: none; }
+.learning-symbol-row.critical { border-left-color: var(--red); background: #fff8f5; }
+.learning-symbol-row.caution { border-left-color: #d98f2f; }
+.learning-symbol-row.watch { border-left-color: #d4af4e; }
+.learning-symbol-row.stable { border-left-color: var(--green); }
+.learning-symbol-row > span,
+.learning-symbol-row > span b,
+.learning-symbol-row > span small { display: block; min-width: 0; }
+.learning-symbol-row > span b { font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.learning-symbol-row > span small { margin-top: 2px; color: var(--muted); font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.learning-symbol-row > em { display: grid; gap: 1px; font-style: normal; text-align: right; }
+.learning-symbol-row > em small { color: var(--muted); font-size: 7px; }
+.learning-symbol-row > em b { font-size: 10px; }
+.learning-symbol-row > strong {
+  justify-self: end;
+  max-width: 160px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  background: var(--gold-tint);
+  color: var(--gold-deep);
+  font-size: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.learning-memory-item {
+  display: grid;
+  gap: 3px;
+  padding: 7px 8px;
+  border: 1px solid #e8dcc3;
+  border-radius: 8px;
+  background: #fffdf8;
+}
+.learning-memory-item.mistake { border-left: 3px solid var(--red); background: #fff8f5; }
+.learning-memory-item > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.learning-memory-item b { font-size: 9px; }
+.learning-memory-item em { color: var(--gold-deep); font-size: 8px; font-style: normal; font-weight: 900; }
+.learning-memory-item p { color: var(--ink-soft); font-size: 8px; line-height: 1.4; overflow-wrap: anywhere; word-break: keep-all; }
+.learning-memory-item small { color: var(--muted); font-size: 7px; }
+.learning-empty {
+  padding: 14px 10px;
+  border: 1px dashed #d8c9a8;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+  text-align: center;
+}
 .journal-workspace {
   flex: 1;
   min-height: 360px;
@@ -1104,6 +1244,8 @@ body[data-page="journal"] .journal-page {
 }
 @media (max-width: 1023px) {
   .journal-review-grid { grid-template-columns: 1fr; }
+  .learning-brain-body { grid-template-columns: 1fr; }
+  .learning-symbol-list, .learning-memory-list { max-height: 210px; }
   .rule-violation-list { max-height: 160px; }
   .journal-workspace,
   .journal-workspace.detail-open { grid-template-columns: 1fr; }
@@ -1114,6 +1256,11 @@ body[data-page="journal"] .journal-page {
   .journal-page-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .journal-page-head .back-btn { width: 100%; }
   .mistake-note-lessons { grid-template-columns: 1fr; }
+  .learning-brain-head { flex-direction: column; }
+  .learning-brain-head > b { width: 100%; text-align: center; }
+  .learning-brain-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .learning-symbol-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .learning-symbol-row > strong { grid-column: 1 / -1; justify-self: start; max-width: 100%; }
   .journal-row.compact { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
   .journal-row.compact strong { grid-column: 1 / -1; justify-self: start; }
 }
@@ -1122,6 +1269,11 @@ body[data-page="journal"] .journal-page {
   .top-actions .add-btn { display: none; }
   .journal-page-summary { grid-template-columns: 1fr; }
   .mistake-note-head { flex-wrap: wrap; }
+  .learning-brain-card { padding: 12px; }
+  .learning-brain-summary { grid-template-columns: 1fr 1fr; }
+  .learning-subhead { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .learning-symbol-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .learning-symbol-row > em:last-of-type { display: none; }
   .journal-ledger-card, .journal-detail-card { padding: 12px; }
   .journal-ledger-head { flex-direction: column; }
   .journal-day-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
