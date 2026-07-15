@@ -2221,6 +2221,120 @@ def looks_like_legacy_automatic_note(note: dict[str, Any]) -> bool:
     return any(phrase in memo for phrase in automatic_phrases)
 
 
+def journal_rule_violation(entry: dict[str, Any], stop_rate: float) -> dict[str, Any] | None:
+    """Classify a stop-loss execution miss without treating normal price noise as a breach."""
+    if entry.get("status") != "청산" or entry.get("exitKind") != "손실선":
+        return None
+    return_rate = decimal(entry.get("returnRate"))
+    excess_rate = decimal(stop_rate) - return_rate
+    tolerance = 0.001  # 0.10%p까지는 호가/수집 오차로 보고 손절 준수로 처리
+    if excess_rate <= tolerance:
+        return None
+
+    if excess_rate >= 0.01:
+        severity, label = "critical", "심각"
+        action = "손절 감지 주기와 가격 급변 구간을 우선 점검하고 같은 종목 재진입을 보류합니다."
+    elif excess_rate >= 0.003:
+        severity, label = "major", "주의"
+        action = "청산 감지 간격을 확인하고 다음 진입 전 호가 변동성을 한 번 더 확인합니다."
+    else:
+        severity, label = "minor", "경미"
+        action = "작은 체결 오차로 기록하되 같은 현상이 반복되는지 다음 거래에서 확인합니다."
+
+    return {
+        "id": entry.get("id"),
+        "tradingDay": entry.get("tradingDay"),
+        "createdAt": entry.get("createdAt"),
+        "market": entry.get("market"),
+        "symbol": entry.get("symbol"),
+        "name": entry.get("name") or entry.get("symbol"),
+        "severity": severity,
+        "label": label,
+        "limitRate": stop_rate,
+        "returnRate": return_rate,
+        "excessRate": excess_rate,
+        "profit": decimal(entry.get("profit")),
+        "observation": f"손절 감지 시점에 설정선보다 {excess_rate * 100:.2f}%p 불리한 가격으로 청산됐습니다.",
+        "action": action,
+    }
+
+
+def build_daily_mistake_note(
+    trading_day: str,
+    entries: list[dict[str, Any]],
+    stop_rate: float,
+) -> dict[str, Any]:
+    """Write a compact, evidence-based daily reflection from completed paper trades."""
+    day_entries = [item for item in entries if item.get("tradingDay") == trading_day]
+    closed = [item for item in day_entries if item.get("status") == "청산"]
+    wins = [item for item in closed if decimal(item.get("returnRate")) > 0]
+    losses = [item for item in closed if decimal(item.get("returnRate")) <= 0]
+    violations = [item.get("ruleViolation") for item in closed if item.get("ruleViolation")]
+    violations = sorted(violations, key=lambda item: decimal(item.get("excessRate")), reverse=True)
+    invested = sum(decimal(item.get("invested")) for item in day_entries)
+    profit = sum(decimal(item.get("profit")) for item in day_entries)
+    return_rate = profit / invested if invested else 0.0
+    stop_count = sum(1 for item in closed if item.get("exitKind") == "손실선")
+    compliant_stops = max(0, stop_count - len(violations))
+
+    if not closed:
+        tone = "neutral"
+        headline = "아직 확정할 오답이 없습니다"
+        reflection = "보유 중인 포지션의 청산 결과가 나오기 전이라 오늘의 판단을 확정하지 않았습니다."
+        lesson = "결과가 나오기 전에는 좋은 진입으로 단정하지 않고, 진입 근거와 손실선을 그대로 유지합니다."
+        next_rule = "청산이 끝난 뒤 진입 근거·실행 오차·결과를 함께 평가합니다."
+    elif violations:
+        worst = violations[0]
+        tone = "danger" if worst.get("severity") == "critical" else "warning"
+        headline = f"손절 실행 오차 {len(violations)}건, 오늘의 최우선 오답"
+        reflection = (
+            f"오늘 {len(closed)}번 청산해 {len(wins)}번 수익을 냈지만, "
+            f"{worst.get('name')}에서 손실선 {percent(stop_rate)}보다 "
+            f"{decimal(worst.get('excessRate')) * 100:.2f}%p 더 밀렸습니다. "
+            "수익 여부보다 손실 제한을 계획한 가격에 실행하는 정확도가 먼저입니다."
+        )
+        lesson = "진입 점수가 높아도 손절 규칙에는 예외가 없고, 급변 구간에서는 감지 간격 자체가 리스크가 됩니다."
+        next_rule = "손절선 초과가 0.10%p를 넘은 종목은 즉시 오답으로 분류하고 재진입 전에 가격 갱신 상태를 확인합니다."
+    elif profit < 0:
+        tone = "warning"
+        headline = "손절은 지켰지만 진입 품질이 아쉬웠다"
+        reflection = (
+            f"오늘 {len(closed)}번 청산 중 {len(losses)}번이 손실이었고, 손익은 {money(profit)}입니다. "
+            f"손절 {compliant_stops}건은 계획 범위에서 끝냈지만 진입 뒤 추세 지속성이 부족했습니다."
+        )
+        lesson = "손절 준수는 방어에 성공한 것이지 진입 판단까지 옳았다는 뜻은 아닙니다."
+        next_rule = "다음 거래에서는 점수뿐 아니라 직전 급등폭과 거래량 지속성을 함께 확인합니다."
+    else:
+        tone = "positive"
+        headline = "오늘은 규칙과 수익이 함께 맞았다"
+        reflection = (
+            f"오늘 {len(closed)}번 청산해 {len(wins)}번 수익, {money(profit)}으로 마감했습니다. "
+            f"손절 {compliant_stops}건도 계획 범위 안에서 처리돼 실행 규칙이 유지됐습니다."
+        )
+        lesson = "좋았던 결과보다 어떤 진입 조건과 청산 실행이 반복 가능했는지를 남기는 것이 중요합니다."
+        next_rule = "수익 거래의 거래량·추세 조건을 다음 거래와 비교해 재현 가능한 패턴만 남깁니다."
+
+    return {
+        "tradingDay": trading_day,
+        "author": "Orbit 자동 복기",
+        "tone": tone,
+        "headline": headline,
+        "reflection": reflection,
+        "lesson": lesson,
+        "nextRule": next_rule,
+        "stats": {
+            "closedCount": len(closed),
+            "winCount": len(wins),
+            "lossCount": len(losses),
+            "violationCount": len(violations),
+            "compliantStopCount": compliant_stops,
+            "profit": profit,
+            "returnRate": return_rate,
+        },
+        "violations": violations,
+    }
+
+
 def build_trading_journal() -> dict[str, Any]:
     orders = load_paper_orders()
     with ANALYSIS_LOCK:
@@ -2238,6 +2352,7 @@ def build_trading_journal() -> dict[str, Any]:
     wins = sum(1 for item in closed_trades if decimal(item.get("returnRate")) > 0)
     closed_count = len(closed_trades)
     open_count = len(open_paper_positions(orders))
+    stop_rate = decimal(strategy_config().get("stopRate") or PAPER_STOP_RATE)
 
     for trade in sorted(
         trade_ledger,
@@ -2277,8 +2392,7 @@ def build_trading_journal() -> dict[str, Any]:
         )
         use_automatic = auto_saved or not (user_memo or user_review or user_tags)
         note_source = "auto" if use_automatic else "user"
-        entries.append(
-            {
+        entry = {
                 "id": order_id,
                 "createdAt": str(trade.get("closedAt") or trade.get("openedAt") or ""),
                 "tradingDay": paper_trading_day(trade.get("closedAt") or trade.get("openedAt")),
@@ -2300,13 +2414,17 @@ def build_trading_journal() -> dict[str, Any]:
                 "exitKind": exit_order.get("exitKind"),
                 "entryOrderId": order_id,
                 "exitOrderId": exit_order_id,
+                "holdingTime": journal_holding_time(trade.get("openedAt"), trade.get("closedAt")),
+                "entryScore": decimal(entry_order.get("entryScore")),
+                "allocationRate": decimal(entry_order.get("allocationRate")),
                 "memo": automatic_note["memo"] if use_automatic else user_memo or automatic_note["memo"],
                 "review": automatic_note["review"] if use_automatic else user_review or automatic_note["review"],
                 "tags": automatic_note["tags"] if use_automatic else user_tags or automatic_note["tags"],
                 "noteSource": note_source,
                 "updatedAt": note.get("updatedAt"),
             }
-        )
+        entry["ruleViolation"] = journal_rule_violation(entry, stop_rate)
+        entries.append(entry)
 
     daily: dict[str, dict[str, Any]] = {}
     for entry in entries:
@@ -2357,6 +2475,17 @@ def build_trading_journal() -> dict[str, Any]:
         },
     )
 
+    note_days = sorted(
+        {str(item.get("tradingDay") or "") for item in entries if item.get("tradingDay")} | {active_trading_day},
+        reverse=True,
+    )
+    mistake_notes = [build_daily_mistake_note(day, entries, stop_rate) for day in note_days]
+    active_mistake_note = next(
+        (item for item in mistake_notes if item.get("tradingDay") == active_trading_day),
+        build_daily_mistake_note(active_trading_day, entries, stop_rate),
+    )
+    all_violations = [item.get("ruleViolation") for item in entries if item.get("ruleViolation")]
+
     count = len(trade_ledger)
     period_returns = period_profit_summary(trade_ledger)
     summary = {
@@ -2373,11 +2502,17 @@ def build_trading_journal() -> dict[str, Any]:
         "activeTradingDay": active_trading_day,
         "activeDay": active_day,
         "days": days,
+        "violationCount": len(all_violations),
     }
     return {
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "summary": summary,
         "entries": entries,
+        "coaching": {
+            "active": active_mistake_note,
+            "days": mistake_notes,
+            "violations": all_violations,
+        },
     }
 
 def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:

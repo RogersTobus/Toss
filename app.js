@@ -609,17 +609,18 @@ function formatTradePrice(entry) {
 function createJournalRow(entry, compact = false) {
   const row = document.createElement("button");
   row.type = "button";
-  row.className = `journal-row ${entry.side === "SELL" ? "sell" : "buy"}`;
+  const violation = entry.ruleViolation || null;
+  row.className = `journal-row ${entry.side === "SELL" ? "sell" : "buy"}${compact ? " compact" : ""}${violation ? " has-violation" : ""}`;
   row.dataset.journalId = entry.id;
   const isOpen = selectedJournalEntry?.id === entry.id;
   row.classList.toggle("is-open", isOpen);
   row.setAttribute("aria-expanded", String(isOpen));
-  const status = entry.review || entry.exitKind || entry.status || "기록";
+  const status = violation ? `${violation.label} 위반` : (entry.review || entry.exitKind || entry.status || "기록");
   const priceText = entry.side === "SELL" ? `${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 청산` : `${formatTradePrice(entry)} 진입`;
   row.innerHTML = `
     <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(entry.createdAt)} · ${entry.market || "-"} · ${entry.sideLabel || entry.side || "-"} · ${priceText}</small></span>
     <em class="${Number(entry.returnRate || 0) >= 0 ? "positive-text" : "negative-text"}">${signedPercent(entry.returnRate || 0)}</em>
-    <strong>${status}</strong>
+    <strong class="${violation ? `violation-${violation.severity || "minor"}` : ""}">${status}</strong>
   `;
   row.addEventListener("click", () => openJournalEditor(entry));
   return row;
@@ -641,6 +642,74 @@ function renderJournalSummary(target, summary = {}, page = false) {
   });
 }
 
+function renderMistakeNotebook(payload = {}) {
+  const coaching = payload.coaching || {};
+  const note = coaching.active || {};
+  const entries = payload.entries || [];
+  const stats = note.stats || {};
+  const violations = note.violations || [];
+  const tone = note.tone || "neutral";
+  const headline = note.headline || "오늘의 매매를 복기하고 있습니다.";
+  const reflection = note.reflection || "청산 결과가 나오면 실수와 다음 원칙을 자동으로 정리합니다.";
+
+  const mini = document.querySelector("#journalCoachMini");
+  const miniHeadline = document.querySelector("#journalCoachMiniHeadline");
+  const miniCopy = document.querySelector("#journalCoachMiniCopy");
+  const miniCount = document.querySelector("#journalCoachMiniCount");
+  if (mini) mini.dataset.tone = tone;
+  if (miniHeadline) miniHeadline.textContent = headline;
+  if (miniCopy) miniCopy.textContent = note.nextRule || reflection;
+  if (miniCount) miniCount.textContent = violations.length ? `위반 ${violations.length}건` : "규칙 확인 완료";
+
+  const card = document.querySelector("#mistakeNoteCard");
+  if (card) card.className = `mistake-note-card ${tone}`;
+  const dateEl = document.querySelector("#mistakeNoteDate");
+  const scoreEl = document.querySelector("#mistakeNoteScore");
+  const headlineEl = document.querySelector("#mistakeNoteHeadline");
+  const reflectionEl = document.querySelector("#mistakeNoteReflection");
+  const lessonEl = document.querySelector("#mistakeNoteLesson");
+  const ruleEl = document.querySelector("#mistakeNoteRule");
+  if (dateEl) dateEl.textContent = `${formatTradingDay(note.tradingDay)} · ${note.author || "Orbit 자동 복기"}`;
+  if (scoreEl) scoreEl.textContent = `${Number(stats.closedCount || 0)}청산 · ${Number(stats.winCount || 0)}승 · 오답 ${violations.length}`;
+  if (headlineEl) headlineEl.textContent = headline;
+  if (reflectionEl) reflectionEl.textContent = reflection;
+  if (lessonEl) lessonEl.textContent = note.lesson || "결과와 실행 과정을 함께 확인합니다.";
+  if (ruleEl) ruleEl.textContent = note.nextRule || "손실선과 진입 근거를 유지합니다.";
+
+  const countEl = document.querySelector("#ruleViolationCount");
+  const list = document.querySelector("#ruleViolationList");
+  if (countEl) countEl.textContent = `${violations.length}건`;
+  if (!list) return;
+  list.replaceChildren();
+  if (!violations.length) {
+    const empty = document.createElement("div");
+    empty.className = "rule-violation-empty";
+    empty.textContent = "오늘 확인된 규칙 위반이 없습니다. 손절 실행이 계획 범위 안에 있습니다.";
+    list.append(empty);
+    return;
+  }
+
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  violations.forEach((violation) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `rule-violation-item ${violation.severity || "minor"}`;
+    button.innerHTML = `
+      <em>${violation.label || "확인"}</em>
+      <span><b>${violation.name || violation.symbol}</b><small>손실선 초과 ${Number(violation.excessRate || 0) * 100 >= 0 ? "+" : ""}${(Number(violation.excessRate || 0) * 100).toFixed(2)}%p</small></span>
+      <strong>${signedPercent(violation.returnRate || 0)}</strong>
+    `;
+    const entry = entriesById.get(violation.id);
+    if (entry) {
+      button.addEventListener("click", () => {
+        showJournalEditor(entry);
+        document.querySelector("#journalPageEditor")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    }
+    list.append(button);
+  });
+}
+
 function renderTradingJournal(payload = {}) {
   const summary = payload.summary || {};
   const entries = payload.entries || [];
@@ -654,6 +723,7 @@ function renderTradingJournal(payload = {}) {
 
   renderJournalSummary(document.querySelector("#journalSummary"), summary, false);
   renderJournalSummary(document.querySelector("#journalPageSummary"), summary, true);
+  renderMistakeNotebook(payload);
 
   const miniList = document.querySelector("#tradingJournalList");
   const allList = document.querySelector("#journalAllList");
@@ -668,7 +738,7 @@ function renderTradingJournal(payload = {}) {
       return;
     }
     if (index === 0) {
-      const rows = entries.filter((entry) => entry.tradingDay === summary.activeTradingDay).slice(0, 4);
+      const rows = entries.filter((entry) => entry.tradingDay === summary.activeTradingDay).slice(0, 3);
       if (!rows.length) {
         const empty = document.createElement("div");
         empty.className = "journal-empty";
@@ -695,7 +765,7 @@ function renderTradingJournal(payload = {}) {
       heading.className = "journal-day-heading";
       heading.innerHTML = `<b>${formatTradingDay(day)}</b><span>${Number(daySummary.count || dayEntries.length)}건 · ${signedWon(daySummary.totalProfit || 0)} · 승률 ${signedPercent(daySummary.winRate || 0)}</span>`;
       group.append(heading);
-      dayEntries.forEach((entry) => group.append(createJournalRow(entry, false)));
+      dayEntries.forEach((entry) => group.append(createJournalRow(entry, true)));
       list.append(group);
     });
   });

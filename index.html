@@ -169,6 +169,11 @@
                 <div><span>누적 손익</span><b>+₩0</b></div>
                 <div><span>평균 수익률</span><b>+0.00%</b></div>
               </div>
+              <button class="journal-coach-mini" id="journalCoachMini" type="button" data-open-page="journal">
+                <span><b>ORBIT 오답노트</b><em id="journalCoachMiniCount">분석 중</em></span>
+                <strong id="journalCoachMiniHeadline">오늘의 매매를 복기하고 있습니다.</strong>
+                <small id="journalCoachMiniCopy">청산 결과가 나오면 실수와 다음 원칙을 자동으로 정리합니다.</small>
+              </button>
               <div class="journal-list" id="tradingJournalList">
                 <div class="journal-empty">모의 매매가 기록되면 자동으로 일지가 쌓입니다.</div>
               </div>
@@ -282,6 +287,34 @@
             <div><span>누적 손익</span><b>+₩0</b></div>
             <div><span>승률</span><b>+0.00%</b></div>
           </div>
+
+          <section class="journal-review-grid" aria-label="Orbit 자동 오답노트">
+            <article class="mistake-note-card neutral" id="mistakeNoteCard">
+              <div class="mistake-note-head">
+                <div>
+                  <p class="eyebrow accent">ORBIT'S REVIEW NOTE</p>
+                  <span id="mistakeNoteDate">오늘의 자동 복기</span>
+                </div>
+                <b id="mistakeNoteScore">청산 대기</b>
+              </div>
+              <h2 id="mistakeNoteHeadline">오늘의 매매를 복기하고 있습니다.</h2>
+              <p id="mistakeNoteReflection">청산된 거래를 기준으로 판단과 실행을 분리해 기록합니다.</p>
+              <div class="mistake-note-lessons">
+                <div><span>배운 점</span><b id="mistakeNoteLesson">결과가 확정되면 자동으로 작성합니다.</b></div>
+                <div><span>다음 거래 원칙</span><b id="mistakeNoteRule">손실선과 진입 근거를 그대로 유지합니다.</b></div>
+              </div>
+            </article>
+
+            <article class="rule-violation-card">
+              <div class="rule-violation-head">
+                <div><p class="eyebrow">RULE CHECK</p><h2>규칙 위반 압축보기</h2></div>
+                <b id="ruleViolationCount">0건</b>
+              </div>
+              <div class="rule-violation-list" id="ruleViolationList">
+                <div class="rule-violation-empty">오늘 확인된 규칙 위반이 없습니다.</div>
+              </div>
+            </article>
+          </section>
 
           <div class="journal-workspace">
             <article class="journal-ledger-card">
