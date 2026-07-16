@@ -206,6 +206,51 @@ class StrategyExecutionTests(unittest.TestCase):
             ["FRESH_HIGH", "FRESH_LOW", "OVERUSED"],
         )
 
+    def test_today_trade_stats_and_operation_report_include_win_rate(self):
+        trades = [
+            {
+                "status": "CLOSED",
+                "closedAt": "2026-07-16T10:00:00+0900",
+                "returnRate": 0.01,
+            },
+            {
+                "status": "CLOSED",
+                "closedAt": "2026-07-16T10:01:00+0900",
+                "returnRate": -0.0045,
+            },
+            {
+                "status": "CLOSED",
+                "closedAt": "2026-07-16T10:02:00+0900",
+                "returnRate": 0.0,
+            },
+            {
+                "status": "OPEN",
+                "openedAt": "2026-07-16T10:03:00+0900",
+                "returnRate": 0.02,
+            },
+        ]
+        stats = server.trade_outcome_stats(trades, "2026-07-16")
+        self.assertEqual(stats["closedCount"], 3)
+        self.assertEqual(stats["winCount"], 1)
+        self.assertEqual(stats["lossCount"], 1)
+        self.assertEqual(stats["flatCount"], 1)
+        self.assertAlmostEqual(stats["winRate"], 1 / 3)
+
+        message = server.build_operation_report(
+            "KR",
+            "KR 정규장",
+            [],
+            [],
+            {
+                "periodReturns": {"today": {"profitKrw": 1000, "returnRate": 0.001}},
+                "todayTradeStats": stats,
+                "openPositionCount": 0,
+                "todayOrderCount": 3,
+                "decision": {},
+            },
+        )
+        self.assertIn("현재 승률: 33.3% (1승 · 1패 · 1보합 / 3건)", message)
+
 
 if __name__ == "__main__":
     unittest.main()

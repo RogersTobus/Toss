@@ -1216,6 +1216,7 @@ def build_operation_report(
     market_name = "한국장" if market == "KR" else "미국장" if market == "US" else market
     period = summary.get("periodReturns") or {}
     today = period.get("today") or {}
+    trade_stats = summary.get("todayTradeStats") or {}
     decision = summary.get("decision") or {}
     top_candidates = [
         item for item in results
@@ -1237,6 +1238,13 @@ def build_operation_report(
             f"시간: {now.strftime('%Y-%m-%d %H:%M %Z')}",
             "",
             f"오늘 단타 손익: {money(today.get('profitKrw'))} ({percent(today.get('returnRate'))})",
+            (
+                f"현재 승률: {decimal(trade_stats.get('winRate')) * 100:.1f}% "
+                f"({int(trade_stats.get('winCount') or 0)}승 · "
+                f"{int(trade_stats.get('lossCount') or 0)}패 · "
+                f"{int(trade_stats.get('flatCount') or 0)}보합 / "
+                f"{int(trade_stats.get('closedCount') or 0)}건)"
+            ),
             f"보유 포지션: {summary.get('openPositionCount', 0)}개",
             f"오늘 진입: {summary.get('todayOrderCount', 0)}건",
             f"운용 판단: {decision.get('mode') or '분석 중'}",
@@ -1994,6 +2002,29 @@ def safety_gate(summary: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def trade_outcome_stats(
+    trades: list[dict[str, Any]], trading_day: str | None = None
+) -> dict[str, Any]:
+    day = trading_day or paper_trading_day()
+    closed = [
+        trade
+        for trade in trades
+        if trade.get("status") == "CLOSED"
+        and paper_trading_day(trade.get("closedAt") or trade.get("openedAt")) == day
+    ]
+    win_count = sum(1 for trade in closed if decimal(trade.get("returnRate")) > 0)
+    loss_count = sum(1 for trade in closed if decimal(trade.get("returnRate")) < 0)
+    flat_count = len(closed) - win_count - loss_count
+    return {
+        "tradingDay": day,
+        "closedCount": len(closed),
+        "winCount": win_count,
+        "lossCount": loss_count,
+        "flatCount": flat_count,
+        "winRate": win_count / len(closed) if closed else 0.0,
+    }
+
+
 def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, Any]:
     config = strategy_config()
     execution_policy = strategy_execution_policy(config)
@@ -2026,6 +2057,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
 
     results_by_symbol = {str(item.get("symbol")): item for item in results}
     trade_ledger = paper_trade_ledger(orders, results_by_symbol)
+    today_trade_stats = trade_outcome_stats(trade_ledger, today)
     capital = paper_capital_summary(trade_ledger, execution_policy)
     position_returns = []
     for symbol, order in positions.items():
@@ -2078,6 +2110,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         },
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(trade_ledger),
+        "todayTradeStats": today_trade_stats,
         "technicalReview": tech_review,
         "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason, config),
         "todayOrderCount": len(today_orders),
