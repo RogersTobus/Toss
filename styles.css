@@ -966,6 +966,64 @@ body[data-page="journal"] .journal-page {
 .goal-stage-progress i { display: block; height: 100%; border-radius: inherit; background: var(--gold); }
 .goal-stage.achieved .goal-stage-progress i { background: var(--green); }
 .goal-stage small { display: block; margin-top: 3px; color: var(--muted); font-size: 7.5px; font-weight: 700; text-align: right; }
+.research-library-card {
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+}
+.research-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  cursor: pointer;
+  list-style: none;
+}
+.research-library-head::-webkit-details-marker { display: none; }
+.research-library-head > div { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.research-library-head .eyebrow { flex: 0 0 auto; margin: 0; font-size: 8px; }
+.research-library-head b { overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.research-library-head > span {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--gold-tint);
+  color: var(--gold-deep);
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.research-library-snapshot { margin-top: 8px; color: var(--ink-soft); font-size: 9px; font-weight: 700; line-height: 1.5; }
+.research-library-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 7px; margin-top: 8px; min-width: 0; }
+.research-principle {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--gold-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+.research-principle.warning { border-left-color: #db9c2e; }
+.research-principle.positive { border-left-color: var(--green); }
+.research-principle-title { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 6px; min-width: 0; }
+.research-principle-title em { color: var(--gold-deep); font-size: 8px; font-style: normal; font-weight: 900; }
+.research-principle-title b { overflow: hidden; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.research-principle-title span { padding: 2px 5px; border-radius: 999px; background: var(--gold-tint); color: var(--gold-deep); font-size: 7px; font-weight: 800; white-space: nowrap; }
+.research-principle p { color: var(--muted); font-size: 8.5px; line-height: 1.5; word-break: keep-all; }
+.research-application { display: grid; gap: 2px; padding: 6px 7px; border-radius: 7px; background: rgba(255,255,255,.64); }
+.research-application span { color: var(--gold-deep); font-size: 7px; font-weight: 900; }
+.research-application b { color: var(--ink-soft); font-size: 8px; line-height: 1.5; word-break: keep-all; }
+.research-principle a { color: var(--gold-deep); font-size: 7.5px; font-weight: 800; line-height: 1.4; text-decoration: none; overflow-wrap: anywhere; }
+.research-principle a:hover { text-decoration: underline; }
+.research-library-disclaimer { margin-top: 7px; color: var(--muted); font-size: 7.5px; line-height: 1.4; }
+.research-library-empty { grid-column: 1 / -1; padding: 12px; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 9px; text-align: center; }
 .performance-trend-card {
   display: grid;
   gap: 12px;
@@ -1730,6 +1788,12 @@ body[data-page="journal"] .journal-page {
   .goal-roadmap-head { align-items: flex-start; }
   .goal-roadmap-head > div { display: grid; gap: 2px; }
   .goal-roadmap-now { line-height: 1.55; }
+  .research-library-head { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .research-library-head > div { display: grid; gap: 2px; }
+  .research-library-head > span { align-self: flex-start; }
+  .research-library-grid { grid-template-columns: 1fr; }
+  .research-principle-title { grid-template-columns: auto minmax(0, 1fr); }
+  .research-principle-title span { grid-column: 1 / -1; justify-self: start; }
   .performance-insight { grid-template-columns: 1fr; }
   .performance-insight p { grid-column: auto; }
   .current-strategy-head { flex-direction: column; }

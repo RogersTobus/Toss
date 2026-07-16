@@ -1236,43 +1236,16 @@ def build_operation_report(
     period = summary.get("periodReturns") or {}
     today = period.get("today") or {}
     trade_stats = summary.get("todayTradeStats") or {}
-    decision = summary.get("decision") or {}
-    top_candidates = [
-        item for item in results
-        if str(item.get("verdict") or "").strip()
-    ][:3]
-    candidate_lines = []
-    for item in top_candidates:
-        name = str(item.get("name") or item.get("symbol") or "-")
-        verdict = str(item.get("verdict") or "분석 중")
-        reason = str(item.get("reason") or "근거 수집 중")
-        candidate_lines.append(f"- {name}: {verdict} · {reason}")
-    if not candidate_lines:
-        candidate_lines.append("- 후보 없음: 현재는 관망 구간")
-
     return "\n".join(
         [
-            ":bar_chart: *Orbit 30분 운영 중간보고*",
-            f"시장: {market_name} · {session}",
-            f"시간: {now.strftime('%Y-%m-%d %H:%M %Z')}",
-            "",
-            f"오늘 단타 손익: {money(today.get('profitKrw'))} ({percent(today.get('returnRate'))})",
+            f":bar_chart: *Orbit 30분 운영 로그 · {market_name}*",
+            f"{now.strftime('%m-%d %H:%M')} · {session}",
             (
                 f"현재 승률: {decimal(trade_stats.get('winRate')) * 100:.1f}% "
-                f"({int(trade_stats.get('winCount') or 0)}승 · "
-                f"{int(trade_stats.get('lossCount') or 0)}패 · "
-                f"{int(trade_stats.get('flatCount') or 0)}보합 / "
-                f"{int(trade_stats.get('closedCount') or 0)}건)"
+                f"({int(trade_stats.get('winCount') or 0)}승 / "
+                f"{int(trade_stats.get('closedCount') or 0)}청산)"
             ),
-            f"보유 포지션: {summary.get('openPositionCount', 0)}개",
-            f"오늘 진입: {summary.get('todayOrderCount', 0)}건",
-            f"운용 판단: {decision.get('mode') or '분석 중'}",
-            f"다음 행동: {decision.get('action') or '시장 강도 확인'}",
-            "",
-            "실시간 분석 요약:",
-            *candidate_lines,
-            "",
-            f"서버 상태: 정상 · 분석 루프 {len(results)}개 후보 확인",
+            f"오늘 손익금: {money(today.get('profitKrw'))}",
         ]
     )
 
@@ -5160,6 +5133,77 @@ def trading_goal_roadmap(
     }
 
 
+def strategy_research_library(goal_roadmap: dict[str, Any]) -> dict[str, Any]:
+    closed_count = int(goal_roadmap.get("closedCount") or 0)
+    win_rate = decimal(goal_roadmap.get("winRate"))
+    payoff_ratio = decimal(goal_roadmap.get("payoffRatio"))
+    current_label = str(goal_roadmap.get("currentLabel") or "1차")
+    if closed_count < 500:
+        phase = "표본 확장"
+        guidance = "아직 전략을 확정하지 않고 거래 표본과 장세별 차이를 더 모읍니다."
+    elif current_label == "최종":
+        phase = "최종 검증"
+        guidance = "주전 전략은 고정하고 별도 검증 구간의 후보 전략만 비교합니다."
+    else:
+        phase = "장세 확장"
+        guidance = "한국·미국과 상승·하락·횡보 구간에서 같은 우위가 유지되는지 확인합니다."
+    payoff_text = "무손실" if payoff_ratio >= 99 else f"{payoff_ratio:.2f}"
+    return {
+        "phase": phase,
+        "snapshot": (
+            f"현재 청산 {closed_count:,}건 · 승률 {win_rate * 100:.1f}% · "
+            f"손익비 {payoff_text} · {guidance}"
+        ),
+        "principles": [
+            {
+                "id": "backtest-overfitting",
+                "category": "검증",
+                "title": "좋은 백테스트가 곧 실력은 아니다",
+                "finding": "많은 전략 조합 중 최고 결과만 고르면 우연한 패턴을 실력으로 오인할 가능성이 커집니다.",
+                "application": "기존 주전 전략은 고정하고, 후보 전략은 분리된 기간과 다른 장세에서 통과해야만 승격합니다.",
+                "status": "분리 검증 원칙",
+                "tone": "warning",
+                "sourceTitle": "The Probability of Backtest Overfitting · Bailey et al.",
+                "sourceUrl": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2326253",
+            },
+            {
+                "id": "multiple-testing",
+                "category": "통계",
+                "title": "많이 시험할수록 우연한 승자가 생긴다",
+                "finding": "여러 전략을 반복 시험하면 선택 편향으로 성과가 부풀 수 있어 단일 승률이나 샤프 수치만 믿기 어렵습니다.",
+                "application": "성공한 설정뿐 아니라 실패한 실험도 모두 남기고, 후보 수와 표본 크기를 함께 보고 판단합니다.",
+                "status": "전체 실험 기록",
+                "tone": "warning",
+                "sourceTitle": "Deflating the Sharpe Ratio · López de Prado",
+                "sourceUrl": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2465675",
+            },
+            {
+                "id": "robust-performance",
+                "category": "성과",
+                "title": "승률 하나보다 생존력이 중요하다",
+                "finding": "백테스트의 대표 성과 수치만으로 실제 구간을 잘 예측하지 못하며 변동성과 최대낙폭도 함께 봐야 합니다.",
+                "application": "승률과 손익비를 함께 보며, 다음 검증에서는 최대낙폭·장세별 성과·별도 구간 결과를 승격 기준에 추가합니다.",
+                "status": f"현재 손익비 {payoff_text}",
+                "tone": "positive" if payoff_ratio >= 1.5 else "warning",
+                "sourceTitle": "All that Glitters Is Not Gold · Wiecki et al.",
+                "sourceUrl": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2745220",
+            },
+            {
+                "id": "trading-costs",
+                "category": "실전",
+                "title": "거래가 많을수록 비용 검증이 필수다",
+                "finding": "빈번한 거래는 비용과 과신 때문에 순성과를 크게 훼손할 수 있으므로 총수익만으로 실전성을 판단하면 안 됩니다.",
+                "application": "모의투자는 무제한 진입으로 학습하되, 실전 전환 전 수수료·세금·환전·슬리피지를 뺀 순기대값으로 다시 검증합니다.",
+                "status": "실전 전 필수",
+                "tone": "neutral",
+                "sourceTitle": "Trading Is Hazardous to Your Wealth · Barber & Odean",
+                "sourceUrl": "https://faculty.haas.berkeley.edu/odean/Papers%20current%20versions/Individual_Investor_Performance_Final.pdf",
+            },
+        ],
+        "disclaimer": "연구 결과는 전략의 정답이 아니라 과신을 막는 검증 기준입니다. 실제 승격은 Orbit의 별도 표본 결과로 결정합니다.",
+    }
+
+
 def build_trading_journal() -> dict[str, Any]:
     orders = load_paper_orders()
     with ANALYSIS_LOCK:
@@ -5340,6 +5384,7 @@ def build_trading_journal() -> dict[str, Any]:
 
     count = len(trade_ledger)
     period_returns = period_profit_summary(trade_ledger)
+    goal_roadmap = trading_goal_roadmap(closed_trades, len(all_violations))
     summary = {
         "count": count,
         "openCount": open_count,
@@ -5355,7 +5400,7 @@ def build_trading_journal() -> dict[str, Any]:
         "activeDay": active_day,
         "days": days,
         "violationCount": len(all_violations),
-        "goalRoadmap": trading_goal_roadmap(closed_trades, len(all_violations)),
+        "goalRoadmap": goal_roadmap,
     }
     return {
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -5367,6 +5412,7 @@ def build_trading_journal() -> dict[str, Any]:
             "violations": all_violations,
         },
         "learning": learning_brain,
+        "research": strategy_research_library(goal_roadmap),
     }
 
 def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:

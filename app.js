@@ -729,6 +729,60 @@ function renderGoalRoadmap(summary = {}) {
   });
 }
 
+function renderResearchLibrary(research = {}) {
+  const status = document.querySelector("#researchLibraryStatus");
+  const snapshot = document.querySelector("#researchLibrarySnapshot");
+  const grid = document.querySelector("#researchLibraryGrid");
+  const disclaimer = document.querySelector("#researchLibraryDisclaimer");
+  if (!status || !snapshot || !grid || !disclaimer) return;
+
+  const principles = research.principles || [];
+  status.textContent = `${research.phase || "연구 준비"} · 근거 ${principles.length}건`;
+  snapshot.textContent = research.snapshot || "현재 거래 결과와 연구 원칙을 연결하고 있습니다.";
+  disclaimer.textContent = research.disclaimer || "연구는 전략의 정답이 아니라 과신을 막는 검증 기준으로 사용합니다.";
+  grid.replaceChildren();
+
+  if (!principles.length) {
+    const empty = document.createElement("div");
+    empty.className = "research-library-empty";
+    empty.textContent = "검증 자료를 정리하고 있습니다.";
+    grid.append(empty);
+    return;
+  }
+
+  principles.forEach((principle) => {
+    const card = document.createElement("article");
+    card.className = `research-principle ${principle.tone || "neutral"}`;
+    const title = document.createElement("div");
+    title.className = "research-principle-title";
+    const category = document.createElement("em");
+    category.textContent = principle.category || "연구";
+    const heading = document.createElement("b");
+    heading.textContent = principle.title || "검증 원칙";
+    const badge = document.createElement("span");
+    badge.textContent = principle.status || "검토 중";
+    title.append(category, heading, badge);
+
+    const finding = document.createElement("p");
+    finding.textContent = principle.finding || "연구 결과를 확인하고 있습니다.";
+    const application = document.createElement("div");
+    application.className = "research-application";
+    const applicationLabel = document.createElement("span");
+    applicationLabel.textContent = "우리 적용";
+    const applicationText = document.createElement("b");
+    applicationText.textContent = principle.application || "전략 검증 기준에 반영합니다.";
+    application.append(applicationLabel, applicationText);
+
+    const source = document.createElement("a");
+    source.textContent = `${principle.sourceTitle || "원문 연구"} ↗`;
+    source.href = String(principle.sourceUrl || "#").startsWith("https://") ? principle.sourceUrl : "#";
+    source.target = "_blank";
+    source.rel = "noopener noreferrer";
+    card.append(title, finding, application, source);
+    grid.append(card);
+  });
+}
+
 function renderJournalPerformance(summary = {}) {
   const card = document.querySelector("#performanceTrendCard");
   const chart = document.querySelector("#performanceTrendChart");
@@ -1160,6 +1214,7 @@ function renderTradingJournal(payload = {}) {
   renderJournalSummary(document.querySelector("#journalSummary"), summary, false);
   renderJournalSummary(document.querySelector("#journalPageSummary"), summary, true);
   renderGoalRoadmap(summary);
+  renderResearchLibrary(payload.research || {});
   renderJournalPerformance(summary);
   renderMistakeNotebook(payload);
   renderLearningBrain(payload.learning || {}, entries);

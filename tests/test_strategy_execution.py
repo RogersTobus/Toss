@@ -293,7 +293,10 @@ class StrategyExecutionTests(unittest.TestCase):
                 "decision": {},
             },
         )
-        self.assertIn("현재 승률: 33.3% (1승 · 1패 · 1보합 / 3건)", message)
+        self.assertIn("현재 승률: 33.3% (1승 / 3청산)", message)
+        self.assertIn("오늘 손익금: +1,000원", message)
+        self.assertNotIn("보유 포지션", message)
+        self.assertNotIn("실시간 분석 요약", message)
 
     def test_time_exit_follow_up_observes_each_horizon_and_writes_verdict(self):
         closed = datetime(2026, 7, 16, 5, 0, tzinfo=timezone.utc)
@@ -363,6 +366,19 @@ class StrategyExecutionTests(unittest.TestCase):
 
         final_clear = server.trading_goal_roadmap(final_trades, 0)
         self.assertTrue(final_clear["stages"][2]["achieved"])
+
+    def test_strategy_research_library_links_evidence_to_current_metrics(self):
+        roadmap = server.trading_goal_roadmap(
+            [{"returnRate": 0.01}, {"returnRate": -0.004}], 0
+        )
+        research = server.strategy_research_library(roadmap)
+        self.assertEqual(research["phase"], "표본 확장")
+        self.assertIn("승률 50.0%", research["snapshot"])
+        self.assertEqual(len(research["principles"]), 4)
+        self.assertTrue(
+            all(item["sourceUrl"].startswith("https://") for item in research["principles"])
+        )
+        self.assertTrue(all(item.get("application") for item in research["principles"]))
 
 
 if __name__ == "__main__":
