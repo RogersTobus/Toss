@@ -129,6 +129,20 @@ class OffMarketResearchTests(unittest.TestCase):
             )
         return rows
 
+    def test_candle_aggregation_accepts_api_date_and_epoch_timestamps(self):
+        date_rows = self.candles(120)
+        for row in date_rows:
+            row["timestamp"] = row["timestamp"][:10]
+        self.assertGreater(len(server.aggregate_study_candles(date_rows, "1w")), 10)
+        self.assertGreater(len(server.aggregate_study_candles(date_rows, "1mo")), 3)
+
+        moment = datetime(2026, 7, 16, tzinfo=timezone.utc)
+        seconds = int(moment.timestamp())
+        self.assertEqual(
+            server.parse_study_candle_time(seconds).date(),
+            server.parse_study_candle_time(seconds * 1000).date(),
+        )
+
     def test_daily_weekly_monthly_research_produces_auditable_data(self):
         daily = self.candles(600)
         analyses = []

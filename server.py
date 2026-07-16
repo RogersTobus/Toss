@@ -77,6 +77,7 @@ GLOBAL_SCORE_LEARNING_RATE = 0.06
 OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 10
 OFF_MARKET_STUDY_CANDLE_PAGES = 3
 OFF_MARKET_STUDY_POLL_SECONDS = 300
+STUDY_AGGREGATION_VERSION = 2
 DEFAULT_STRATEGY_CONFIG = {
     "targetRate": PAPER_TARGET_RATE,
     "stopRate": PAPER_STOP_RATE,
@@ -3068,12 +3069,41 @@ def study_daily_candles(env: dict[str, str], symbol: str) -> list[dict[str, Any]
     return sorted(by_timestamp.values(), key=lambda item: str(item.get("timestamp") or ""))
 
 
+def parse_study_candle_time(value: Any) -> datetime | None:
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if abs(seconds) >= 10_000_000_000:
+            seconds /= 1000
+        try:
+            return datetime.fromtimestamp(seconds, tz=KST)
+        except (OSError, OverflowError, ValueError):
+            return None
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.replace(".", "", 1).isdigit():
+        try:
+            return parse_study_candle_time(float(raw))
+        except ValueError:
+            return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    for fmt in ("%Y%m%d", "%Y%m%d%H%M%S"):
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def aggregate_study_candles(candles: list[dict[str, Any]], timeframe: str) -> list[dict[str, Any]]:
     if timeframe == "1d":
         return list(candles)
     grouped: dict[str, list[dict[str, Any]]] = {}
     for candle in candles:
-        moment = parse_order_time(candle.get("timestamp"))
+        moment = parse_study_candle_time(candle.get("timestamp"))
         if not moment:
             continue
         if timeframe == "1w":
@@ -3607,6 +3637,7 @@ def run_multi_timeframe_study(
         state[state_key] = {
             "id": study_id,
             "studyType": study_type,
+            "aggregationVersion": STUDY_AGGREGATION_VERSION,
             "status": "running",
             "lastRunDate": started.strftime("%Y-%m-%d"),
             "startedAt": started.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -3664,6 +3695,7 @@ def run_multi_timeframe_study(
         study = {
             "id": study_id,
             "studyType": study_type,
+            "aggregationVersion": STUDY_AGGREGATION_VERSION,
             "status": "completed" if analyses else "error",
             "lastRunDate": started.strftime("%Y-%m-%d"),
             "startedAt": started.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -3735,8 +3767,13 @@ def off_market_study_loop() -> None:
             today = now_kst().strftime("%Y-%m-%d")
             with LEARNING_LOCK:
                 state = load_learning_state_unlocked()
-                last_run_date = str((state.get("offlineStudy") or {}).get("lastRunDate") or "")
-            if active_market is None and last_run_date != today:
+                previous = state.get("offlineStudy") or {}
+                last_run_date = str(previous.get("lastRunDate") or "")
+                aggregation_version = int(previous.get("aggregationVersion") or 0)
+            if active_market is None and (
+                last_run_date != today
+                or aggregation_version < STUDY_AGGREGATION_VERSION
+            ):
                 run_off_market_study(env)
         except Exception as exc:
             try:
@@ -3773,10 +3810,13 @@ def domestic_day_review_loop() -> None:
             today = now_kst().strftime("%Y-%m-%d")
             with LEARNING_LOCK:
                 state = load_learning_state_unlocked()
-                last_run_date = str(
-                    (state.get("domesticDayReview") or {}).get("lastRunDate") or ""
-                )
-            if review_window and last_run_date != today:
+                previous = state.get("domesticDayReview") or {}
+                last_run_date = str(previous.get("lastRunDate") or "")
+                aggregation_version = int(previous.get("aggregationVersion") or 0)
+            if review_window and (
+                last_run_date != today
+                or aggregation_version < STUDY_AGGREGATION_VERSION
+            ):
                 run_domestic_day_review(env)
         except Exception as exc:
             try:
