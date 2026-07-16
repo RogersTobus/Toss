@@ -148,9 +148,9 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "reentry-cooldown",
-        "title": "재진입·연속 손절 제한",
-        "description": "동일 종목 재진입은 당일 1회로 제한하고, 2회 연속 손절 시 10분간 해당 시장 신규 진입을 중단합니다.",
-        "judge": "복수 손실 방지",
+        "title": "표본 균형 회전·재진입 대기",
+        "description": "모든 청산 후 동일 종목은 10분간 재진입을 대기하고, 점수 기준을 통과한 후보 중 오늘 표본이 적은 종목을 우선해 학습 편중을 줄입니다.",
+        "judge": "적은 표본 우선 · 동일 종목 10분 대기",
         "enabled": True,
     },
     {
@@ -183,6 +183,7 @@ ANALYSIS: dict[str, Any] = {
     "riskMonitor": {
         "enabled": True,
         "intervalSec": PAPER_STOP_MONITOR_INTERVAL_SECONDS,
+        "activeMarkets": [],
         "lastRunAt": None,
         "lastActionAt": None,
         "lastError": None,
@@ -1424,25 +1425,30 @@ def analyze_holdings(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
-def market_schedule(env: dict[str, str]) -> tuple[Any, str]:
+def active_market_sessions(
+    env: dict[str, str], now: datetime | None = None
+) -> list[tuple[str, str]]:
     if time.time() >= CALENDAR_CACHE["expiresAt"]:
         CALENDAR_CACHE["KR"] = toss_get("/api/v1/market-calendar/KR", env).get("result") or {}
         CALENDAR_CACHE["US"] = toss_get("/api/v1/market-calendar/US", env).get("result") or {}
         CALENDAR_CACHE["expiresAt"] = time.time() + 300
 
-    now = datetime.now().astimezone()
+    moment = now or datetime.now().astimezone()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=KST)
 
     def is_open(session: dict[str, Any]) -> bool:
         try:
             start = datetime.fromisoformat(str(session["startTime"]))
             end = datetime.fromisoformat(str(session["endTime"]))
-            return start <= now < end
+            return start <= moment < end
         except (KeyError, TypeError, ValueError):
             return False
 
+    active: list[tuple[str, str]] = []
     kr_today = (CALENDAR_CACHE["KR"].get("today") or {}).get("integrated") or {}
     if is_open(kr_today.get("regularMarket") or {}):
-        return "KR", "KR 정규장"
+        active.append(("KR", "KR 정규장"))
 
     us_today = CALENDAR_CACHE["US"].get("today") or {}
     us_sessions = (
@@ -1453,7 +1459,15 @@ def market_schedule(env: dict[str, str]) -> tuple[Any, str]:
     )
     for key, label in us_sessions:
         if is_open(us_today.get(key) or {}):
-            return "US", label
+            active.append(("US", label))
+            break
+    return active
+
+
+def market_schedule(env: dict[str, str]) -> tuple[Any, str]:
+    active = active_market_sessions(env)
+    if active:
+        return active[0]
     return None, "시장 휴장"
 
 
@@ -2150,6 +2164,21 @@ def stop_reentry_cooldown_symbols(
     orders: list[dict[str, Any]], market: str, now: datetime | None = None,
     cooldown_seconds: int = PAPER_STOP_REENTRY_COOLDOWN_SECONDS,
 ) -> set[str]:
+    return recent_exit_cooldown_symbols(
+        orders,
+        market,
+        now=now,
+        cooldown_seconds=cooldown_seconds,
+        exit_kinds={"손실선"},
+    )
+
+
+def recent_exit_cooldown_symbols(
+    orders: list[dict[str, Any]], market: str, now: datetime | None = None,
+    cooldown_seconds: int = PAPER_STOP_REENTRY_COOLDOWN_SECONDS,
+    exit_kinds: set[str] | None = None,
+) -> set[str]:
+    """Return symbols that recently exited, optionally limited to exit kinds."""
     current = now or datetime.now().astimezone()
     if current.tzinfo is None:
         current = current.replace(tzinfo=KST)
@@ -2159,7 +2188,9 @@ def stop_reentry_cooldown_symbols(
             continue
         if str(order.get("status") or "FILLED").upper() != "FILLED":
             continue
-        if order.get("market") != market or order.get("exitKind") != "손실선":
+        if order.get("market") != market:
+            continue
+        if exit_kinds is not None and str(order.get("exitKind") or "") not in exit_kinds:
             continue
         moment = parse_order_time(order.get("createdAt"))
         if not moment:
@@ -2171,6 +2202,51 @@ def stop_reentry_cooldown_symbols(
             blocked.add(str(order.get("symbol") or ""))
     blocked.discard("")
     return blocked
+
+
+def market_entry_sample_counts(
+    orders: list[dict[str, Any]], market: str, trading_day: str | None = None
+) -> dict[str, int]:
+    day = trading_day or paper_trading_day()
+    counts: dict[str, int] = {}
+    for order in orders:
+        if str(order.get("side") or "").upper() != "BUY":
+            continue
+        if order.get("market") != market or paper_trading_day(order.get("createdAt")) != day:
+            continue
+        symbol = str(order.get("symbol") or "")
+        if symbol:
+            counts[symbol] = counts.get(symbol, 0) + 1
+    return counts
+
+
+def rank_candidates_for_sample_diversity(
+    candidates: list[dict[str, Any]], sample_counts: dict[str, int]
+) -> list[dict[str, Any]]:
+    """Prefer under-sampled qualifying symbols, then preserve score/rank quality."""
+    return sorted(
+        candidates,
+        key=lambda item: (
+            int(sample_counts.get(str(item.get("symbol") or ""), 0)),
+            -decimal(item.get("score")),
+            decimal(item.get("rank") or 999),
+        ),
+    )
+
+
+def sample_diversity_summary(
+    orders: list[dict[str, Any]], market: str, cooldown_seconds: int
+) -> dict[str, Any]:
+    counts = market_entry_sample_counts(orders, market)
+    return {
+        "market": market,
+        "todayEntryCount": sum(counts.values()),
+        "uniqueSymbolCount": len(counts),
+        "maxSymbolEntryCount": max(counts.values(), default=0),
+        "cooldownSeconds": cooldown_seconds,
+        "selectionPriority": "LEAST_SAMPLED_THEN_SCORE",
+        "symbolCounts": counts,
+    }
 
 
 def extract_stock_price(stock: dict[str, Any]) -> Any:
@@ -2404,24 +2480,32 @@ def paper_trade_locked(
     open_position_count = int(summary.get("openPositionCount") or 0)
     if not execution_policy.get("unlimitedPositions") and open_position_count >= max_open_positions:
         return orders[-50:], summary
+    cooldown_seconds = int(
+        runtime.get("reentryCooldownSeconds") or PAPER_STOP_REENTRY_COOLDOWN_SECONDS
+    )
+    sample_counts = market_entry_sample_counts(orders, market, today)
+    summary["sampleDiversity"] = sample_diversity_summary(
+        orders, market, cooldown_seconds
+    )
     candidate = None
     candidate_policy = None
     candidate_capital_plan = None
+    candidate_sample_count = 0
     quantity = 0
     allocation_rate = 0.0
     allocated_krw = 0.0
     learning_decisions: list[dict[str, Any]] = []
-    stop_cooldown = (
-        stop_reentry_cooldown_symbols(
+    exit_cooldown = (
+        recent_exit_cooldown_symbols(
             orders,
             market,
-            cooldown_seconds=int(runtime.get("reentryCooldownSeconds") or PAPER_STOP_REENTRY_COOLDOWN_SECONDS),
+            cooldown_seconds=cooldown_seconds,
         )
         if execution_policy.get("reentryCooldown")
         else set()
     )
-    ranked_candidates = sorted(
-        (
+    ranked_candidates = rank_candidates_for_sample_diversity(
+        [
             item for item in results
             if (
                 item.get("verdict") == "정밀 분석"
@@ -2429,21 +2513,22 @@ def paper_trade_locked(
                 else item.get("verdict") != "진입 불가" and decimal(item.get("lastPrice")) > 0
             )
             and (market, item.get("symbol")) not in existing
-        ),
-        key=lambda item: (decimal(item.get("score")), -decimal(item.get("rank") or 999)),
-        reverse=True,
+        ],
+        sample_counts,
     )
     for item in ranked_candidates:
         symbol = str(item.get("symbol") or "")
-        if symbol in stop_cooldown:
+        symbol_sample_count = int(sample_counts.get(symbol, 0))
+        if symbol in exit_cooldown:
             learning_decisions.append(
                 {
                     "symbol": symbol,
                     "name": item.get("name") or symbol,
                     "allowed": False,
                     "capitalAllowed": False,
-                    "reason": f"예약 손절 후 {int(runtime.get('reentryCooldownSeconds') or PAPER_STOP_REENTRY_COOLDOWN_SECONDS)}초 재진입 대기",
-                    "scope": "EXECUTION_SAFETY",
+                    "reason": f"최근 청산 후 {cooldown_seconds}초 표본 균형 대기",
+                    "scope": "SAMPLE_DIVERSITY",
+                    "todaySymbolSamples": symbol_sample_count,
                 }
             )
             continue
@@ -2460,6 +2545,8 @@ def paper_trade_locked(
             policy["reason"] = "점수 진입 전략 비활성 · 후보 필터만 적용"
         decision = dict(policy)
         decision["name"] = item.get("name") or symbol
+        decision["todaySymbolSamples"] = symbol_sample_count
+        decision["selectionPriority"] = "LEAST_SAMPLED_THEN_SCORE"
         if not policy.get("allowed"):
             decision["capitalAllowed"] = False
             learning_decisions.append(decision)
@@ -2498,6 +2585,7 @@ def paper_trade_locked(
         candidate = item
         candidate_policy = policy
         candidate_capital_plan = capital_plan
+        candidate_sample_count = symbol_sample_count
         quantity = shares
         allocated_krw = price_krw * shares
         working_capital = decimal(capital_plan.get("workingCapitalKrw"))
@@ -2523,6 +2611,12 @@ def paper_trade_locked(
                 "baseAllocationRate": candidate_capital_plan.get("baseAllocationRate") if candidate_capital_plan else confidence_allocation_rate(candidate.get("score")),
                 "confidenceAllocationRate": candidate_capital_plan.get("confidenceAllocationRate") if candidate_capital_plan else confidence_allocation_rate(candidate.get("score")),
                 "allocatedKrw": allocated_krw,
+                "sampleDiversity": {
+                    "todaySymbolEntriesBefore": candidate_sample_count,
+                    "marketUniqueSymbolsBefore": len(sample_counts),
+                    "cooldownSeconds": cooldown_seconds,
+                    "selectionPriority": "LEAST_SAMPLED_THEN_SCORE",
+                },
                 "capitalPolicy": {
                     "mode": candidate_capital_plan.get("mode") if candidate_capital_plan else (
                         "unlimited-paper-experience" if execution_policy.get("unlimitedFunding") else "bounded-paper-capital"
@@ -2583,6 +2677,9 @@ def paper_trade_locked(
         "minExperienceEntryRate": runtime.get("minAllocationRate") or PAPER_MIN_EXPERIENCE_ENTRY_RATE,
         "learningAppliedAfterSizing": True,
     }
+    summary["sampleDiversity"] = sample_diversity_summary(
+        orders, market, cooldown_seconds
+    )
     summary["learningDecisions"] = learning_decisions[:10]
     return orders[-50:], summary
 
@@ -3371,20 +3468,27 @@ def off_market_study_loop() -> None:
         time.sleep(OFF_MARKET_STUDY_POLL_SECONDS)
 
 
+def monitor_active_position_risks(
+    env: dict[str, str], sessions: list[tuple[str, str]] | None = None
+) -> tuple[list[dict[str, Any]], bool, list[tuple[str, str]]]:
+    active = active_market_sessions(env) if sessions is None else list(sessions)
+    changed = False
+    with PAPER_LOCK:
+        orders = load_paper_orders()
+        for market, session in active:
+            orders, market_changed = close_paper_positions_if_needed(
+                env, orders, [], market, session, stop_only=True
+            )
+            changed = changed or market_changed
+    return orders, changed, active
+
+
 def position_risk_loop() -> None:
-    """Watch already-filled PAPER positions independently from candidate scans."""
+    """Watch every concurrently open PAPER market independently from candidate scans."""
     while True:
         try:
             env = load_env()
-            market, session = market_schedule(env)
-            changed = False
-            orders: list[dict[str, Any]] = []
-            if market:
-                with PAPER_LOCK:
-                    orders = load_paper_orders()
-                    orders, changed = close_paper_positions_if_needed(
-                        env, orders, [], market, session, stop_only=True
-                    )
+            orders, changed, active = monitor_active_position_risks(env)
             with ANALYSIS_LOCK:
                 current_results = list(ANALYSIS.get("results") or [])
             paper_stats = paper_summary(orders, current_results) if changed else None
@@ -3394,6 +3498,10 @@ def position_risk_loop() -> None:
                     {
                         "enabled": True,
                         "intervalSec": PAPER_STOP_MONITOR_INTERVAL_SECONDS,
+                        "activeMarkets": [
+                            {"market": market, "session": session}
+                            for market, session in active
+                        ],
                         "lastRunAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                         "lastError": None,
                     }

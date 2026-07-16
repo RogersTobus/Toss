@@ -1,5 +1,6 @@
+import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -117,6 +118,93 @@ class StrategyExecutionTests(unittest.TestCase):
         )
         self.assertEqual(unlimited["fundingLimit"], "UNLIMITED")
         self.assertTrue(unlimited["referenceOnly"])
+
+    def test_overlapping_kr_and_us_sessions_are_both_active(self):
+        original_cache = dict(server.CALENDAR_CACHE)
+        moment = datetime(2026, 7, 16, 5, 0, tzinfo=timezone.utc)
+        server.CALENDAR_CACHE.update(
+            {
+                "expiresAt": time.time() + 60,
+                "KR": {
+                    "today": {
+                        "integrated": {
+                            "regularMarket": {
+                                "startTime": "2026-07-16T00:00:00+00:00",
+                                "endTime": "2026-07-16T06:30:00+00:00",
+                            }
+                        }
+                    }
+                },
+                "US": {
+                    "today": {
+                        "dayMarket": {
+                            "startTime": "2026-07-16T00:00:00+00:00",
+                            "endTime": "2026-07-16T08:00:00+00:00",
+                        }
+                    }
+                },
+            }
+        )
+        try:
+            self.assertEqual(
+                server.active_market_sessions({}, moment),
+                [("KR", "KR 정규장"), ("US", "US 데이마켓")],
+            )
+        finally:
+            server.CALENDAR_CACHE.clear()
+            server.CALENDAR_CACHE.update(original_cache)
+
+    @patch("server.close_paper_positions_if_needed", return_value=([], False))
+    @patch("server.load_paper_orders", return_value=[])
+    def test_risk_monitor_checks_every_active_market(self, _orders, close_positions):
+        sessions = [("KR", "KR 정규장"), ("US", "US 데이마켓")]
+        _, changed, active = server.monitor_active_position_risks({}, sessions)
+        self.assertFalse(changed)
+        self.assertEqual(active, sessions)
+        self.assertEqual(close_positions.call_count, 2)
+        self.assertEqual(close_positions.call_args_list[0].args[3], "KR")
+        self.assertEqual(close_positions.call_args_list[1].args[3], "US")
+
+    def test_recent_exit_cooldown_includes_time_and_target_exits(self):
+        now = datetime(2026, 7, 16, 5, 0, tzinfo=timezone.utc)
+        orders = [
+            {
+                "side": "SELL",
+                "status": "FILLED",
+                "market": "KR",
+                "symbol": "TIME",
+                "exitKind": "시간청산",
+                "createdAt": (now - timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+            {
+                "side": "SELL",
+                "status": "FILLED",
+                "market": "KR",
+                "symbol": "TARGET",
+                "exitKind": "목표",
+                "createdAt": (now - timedelta(seconds=40)).strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+        ]
+        self.assertEqual(
+            server.recent_exit_cooldown_symbols(
+                orders, "KR", now=now, cooldown_seconds=600
+            ),
+            {"TIME", "TARGET"},
+        )
+
+    def test_candidate_rotation_prefers_least_sampled_then_best_score(self):
+        candidates = [
+            {"symbol": "OVERUSED", "score": 99, "rank": 1},
+            {"symbol": "FRESH_LOW", "score": 84, "rank": 3},
+            {"symbol": "FRESH_HIGH", "score": 90, "rank": 2},
+        ]
+        ranked = server.rank_candidates_for_sample_diversity(
+            candidates, {"OVERUSED": 12, "FRESH_LOW": 0, "FRESH_HIGH": 0}
+        )
+        self.assertEqual(
+            [item["symbol"] for item in ranked],
+            ["FRESH_HIGH", "FRESH_LOW", "OVERUSED"],
+        )
 
 
 if __name__ == "__main__":

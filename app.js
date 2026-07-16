@@ -1248,6 +1248,10 @@ function renderPaperSummary(state) {
   const openPositionCount = Number(summary.openPositionCount || 0);
   const learningSprint = summary.paperLearningSprint || {};
   const protectiveStops = summary.protectiveStops || {};
+  const sampleDiversity = summary.sampleDiversity || {};
+  const monitoredMarkets = Array.isArray(state.riskMonitor?.activeMarkets)
+    ? state.riskMonitor.activeMarkets.map((item) => item?.market).filter(Boolean)
+    : [];
 
   const decision = summary.decision || {};
   const decisionCard = document.querySelector("#decisionCard");
@@ -1376,7 +1380,7 @@ function renderPaperSummary(state) {
   document.querySelector("#analysisPulseBar").style.width = `${summary.locked && averageReturn < 0 ? 100 : Math.max(4, progress)}%`;
   document.querySelector("#analysisPulseBar").classList.toggle("danger", averageReturn < 0);
   document.querySelector("#analysisCycleCopy").textContent = learningSprint.enabled
-    ? `${Number(protectiveStops.monitorIntervalSec || 1)}초 보호감시 · 예약매도 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} · 오늘 ${todayOrderCount}건 학습`
+    ? `${monitoredMarkets.join("·") || state.activeMarket} ${Number(protectiveStops.monitorIntervalSec || 1)}초 보호감시 · 예약매도 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} · ${Number(sampleDiversity.uniqueSymbolCount || 0)}종목·${Math.round(Number(sampleDiversity.cooldownSeconds || 600) / 60)}분 회전`
     : (summary.locked
     ? summary.lockReason
     : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`);
