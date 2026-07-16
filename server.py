@@ -3688,14 +3688,22 @@ def monitor_active_position_risks(
 ) -> tuple[list[dict[str, Any]], bool, list[tuple[str, str]]]:
     active = active_market_sessions(env) if sessions is None else list(sessions)
     changed = False
+    with ANALYSIS_LOCK:
+        cached_results = list(ANALYSIS.get("results") or [])
     with PAPER_LOCK:
         orders = load_paper_orders()
         for market, session in active:
+            market_results = [
+                item
+                for item in cached_results
+                if str(item.get("marketCountry") or item.get("market") or "").upper()
+                == market
+            ]
             orders, market_changed = close_paper_positions_if_needed(
-                env, orders, [], market, session, stop_only=True
+                env, orders, market_results, market, session, stop_only=True
             )
             orders, study_changed = update_post_exit_studies_if_due(
-                env, orders, market
+                env, orders, market, market_results
             )
             changed = changed or market_changed or study_changed
     return orders, changed, active

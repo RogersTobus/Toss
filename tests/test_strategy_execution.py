@@ -158,16 +158,30 @@ class StrategyExecutionTests(unittest.TestCase):
             server.CALENDAR_CACHE.clear()
             server.CALENDAR_CACHE.update(original_cache)
 
+    @patch("server.update_post_exit_studies_if_due", return_value=([], False))
     @patch("server.close_paper_positions_if_needed", return_value=([], False))
     @patch("server.load_paper_orders", return_value=[])
-    def test_risk_monitor_checks_every_active_market(self, _orders, close_positions):
+    def test_risk_monitor_checks_every_active_market(
+        self, _orders, close_positions, update_studies
+    ):
         sessions = [("KR", "KR 정규장"), ("US", "US 데이마켓")]
-        _, changed, active = server.monitor_active_position_risks({}, sessions)
-        self.assertFalse(changed)
-        self.assertEqual(active, sessions)
-        self.assertEqual(close_positions.call_count, 2)
-        self.assertEqual(close_positions.call_args_list[0].args[3], "KR")
-        self.assertEqual(close_positions.call_args_list[1].args[3], "US")
+        original_results = list(server.ANALYSIS.get("results") or [])
+        kr_result = {"symbol": "KR1", "marketCountry": "KR", "lastPrice": 100.0}
+        us_result = {"symbol": "US1", "marketCountry": "US", "lastPrice": 200.0}
+        try:
+            server.ANALYSIS["results"] = [kr_result, us_result]
+            _, changed, active = server.monitor_active_position_risks({}, sessions)
+            self.assertFalse(changed)
+            self.assertEqual(active, sessions)
+            self.assertEqual(close_positions.call_count, 2)
+            self.assertEqual(close_positions.call_args_list[0].args[2], [kr_result])
+            self.assertEqual(close_positions.call_args_list[0].args[3], "KR")
+            self.assertEqual(close_positions.call_args_list[1].args[2], [us_result])
+            self.assertEqual(close_positions.call_args_list[1].args[3], "US")
+            self.assertEqual(update_studies.call_args_list[0].args[3], [kr_result])
+            self.assertEqual(update_studies.call_args_list[1].args[3], [us_result])
+        finally:
+            server.ANALYSIS["results"] = original_results
 
     def test_recent_exit_cooldown_includes_time_and_target_exits(self):
         now = datetime(2026, 7, 16, 5, 0, tzinfo=timezone.utc)
