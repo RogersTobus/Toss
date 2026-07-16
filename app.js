@@ -696,6 +696,39 @@ function renderJournalSummary(target, summary = {}, page = false) {
   });
 }
 
+function renderGoalRoadmap(summary = {}) {
+  const roadmap = summary.goalRoadmap || {};
+  const current = document.querySelector("#goalRoadmapCurrent");
+  const now = document.querySelector("#goalRoadmapNow");
+  const stages = document.querySelector("#goalRoadmapStages");
+  if (!current || !now || !stages) return;
+
+  const payoff = Number(roadmap.payoffRatio || 0);
+  const payoffText = payoff >= 99 ? "무손실" : payoff.toFixed(2);
+  current.textContent = `${roadmap.currentLabel || "1차"} 진행 중`;
+  now.textContent = `현재 청산 ${Number(roadmap.closedCount || 0).toLocaleString("ko-KR")}건 · 승률 ${(Number(roadmap.winRate || 0) * 100).toFixed(1)}% · 손익비 ${payoffText} · 위반 ${Number(roadmap.violationCount || 0)}건`;
+  stages.replaceChildren();
+
+  const statusLabels = { ACHIEVED: "달성", CURRENT: "진행", QUEUED: "대기" };
+  (roadmap.stages || []).forEach((goal) => {
+    const status = String(goal.status || "QUEUED").toUpperCase();
+    const progress = Math.max(0, Math.min(100, Number(goal.progressRate || 0) * 100));
+    const card = document.createElement("article");
+    card.className = `goal-stage ${status.toLowerCase()}`;
+    card.innerHTML = `
+      <div class="goal-stage-title">
+        <em>${goal.label || "목표"}</em>
+        <b>${goal.title || "단계 목표"}</b>
+        <span>${statusLabels[status] || "대기"}</span>
+      </div>
+      <p>${Number(goal.sampleTarget || 0).toLocaleString("ko-KR")}건 · 승률 ${(Number(goal.winRateTarget || 0) * 100).toFixed(0)}%+ · 손익비 ${Number(goal.payoffTarget || 0).toFixed(1)}+${goal.requiresNoViolation ? " · 위반 0" : ""}</p>
+      <div class="goal-stage-progress" aria-label="${goal.label || "목표"} 달성률 ${progress.toFixed(0)}%"><i style="width:${progress.toFixed(1)}%"></i></div>
+      <small>${Number(roadmap.closedCount || 0).toLocaleString("ko-KR")} / ${Number(goal.sampleTarget || 0).toLocaleString("ko-KR")}건 · ${progress.toFixed(0)}%</small>
+    `;
+    stages.append(card);
+  });
+}
+
 function renderJournalPerformance(summary = {}) {
   const card = document.querySelector("#performanceTrendCard");
   const chart = document.querySelector("#performanceTrendChart");
@@ -1126,6 +1159,7 @@ function renderTradingJournal(payload = {}) {
 
   renderJournalSummary(document.querySelector("#journalSummary"), summary, false);
   renderJournalSummary(document.querySelector("#journalPageSummary"), summary, true);
+  renderGoalRoadmap(summary);
   renderJournalPerformance(summary);
   renderMistakeNotebook(payload);
   renderLearningBrain(payload.learning || {}, entries);

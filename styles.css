@@ -925,6 +925,47 @@ body[data-page="journal"] .journal-page {
 .journal-page-summary b { display: block; min-width: 0; }
 .journal-page-summary span { color: var(--muted); font-size: 10px; font-weight: 800; }
 .journal-page-summary b { margin-top: 5px; font-size: clamp(16px, 1.6vw, 22px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.goal-roadmap-card {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, var(--panel), var(--gold-tint));
+  box-shadow: var(--shadow-soft);
+}
+.goal-roadmap-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.goal-roadmap-head > div { display: flex; align-items: baseline; gap: 9px; min-width: 0; }
+.goal-roadmap-head .eyebrow { flex: 0 0 auto; margin: 0; font-size: 8px; }
+.goal-roadmap-head b { overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.goal-roadmap-head > span {
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  border-radius: 999px;
+  background: var(--dark-1);
+  color: #f5e2a7;
+  font-size: 8px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.goal-roadmap-now { color: var(--muted); font-size: 9px; font-weight: 700; line-height: 1.4; }
+.goal-roadmap-stages { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; min-width: 0; }
+.goal-stage { min-width: 0; padding: 7px 8px; border: 1px solid var(--line-soft); border-radius: 9px; background: rgba(255,255,255,.56); }
+.goal-stage.current { border-color: var(--gold); background: #fff8e7; }
+.goal-stage.achieved { border-color: rgba(73, 113, 50, .34); background: var(--green-tint); }
+.goal-stage.queued { opacity: .72; }
+.goal-stage-title { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 5px; }
+.goal-stage-title em { color: var(--gold-deep); font-size: 8px; font-style: normal; font-weight: 900; }
+.goal-stage-title b { overflow: hidden; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.goal-stage-title span { padding: 2px 5px; border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 7px; font-weight: 800; }
+.goal-stage.current .goal-stage-title span { background: var(--gold); color: var(--dark-1); }
+.goal-stage.achieved .goal-stage-title span { background: var(--green); color: white; }
+.goal-stage p { margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 8px; font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.goal-stage-progress { height: 3px; margin-top: 6px; overflow: hidden; border-radius: 999px; background: var(--line-soft); }
+.goal-stage-progress i { display: block; height: 100%; border-radius: inherit; background: var(--gold); }
+.goal-stage.achieved .goal-stage-progress i { background: var(--green); }
+.goal-stage small { display: block; margin-top: 3px; color: var(--muted); font-size: 7.5px; font-weight: 700; text-align: right; }
 .performance-trend-card {
   display: grid;
   gap: 12px;
@@ -1663,6 +1704,7 @@ body[data-page="journal"] .journal-page {
 @media (max-width: 760px) {
   .journal-page-head { flex-direction: column; }
   .journal-page-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .goal-roadmap-stages { grid-template-columns: 1fr; }
   .performance-trend-body { grid-template-columns: 1fr; }
   .performance-insight { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .performance-insight p { grid-column: 1 / -1; }
@@ -1685,6 +1727,9 @@ body[data-page="journal"] .journal-page {
   .content { padding-left: 12px; padding-right: 12px; }
   .top-actions .add-btn { display: none; }
   .performance-trend-head { flex-direction: column; }
+  .goal-roadmap-head { align-items: flex-start; }
+  .goal-roadmap-head > div { display: grid; gap: 2px; }
+  .goal-roadmap-now { line-height: 1.55; }
   .performance-insight { grid-template-columns: 1fr; }
   .performance-insight p { grid-column: auto; }
   .current-strategy-head { flex-direction: column; }

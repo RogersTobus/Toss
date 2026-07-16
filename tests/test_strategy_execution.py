@@ -341,6 +341,29 @@ class StrategyExecutionTests(unittest.TestCase):
         self.assertIn("사후 5m:", "\n".join(server.post_exit_study_memo_lines(study)))
         self.assertEqual(server.post_exit_study_summary(orders)["completedCount"], 1)
 
+    def test_trading_goal_roadmap_advances_and_keeps_final_rule_gate(self):
+        stage_one_trades = [
+            {"returnRate": 0.012 if index < 250 else -0.004}
+            for index in range(500)
+        ]
+        stage_one = server.trading_goal_roadmap(stage_one_trades, 0)
+        self.assertEqual(stage_one["stages"][0]["status"], "ACHIEVED")
+        self.assertEqual(stage_one["stages"][1]["status"], "CURRENT")
+        self.assertAlmostEqual(stage_one["winRate"], 0.5)
+        self.assertAlmostEqual(stage_one["payoffRatio"], 3.0)
+
+        final_trades = [
+            {"returnRate": 0.01 if index < 520 else -0.005}
+            for index in range(1000)
+        ]
+        final_with_violation = server.trading_goal_roadmap(final_trades, 1)
+        self.assertEqual(final_with_violation["stages"][1]["status"], "ACHIEVED")
+        self.assertEqual(final_with_violation["stages"][2]["status"], "CURRENT")
+        self.assertFalse(final_with_violation["stages"][2]["achieved"])
+
+        final_clear = server.trading_goal_roadmap(final_trades, 0)
+        self.assertTrue(final_clear["stages"][2]["achieved"])
+
 
 if __name__ == "__main__":
     unittest.main()

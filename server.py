@@ -5064,6 +5064,102 @@ def apply_brain_to_mistake_note(note: dict[str, Any], brain: dict[str, Any]) -> 
         )
 
 
+def trading_goal_roadmap(
+    closed_trades: list[dict[str, Any]], violation_count: int = 0
+) -> dict[str, Any]:
+    returns = [decimal(item.get("returnRate")) for item in closed_trades]
+    wins = [value for value in returns if value > 0]
+    losses = [value for value in returns if value < 0]
+    closed_count = len(returns)
+    win_rate = len(wins) / closed_count if closed_count else 0.0
+    average_win = sum(wins) / len(wins) if wins else 0.0
+    average_loss = sum(losses) / len(losses) if losses else 0.0
+    payoff_ratio = (
+        average_win / abs(average_loss)
+        if average_loss < 0
+        else (99.0 if wins else 0.0)
+    )
+    definitions = [
+        {
+            "id": "stage-1",
+            "label": "1차",
+            "title": "기초 수익 구조",
+            "sampleTarget": 500,
+            "winRateTarget": 0.45,
+            "payoffTarget": 1.5,
+            "requiresNoViolation": False,
+        },
+        {
+            "id": "stage-2",
+            "label": "2차",
+            "title": "장세 확장 검증",
+            "sampleTarget": 1000,
+            "winRateTarget": 0.48,
+            "payoffTarget": 1.5,
+            "requiresNoViolation": False,
+        },
+        {
+            "id": "final",
+            "label": "최종",
+            "title": "지속 가능한 완성형",
+            "sampleTarget": 1000,
+            "winRateTarget": 0.52,
+            "payoffTarget": 1.5,
+            "requiresNoViolation": True,
+        },
+    ]
+    stages: list[dict[str, Any]] = []
+    current_assigned = False
+    for definition in definitions:
+        achieved = bool(
+            closed_count >= int(definition["sampleTarget"])
+            and win_rate >= decimal(definition["winRateTarget"])
+            and payoff_ratio >= decimal(definition["payoffTarget"])
+            and (
+                not definition["requiresNoViolation"]
+                or int(violation_count or 0) == 0
+            )
+        )
+        progress = min(
+            1.0,
+            closed_count / int(definition["sampleTarget"]),
+            win_rate / decimal(definition["winRateTarget"])
+            if decimal(definition["winRateTarget"])
+            else 1.0,
+            payoff_ratio / decimal(definition["payoffTarget"])
+            if decimal(definition["payoffTarget"])
+            else 1.0,
+        )
+        status = "ACHIEVED" if achieved else ("CURRENT" if not current_assigned else "QUEUED")
+        if not achieved and not current_assigned:
+            current_assigned = True
+        stages.append(
+            {
+                **definition,
+                "achieved": achieved,
+                "status": status,
+                "progressRate": progress,
+            }
+        )
+    current = next((item for item in stages if item["status"] == "CURRENT"), stages[-1])
+    return {
+        "closedCount": closed_count,
+        "winRate": win_rate,
+        "averageWin": average_win,
+        "averageLoss": average_loss,
+        "payoffRatio": payoff_ratio,
+        "violationCount": int(violation_count or 0),
+        "currentStage": current.get("id"),
+        "currentLabel": current.get("label"),
+        "stages": stages,
+        "stretchGoal": {
+            "label": "도전",
+            "winRateRange": [0.55, 0.60],
+            "description": "별도 검증 구간에서도 승률 55~60% 유지",
+        },
+    }
+
+
 def build_trading_journal() -> dict[str, Any]:
     orders = load_paper_orders()
     with ANALYSIS_LOCK:
@@ -5259,6 +5355,7 @@ def build_trading_journal() -> dict[str, Any]:
         "activeDay": active_day,
         "days": days,
         "violationCount": len(all_violations),
+        "goalRoadmap": trading_goal_roadmap(closed_trades, len(all_violations)),
     }
     return {
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
