@@ -158,6 +158,13 @@ DEFAULT_STRATEGIES = [
         "enabled": True,
     },
     {
+        "id": "us-day-domestic-review",
+        "title": "미국 데이마켓 국내장 복기",
+        "description": "한국 정규장 종료 뒤 미국 데이마켓에서는 미국 신규 진입을 멈추고, 당일 국내 유동성 상위 종목의 일봉·주봉·월봉과 거래 결과를 복기합니다. 기존 미국 포지션의 보호매도 감시는 계속 유지합니다.",
+        "judge": "US 데이 신규진입 없음 · KR 차트 복기",
+        "enabled": True,
+    },
+    {
         "id": "overnight-extended-session",
         "title": "익일 보유·시간외 분리",
         "description": "익일 보유와 미국 시간외 전략은 정규장 검증 후 별도 전략으로 관리하며, 초기에는 보수적으로 비활성/관찰합니다.",
@@ -373,6 +380,7 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
         "timeExit": "three-minute-exit" in enabled,
         "dailyRisk": "daily-risk-kill-switch" in enabled,
         "reentryCooldown": "reentry-cooldown" in enabled,
+        "usDayDomesticReview": "us-day-domestic-review" in enabled,
         "extendedSession": "overnight-extended-session" in enabled,
         "parameters": strategy_runtime_parameters(config),
     }
@@ -466,6 +474,8 @@ def strategy_ai_advice(strategy: dict[str, Any], analysis: dict[str, Any] | None
         return str(decision.get("action") or "일일 손실 예산을 넘기지 않는 것이 내일도 매매할 권리를 지킵니다.")
     if sid == "reentry-cooldown":
         return f"보유 {open_positions}개입니다. 손절 후 즉시 재진입보다 10분 대기가 과매매를 줄입니다."
+    if sid == "us-day-domestic-review":
+        return "미국 데이마켓은 신규 진입보다 한국장 당일 흐름과 일·주·월봉을 복기해 다음 거래 기준을 다듬는 시간으로 사용합니다."
     if sid == "overnight-extended-session":
         return "시간외·익일 보유는 스프레드와 유동성 리스크가 커서 정규장 모의 100건 이후 분리 검증하세요."
     return "현재 추세를 관찰하면서 한 번에 한 변수만 바꾸는 방식이 좋습니다."
@@ -492,6 +502,10 @@ def overall_ai_analysis(analysis: dict[str, Any] | None = None, strategies: list
         tone = "danger"
         headline = "분석 상태 확인 필요"
         advice = "전략 조정보다 API/서버 오류 해소가 먼저입니다. 오류가 사라진 뒤 전략 판단을 재개하세요."
+    elif active_market == "REVIEW":
+        tone = "neutral"
+        headline = "미국 데이마켓은 국내장 복기 모드"
+        advice = "미국 신규 진입은 멈추고 한국장 당일 흐름과 일·주·월봉 연구 결과를 다음 정규 거래 기준에 반영합니다."
     elif active_market == "CLOSED":
         tone = "neutral"
         headline = "시장 휴장 · 전략 유지"
@@ -1481,6 +1495,19 @@ def market_schedule(env: dict[str, str]) -> tuple[Any, str]:
     if active:
         return active[0]
     return None, "시장 휴장"
+
+
+def us_day_domestic_review_mode(
+    market: str | None,
+    session: str,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    policy = strategy_execution_policy(config or strategy_config())
+    return bool(
+        policy.get("usDayDomesticReview")
+        and market == "US"
+        and session == "US 데이마켓"
+    )
 
 
 def new_paper_state() -> dict[str, Any]:
@@ -3558,15 +3585,37 @@ def build_symbol_study_catalog(analyses: list[dict[str, Any]]) -> list[dict[str,
     return catalog
 
 
-def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
+def run_multi_timeframe_study(
+    env: dict[str, str],
+    *,
+    markets: tuple[str, ...],
+    study_prefix: str,
+    state_key: str,
+    history_key: str,
+    study_type: str,
+    next_run: str,
+) -> dict[str, Any]:
     started = now_kst()
-    study_id = f"OFFLINE-{started.strftime('%Y-%m-%d')}"
+    study_id = f"{study_prefix}-{started.strftime('%Y-%m-%d')}"
     research_pass = started.toordinal() % 3
     research_pass_name = ("보수형", "균형형", "공격형")[research_pass]
     analyses: list[dict[str, Any]] = []
     errors: list[str] = []
     universe_count = 0
-    for market in ("KR", "US"):
+    with LEARNING_LOCK:
+        state = load_learning_state_unlocked()
+        state[state_key] = {
+            "id": study_id,
+            "studyType": study_type,
+            "status": "running",
+            "lastRunDate": started.strftime("%Y-%m-%d"),
+            "startedAt": started.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "markets": list(markets),
+            "timeframes": ["1d", "1w", "1mo"],
+            "nextRun": next_run,
+        }
+        save_learning_state_unlocked(state)
+    for market in markets:
         try:
             universe = study_universe(env, market)
         except Exception as exc:
@@ -3614,11 +3663,12 @@ def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
         completed = now_kst()
         study = {
             "id": study_id,
+            "studyType": study_type,
             "status": "completed" if analyses else "error",
             "lastRunDate": started.strftime("%Y-%m-%d"),
             "startedAt": started.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "completedAt": completed.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "markets": ["KR", "US"],
+            "markets": list(markets),
             "timeframes": ["1d", "1w", "1mo"],
             "researchPass": research_pass_name,
             "universeCount": universe_count,
@@ -3629,11 +3679,11 @@ def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
             "influence": influence,
             "analyses": analyses[-240:],
             "errors": errors[-12:],
-            "nextRun": "다음 한국·미국 동시 휴장 구간의 새 거래일",
+            "nextRun": next_run,
         }
         state["globalScoreModel"] = model
-        state["offlineStudy"] = study
-        history = list(state.get("offlineStudyHistory") or [])
+        state[state_key] = study
+        history = list(state.get(history_key) or [])
         history.append(
             {
                 "id": study.get("id"),
@@ -3646,10 +3696,34 @@ def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
                 "influence": study.get("influence"),
             }
         )
-        state["offlineStudyHistory"] = history[-30:]
+        state[history_key] = history[-30:]
         state["updatedAt"] = completed.strftime("%Y-%m-%dT%H:%M:%S%z")
         save_learning_state_unlocked(state)
     return study
+
+
+def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
+    return run_multi_timeframe_study(
+        env,
+        markets=("KR", "US"),
+        study_prefix="OFFLINE",
+        state_key="offlineStudy",
+        history_key="offlineStudyHistory",
+        study_type="OFF_MARKET_RESEARCH",
+        next_run="다음 한국·미국 동시 휴장 구간의 새 거래일",
+    )
+
+
+def run_domestic_day_review(env: dict[str, str]) -> dict[str, Any]:
+    return run_multi_timeframe_study(
+        env,
+        markets=("KR",),
+        study_prefix="KR-DAY-REVIEW",
+        state_key="domesticDayReview",
+        history_key="domesticDayReviewHistory",
+        study_type="US_DAY_DOMESTIC_REVIEW",
+        next_run="다음 한국장 종료 후 미국 데이마켓",
+    )
 
 
 def off_market_study_loop() -> None:
@@ -3677,6 +3751,46 @@ def off_market_study_loop() -> None:
                         }
                     )
                     state["offlineStudy"] = study
+                    save_learning_state_unlocked(state)
+            except OSError:
+                pass
+        time.sleep(OFF_MARKET_STUDY_POLL_SECONDS)
+
+
+def domestic_day_review_loop() -> None:
+    """Use the low-activity US day session for one KR multi-timeframe review."""
+    time.sleep(20)
+    while True:
+        try:
+            env = load_env()
+            active = active_market_sessions(env)
+            policy = strategy_execution_policy()
+            review_window = (
+                policy.get("usDayDomesticReview")
+                and ("US", "US 데이마켓") in active
+                and not any(market == "KR" for market, _ in active)
+            )
+            today = now_kst().strftime("%Y-%m-%d")
+            with LEARNING_LOCK:
+                state = load_learning_state_unlocked()
+                last_run_date = str(
+                    (state.get("domesticDayReview") or {}).get("lastRunDate") or ""
+                )
+            if review_window and last_run_date != today:
+                run_domestic_day_review(env)
+        except Exception as exc:
+            try:
+                with LEARNING_LOCK:
+                    state = load_learning_state_unlocked()
+                    study = dict(state.get("domesticDayReview") or {})
+                    study.update(
+                        {
+                            "status": "error",
+                            "lastAttemptAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                            "lastError": str(exc)[:500],
+                        }
+                    )
+                    state["domesticDayReview"] = study
                     save_learning_state_unlocked(state)
             except OSError:
                 pass
@@ -3760,27 +3874,57 @@ def analysis_loop() -> None:
                 env = load_env()
                 sleep_seconds = analysis_interval_seconds(env)
                 market, session = market_schedule(env)
-                results = scan_market(env, market) if market else []
-                if market:
+                review_mode = us_day_domestic_review_mode(market, session)
+                analysis_market = "KR" if review_mode else market
+                results = scan_market(env, analysis_market) if analysis_market else []
+                if review_mode:
+                    orders = load_paper_orders()
+                    paper_stats = paper_summary(orders, results)
+                    paper_stats["sessionMode"] = {
+                        "mode": "REVIEW",
+                        "sourceSession": session,
+                        "reviewMarket": "KR",
+                        "tradingMarket": None,
+                        "title": "국내장 종합 복기",
+                        "description": "미국 데이마켓 신규 진입을 멈추고 당일 국내 종목과 일·주·월봉을 복기합니다.",
+                        "protectedMarket": "US",
+                    }
+                    paper_stats["decision"] = {
+                        "mode": "국내장 복기",
+                        "tone": "safe",
+                        "reason": "미국 데이마켓의 낮은 변동성 구간은 신규 진입 대신 한국장 학습에 사용합니다.",
+                        "action": "국내 유동성 상위 종목의 일·주·월봉과 오늘 거래를 복기",
+                    }
+                elif market:
                     orders, paper_stats = paper_trade(env, results, market, session)
                 else:
                     orders = load_paper_orders()
                     paper_stats = paper_summary(orders, results)
-                handle_paper_alert(env, market, paper_stats)
+                if not review_mode:
+                    handle_paper_alert(env, market, paper_stats)
                 report_state = load_report_state()
                 previous_market = report_state.get("lastActiveMarket")
-                current_market = market if market in ("KR", "US") else None
+                current_market = (
+                    None if review_mode else (market if market in ("KR", "US") else None)
+                )
                 reports, report_status = handle_market_close_report(
                     previous_market, current_market, env, orders, paper_stats
                 )
-                handle_operation_report(env, current_market, session, results, orders, paper_stats)
+                handle_operation_report(
+                    env,
+                    "KR" if review_mode else current_market,
+                    "국내장 종합 복기" if review_mode else session,
+                    results,
+                    orders,
+                    paper_stats,
+                )
                 with ANALYSIS_LOCK:
                     ANALYSIS["cycle"] += 1
                     ANALYSIS["lastRunAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
                     ANALYSIS["lastError"] = None
                     ANALYSIS["results"] = results
-                    ANALYSIS["activeMarket"] = market or "CLOSED"
-                    ANALYSIS["activeSession"] = session
+                    ANALYSIS["activeMarket"] = "REVIEW" if review_mode else (market or "CLOSED")
+                    ANALYSIS["activeSession"] = "국내장 종합 복기" if review_mode else session
                     ANALYSIS["paperOrders"] = orders
                     ANALYSIS["paperSummary"] = paper_stats
                     ANALYSIS["reports"] = reports[-5:]
@@ -4460,6 +4604,8 @@ def default_learning_state() -> dict[str, Any]:
         "processedTrades": [],
         "scoreModelProcessedTrades": [],
         "globalScoreModel": default_global_score_model(),
+        "domesticDayReview": {},
+        "domesticDayReviewHistory": [],
         "offlineStudy": {},
         "offlineStudyHistory": [],
         "symbols": {},
@@ -4482,6 +4628,8 @@ def load_learning_state_unlocked() -> dict[str, Any]:
         "processedTrades": list(raw.get("processedTrades") or []),
         "scoreModelProcessedTrades": list(raw.get("scoreModelProcessedTrades") or []),
         "globalScoreModel": normalize_global_score_model(raw.get("globalScoreModel")),
+        "domesticDayReview": dict(raw.get("domesticDayReview") or {}),
+        "domesticDayReviewHistory": list(raw.get("domesticDayReviewHistory") or [])[-30:],
         "offlineStudy": dict(raw.get("offlineStudy") or {}),
         "offlineStudyHistory": list(raw.get("offlineStudyHistory") or [])[-30:],
         "symbols": dict(raw.get("symbols") or {}),
@@ -4826,6 +4974,7 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
     global_model = normalize_global_score_model(state.get("globalScoreModel"))
     global_view = json.loads(json.dumps(global_model, ensure_ascii=False))
     global_view["revisions"] = list(reversed(global_model.get("revisions") or []))[:40]
+    domestic_review = state.get("domesticDayReview") if isinstance(state.get("domesticDayReview"), dict) else {}
     offline_study = state.get("offlineStudy") if isinstance(state.get("offlineStudy"), dict) else {}
     return {
         "updatedAt": state.get("updatedAt"),
@@ -4842,6 +4991,8 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
             "scope": "GLOBAL_ALL_SYMBOLS",
         },
         "global": global_view,
+        "domesticDayReview": domestic_review,
+        "domesticDayReviewHistory": list(reversed(state.get("domesticDayReviewHistory") or []))[:30],
         "offlineStudy": offline_study,
         "offlineStudyHistory": list(reversed(state.get("offlineStudyHistory") or []))[:30],
         "symbols": symbols,
@@ -5254,6 +5405,7 @@ if __name__ == "__main__":
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
+    threading.Thread(target=domestic_day_review_loop, daemon=True, name="domestic-day-review-loop").start()
     threading.Thread(target=off_market_study_loop, daemon=True, name="off-market-study-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()

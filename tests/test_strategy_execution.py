@@ -210,6 +210,32 @@ class StrategyExecutionTests(unittest.TestCase):
             {"TIME", "TARGET"},
         )
 
+    def test_us_day_market_switches_to_domestic_review_only(self):
+        config = {
+            **server.DEFAULT_STRATEGY_CONFIG,
+            "strategies": server.normalize_strategies(),
+        }
+        self.assertTrue(
+            server.us_day_domestic_review_mode("US", "US 데이마켓", config)
+        )
+        self.assertFalse(
+            server.us_day_domestic_review_mode("US", "US 프리마켓", config)
+        )
+        for strategy in config["strategies"]:
+            if strategy["id"] == "us-day-domestic-review":
+                strategy["enabled"] = False
+        self.assertFalse(
+            server.us_day_domestic_review_mode("US", "US 데이마켓", config)
+        )
+
+    @patch("server.run_multi_timeframe_study", return_value={"status": "completed"})
+    def test_domestic_review_analyzes_only_kr_daily_weekly_monthly(self, study):
+        result = server.run_domestic_day_review({})
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(study.call_args.kwargs["markets"], ("KR",))
+        self.assertEqual(study.call_args.kwargs["state_key"], "domesticDayReview")
+        self.assertEqual(study.call_args.kwargs["study_type"], "US_DAY_DOMESTIC_REVIEW")
+
     def test_candidate_rotation_prefers_least_sampled_then_best_score(self):
         candidates = [
             {"symbol": "OVERUSED", "score": 99, "rank": 1},

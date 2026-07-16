@@ -1260,6 +1260,10 @@ body[data-page="journal"] .journal-page {
   border-radius: 11px;
   background: rgba(34, 28, 18, .035);
 }
+.domestic-review-panel {
+  border-color: rgba(194, 145, 31, .5);
+  background: linear-gradient(135deg, rgba(255, 249, 231, .9), rgba(255, 255, 255, .72));
+}
 .offline-study-head {
   display: flex;
   align-items: center;

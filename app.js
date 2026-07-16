@@ -902,6 +902,7 @@ function renderOfflineSymbolStudies(study = {}) {
 function renderLearningBrain(learning = {}, entries = []) {
   const summary = learning.summary || {};
   const globalBrain = learning.global || {};
+  const domesticReview = learning.domesticDayReview || {};
   const offlineStudy = learning.offlineStudy || {};
   const symbols = learning.symbols || [];
   const memories = globalBrain.revisions || [];
@@ -925,7 +926,7 @@ function renderLearningBrain(learning = {}, entries = []) {
       ["학습 거래", `${Number(summary.learnedTradeCount || 0)}건`],
       ["점수 표본", `${Number(summary.scoreSampleCount || 0)}건`],
       ["기준 수정", `${Number(globalBrain.revisionCount || 0)}회`],
-      ["휴장 관찰", `${Number(offlineStudy.summary?.patternObservationCount || 0).toLocaleString("ko-KR")}건`],
+      ["차트 관찰", `${Number((offlineStudy.summary?.patternObservationCount || 0) + (domesticReview.summary?.patternObservationCount || 0)).toLocaleString("ko-KR")}건`],
     ];
     summaryTarget.replaceChildren();
     items.forEach(([label, value]) => {
@@ -1016,6 +1017,52 @@ function renderLearningBrain(learning = {}, entries = []) {
           <small>${memory.scope === "OFF_MARKET_BACKTEST" ? "저강도 검증 반영" : "다음 모든 종목 즉시 적용"}${threshold}</small>
         `;
         memoryList.append(item);
+      });
+    }
+  }
+
+  const domesticStatus = document.querySelector("#domesticReviewStatus");
+  const domesticSummary = document.querySelector("#domesticReviewSummary");
+  const domesticJournal = document.querySelector("#domesticReviewJournal");
+  if (domesticStatus) {
+    domesticStatus.textContent = domesticReview.status === "completed"
+      ? `${domesticReview.researchPass || "검증"} 완료 · ${formatJournalTime(domesticReview.completedAt)}`
+      : (domesticReview.status === "running"
+        ? "국내 종목 일·주·월봉 분석 중"
+        : (domesticReview.status === "error" ? "복기 오류 · 다음 주기 확인" : "다음 한국장 종료 대기"));
+    domesticStatus.classList.toggle("is-live", ["running", "completed"].includes(domesticReview.status));
+  }
+  if (domesticSummary) {
+    const reviewSummary = domesticReview.summary || {};
+    const items = [
+      ["분석 종목", `${Number(domesticReview.universeCount || 0)}개`],
+      ["차트 분석", `${Number(reviewSummary.analysisCount || 0)}건`],
+      ["패턴 관찰", `${Number(reviewSummary.patternObservationCount || 0).toLocaleString("ko-KR")}건`],
+      ["검증 패턴", `${Number(reviewSummary.reliablePatternCount || 0)}개`],
+    ];
+    domesticSummary.replaceChildren();
+    items.forEach(([label, value]) => {
+      const box = document.createElement("div");
+      box.innerHTML = `<span>${label}</span><b>${value}</b>`;
+      domesticSummary.append(box);
+    });
+  }
+  if (domesticJournal) {
+    domesticJournal.replaceChildren();
+    const journal = domesticReview.journal || [];
+    if (!journal.length) {
+      const empty = document.createElement("div");
+      empty.className = "learning-empty";
+      empty.textContent = domesticReview.lastError || (domesticReview.status === "running"
+        ? "한국 종목의 일봉·주봉·월봉과 패턴을 데이터화하고 있습니다."
+        : "한국장 종료 후 미국 데이마켓에서는 신규 진입 없이 국내 종목을 복기합니다.");
+      domesticJournal.append(empty);
+    } else {
+      journal.slice(0, 8).forEach((note) => {
+        const item = document.createElement("div");
+        item.className = `offline-study-note ${note.kind === "실패 가설" ? "rejected" : "validated"}`;
+        item.innerHTML = `<em>${note.kind || "복기"}</em><span><b>${note.pattern || "패턴"}</b><small>${note.note || "당일 국내장 관찰 결과를 기록했습니다."}</small></span>`;
+        domesticJournal.append(item);
       });
     }
   }
@@ -1256,6 +1303,7 @@ function renderPaperSummary(state) {
   const learningSprint = summary.paperLearningSprint || {};
   const protectiveStops = summary.protectiveStops || {};
   const sampleDiversity = summary.sampleDiversity || {};
+  const sessionMode = summary.sessionMode || {};
   const monitoredMarkets = Array.isArray(state.riskMonitor?.activeMarkets)
     ? state.riskMonitor.activeMarkets.map((item) => item?.market).filter(Boolean)
     : [];
@@ -1386,11 +1434,13 @@ function renderPaperSummary(state) {
   const progress = targetRate > 0 ? Math.max(0, Math.min(100, (averageReturn / targetRate) * 100)) : 0;
   document.querySelector("#analysisPulseBar").style.width = `${summary.locked && averageReturn < 0 ? 100 : Math.max(4, progress)}%`;
   document.querySelector("#analysisPulseBar").classList.toggle("danger", averageReturn < 0);
-  document.querySelector("#analysisCycleCopy").textContent = learningSprint.enabled
+  document.querySelector("#analysisCycleCopy").textContent = sessionMode.mode === "REVIEW"
+    ? `US 데이 신규진입 중지 · 국내장 ${Number(state.results?.length || 0)}종목 복기 · 기존 포지션 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} 보호`
+    : (learningSprint.enabled
     ? `${monitoredMarkets.join("·") || state.activeMarket} ${Number(protectiveStops.monitorIntervalSec || 1)}초 보호감시 · 예약매도 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} · ${Number(sampleDiversity.uniqueSymbolCount || 0)}종목·${Math.round(Number(sampleDiversity.cooldownSeconds || 600) / 60)}분 회전`
     : (summary.locked
     ? summary.lockReason
-    : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`);
+    : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`));
 }
 
 function setHealthTone(element, ok, warning = false) {
@@ -1622,8 +1672,9 @@ async function loadAnalysisStatus() {
     scannerEnabled = Boolean(state.enabled);
     liveMarketSession = state.activeSession || null;
     document.querySelector("#botToggle").checked = Boolean(state.enabled);
+    const reviewMode = state.paperSummary?.sessionMode?.mode === "REVIEW";
     document.querySelector("#botStatus").textContent = state.enabled
-      ? `${state.activeMarket} 모의매매 · ${state.cycle}회`
+      ? (reviewMode ? `국내장 종합 복기 · ${state.cycle}회` : `${state.activeMarket} 모의매매 · ${state.cycle}회`)
       : "모의 운용 중";
     if (state.enabled) {
       renderScannerResults(state.results);
