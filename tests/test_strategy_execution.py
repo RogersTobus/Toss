@@ -81,6 +81,10 @@ class StrategyExecutionTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(orders[-1]["exitKind"], "시간청산")
         self.assertEqual(orders[-1]["strategyRevision"], 7)
+        self.assertEqual(orders[-1]["postExitStudy"]["status"], "TRACKING")
+        self.assertEqual(
+            set(orders[-1]["postExitStudy"]["horizons"]), {"5m", "10m", "30m"}
+        )
         self.assertNotIn("protectiveStopOrder", orders[0])
 
     @patch("server.refresh_position_prices", return_value={"TEST": 90.0})
@@ -250,6 +254,52 @@ class StrategyExecutionTests(unittest.TestCase):
             },
         )
         self.assertIn("현재 승률: 33.3% (1승 · 1패 · 1보합 / 3건)", message)
+
+    def test_time_exit_follow_up_observes_each_horizon_and_writes_verdict(self):
+        closed = datetime(2026, 7, 16, 5, 0, tzinfo=timezone.utc)
+        study = server.build_post_exit_study(
+            100.0,
+            100.0,
+            closed.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        )
+        orders = [
+            {
+                "id": "EXIT-TIME",
+                "market": "KR",
+                "symbol": "TEST",
+                "side": "SELL",
+                "status": "FILLED",
+                "exitKind": "시간청산",
+                "price": 100.0,
+                "entryPrice": 100.0,
+                "createdAt": closed.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "postExitStudy": study,
+            }
+        ]
+
+        orders, changed = server.update_post_exit_studies_if_due(
+            {}, orders, "KR", [{"symbol": "TEST", "lastPrice": 101.0}], closed + timedelta(minutes=5)
+        )
+        self.assertTrue(changed)
+        self.assertEqual(study["horizons"]["5m"]["outcome"], "너무 이른 청산")
+        self.assertEqual(study["horizons"]["10m"]["status"], "PENDING")
+
+        orders, changed = server.update_post_exit_studies_if_due(
+            {}, orders, "KR", [{"symbol": "TEST", "lastPrice": 99.0}], closed + timedelta(minutes=10)
+        )
+        self.assertTrue(changed)
+        self.assertEqual(study["horizons"]["10m"]["outcome"], "손실 회피")
+
+        orders, changed = server.update_post_exit_studies_if_due(
+            {}, orders, "KR", [{"symbol": "TEST", "lastPrice": 102.0}], closed + timedelta(minutes=30)
+        )
+        self.assertTrue(changed)
+        self.assertEqual(study["status"], "COMPLETE")
+        self.assertEqual(study["observedCount"], 3)
+        self.assertEqual(study["verdict"], "너무 이른 청산")
+        self.assertEqual(study["latestValidHorizon"], "30m")
+        self.assertIn("사후 5m:", "\n".join(server.post_exit_study_memo_lines(study)))
+        self.assertEqual(server.post_exit_study_summary(orders)["completedCount"], 1)
 
 
 if __name__ == "__main__":

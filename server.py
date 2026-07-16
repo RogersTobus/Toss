@@ -49,6 +49,10 @@ PAPER_TARGET_RATE = 0.01
 PAPER_STOP_RATE = -0.0045
 PAPER_STOP_MONITOR_INTERVAL_SECONDS = 1.0
 PAPER_STOP_REENTRY_COOLDOWN_SECONDS = 60
+POST_EXIT_OBSERVATION_HORIZONS = (("5m", 300), ("10m", 600), ("30m", 1800))
+POST_EXIT_OBSERVATION_TOLERANCE_SECONDS = 120
+POST_EXIT_OBSERVATION_RETRY_SECONDS = 10
+POST_EXIT_MEANINGFUL_MOVE_RATE = 0.001
 PAPER_MAX_DAILY_ORDERS = 3
 PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
@@ -2112,6 +2116,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "periodReturns": period_profit_summary(trade_ledger),
         "todayTradeStats": today_trade_stats,
         "technicalReview": tech_review,
+        "timeExitFollowUp": post_exit_study_summary(orders),
         "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason, config),
         "todayOrderCount": len(today_orders),
         "openPositionCount": len(positions),
@@ -2323,6 +2328,180 @@ def refresh_position_prices(
     return prices
 
 
+def build_post_exit_study(
+    exit_price: float,
+    entry_price: float,
+    closed_at: Any,
+) -> dict[str, Any]:
+    closed = parse_order_time(closed_at) or datetime.now().astimezone()
+    if closed.tzinfo is None:
+        closed = closed.replace(tzinfo=KST)
+    horizons = {
+        key: {
+            "key": key,
+            "seconds": seconds,
+            "dueAt": (closed + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "status": "PENDING",
+        }
+        for key, seconds in POST_EXIT_OBSERVATION_HORIZONS
+    }
+    return {
+        "status": "TRACKING",
+        "startedAt": closed.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "exitPrice": decimal(exit_price),
+        "entryPrice": decimal(entry_price),
+        "observedCount": 0,
+        "pendingCount": len(horizons),
+        "horizons": horizons,
+        "verdict": "추적 중",
+        "recommendation": "5·10·30분 가격을 기다리는 중입니다.",
+    }
+
+
+def finalize_post_exit_study(study: dict[str, Any], completed_at: datetime) -> None:
+    horizons = study.get("horizons") if isinstance(study.get("horizons"), dict) else {}
+    observed = [
+        item
+        for item in horizons.values()
+        if isinstance(item, dict) and item.get("status") == "OBSERVED"
+    ]
+    valid = [item for item in observed if item.get("quality") == "ON_TIME"]
+    study["observedCount"] = len(observed)
+    study["pendingCount"] = sum(
+        1 for item in horizons.values() if isinstance(item, dict) and item.get("status") == "PENDING"
+    )
+    if study["pendingCount"]:
+        study["status"] = "TRACKING"
+        study["verdict"] = "추적 중"
+        return
+    study["status"] = "COMPLETE"
+    study["completedAt"] = completed_at.strftime("%Y-%m-%dT%H:%M:%S%z")
+    if not valid:
+        study["verdict"] = "관측 부족"
+        study["recommendation"] = "장 종료 등으로 정시 관측이 없어 시간청산 판단 학습에서 제외합니다."
+        return
+    latest = max(valid, key=lambda item: int(item.get("seconds") or 0))
+    study["verdict"] = str(latest.get("outcome") or "적정 청산")
+    study["latestValidHorizon"] = latest.get("key")
+    study["latestFromExitRate"] = decimal(latest.get("fromExitRate"))
+    if study["verdict"] == "너무 이른 청산":
+        study["recommendation"] = "시간청산을 조금 늦췄을 때의 재현성을 추가 검증합니다."
+    elif study["verdict"] == "손실 회피":
+        study["recommendation"] = "현재 시간청산이 추가 하락을 피한 사례로 학습합니다."
+    else:
+        study["recommendation"] = "현재 시간청산 기준을 유지하고 표본을 더 축적합니다."
+
+
+def update_post_exit_studies_if_due(
+    env: dict[str, str],
+    orders: list[dict[str, Any]],
+    market: str,
+    results: list[dict[str, Any]] | None = None,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KST)
+    due_orders: dict[str, dict[str, Any]] = {}
+    due_items: list[tuple[dict[str, Any], dict[str, Any], datetime]] = []
+    for order in orders:
+        if order.get("market") != market or order.get("exitKind") != "시간청산":
+            continue
+        study = order.get("postExitStudy") if isinstance(order.get("postExitStudy"), dict) else {}
+        if study.get("status") not in ("TRACKING", "PENDING"):
+            continue
+        horizons = study.get("horizons") if isinstance(study.get("horizons"), dict) else {}
+        for horizon in horizons.values():
+            if not isinstance(horizon, dict) or horizon.get("status") != "PENDING":
+                continue
+            due_at = parse_order_time(horizon.get("dueAt"))
+            if not due_at:
+                continue
+            if due_at.tzinfo is None:
+                due_at = due_at.replace(tzinfo=KST)
+            if due_at <= current:
+                last_attempt = parse_order_time(horizon.get("lastAttemptAt"))
+                if last_attempt and last_attempt.tzinfo is None:
+                    last_attempt = last_attempt.replace(tzinfo=KST)
+                if last_attempt and (current - last_attempt).total_seconds() < POST_EXIT_OBSERVATION_RETRY_SECONDS:
+                    continue
+                symbol = str(order.get("symbol") or "")
+                if symbol:
+                    horizon["lastAttemptAt"] = current.strftime("%Y-%m-%dT%H:%M:%S%z")
+                    due_orders[symbol] = order
+                    due_items.append((order, horizon, due_at))
+    if not due_items:
+        return orders, False
+
+    prices = refresh_position_prices(env, due_orders, results or [])
+    changed = True  # Persist attempt timestamps even when the quote is temporarily unavailable.
+    touched_studies: dict[int, dict[str, Any]] = {}
+    observed_at = current.strftime("%Y-%m-%dT%H:%M:%S%z")
+    for order, horizon, due_at in due_items:
+        symbol = str(order.get("symbol") or "")
+        price = decimal(prices.get(symbol))
+        study = order.get("postExitStudy") or {}
+        exit_price = decimal(study.get("exitPrice") or order.get("price"))
+        entry_price = decimal(study.get("entryPrice") or order.get("entryPrice"))
+        if not price or not exit_price or not entry_price:
+            continue
+        delayed_seconds = max(0, int((current - due_at).total_seconds()))
+        quality = (
+            "ON_TIME"
+            if delayed_seconds <= POST_EXIT_OBSERVATION_TOLERANCE_SECONDS
+            else "LATE"
+        )
+        from_exit_rate = (price - exit_price) / exit_price
+        hypothetical_return_rate = (price - entry_price) / entry_price
+        if quality != "ON_TIME":
+            outcome = "관측 지연"
+        elif from_exit_rate >= POST_EXIT_MEANINGFUL_MOVE_RATE:
+            outcome = "너무 이른 청산"
+        elif from_exit_rate <= -POST_EXIT_MEANINGFUL_MOVE_RATE:
+            outcome = "손실 회피"
+        else:
+            outcome = "적정 청산"
+        horizon.update(
+            {
+                "status": "OBSERVED",
+                "observedAt": observed_at,
+                "observedPrice": price,
+                "fromExitRate": from_exit_rate,
+                "hypotheticalReturnRate": hypothetical_return_rate,
+                "delayedSeconds": delayed_seconds,
+                "quality": quality,
+                "outcome": outcome,
+            }
+        )
+        touched_studies[id(study)] = study
+        changed = True
+    for study in touched_studies.values():
+        finalize_post_exit_study(study, current)
+    if changed:
+        save_paper_orders(orders)
+    return orders, changed
+
+
+def post_exit_study_summary(orders: list[dict[str, Any]]) -> dict[str, Any]:
+    studies = [
+        order.get("postExitStudy")
+        for order in orders
+        if order.get("exitKind") == "시간청산"
+        and isinstance(order.get("postExitStudy"), dict)
+    ]
+    verdicts: dict[str, int] = {}
+    for study in studies:
+        verdict = str(study.get("verdict") or "추적 중")
+        verdicts[verdict] = verdicts.get(verdict, 0) + 1
+    return {
+        "trackingCount": sum(1 for study in studies if study.get("status") == "TRACKING"),
+        "completedCount": sum(1 for study in studies if study.get("status") == "COMPLETE"),
+        "totalCount": len(studies),
+        "horizons": [key for key, _ in POST_EXIT_OBSERVATION_HORIZONS],
+        "verdicts": verdicts,
+    }
+
+
 def close_paper_positions_if_needed(
     env: dict[str, str],
     orders: list[dict[str, Any]],
@@ -2422,8 +2601,7 @@ def close_paper_positions_if_needed(
                     )
         if not exit_kind:
             continue
-        orders.append(
-            {
+        exit_order = {
                 "id": f"PAPER-EXIT-{int(time.time())}-{symbol}",
                 "market": order.get("market"),
                 "session": session,
@@ -2452,7 +2630,11 @@ def close_paper_positions_if_needed(
                 "fillPolicy": protective.get("fillPolicy") or "LAST_OBSERVED_PRICE",
                 "strategyRevision": entry_policy.get("revision") or order.get("strategyRevision"),
             }
-        )
+        if exit_kind == "시간청산":
+            exit_order["postExitStudy"] = build_post_exit_study(
+                fill_price, entry, now
+            )
+        orders.append(exit_order)
         changed = True
     if changed:
         save_paper_orders(orders)
@@ -3512,7 +3694,10 @@ def monitor_active_position_risks(
             orders, market_changed = close_paper_positions_if_needed(
                 env, orders, [], market, session, stop_only=True
             )
-            changed = changed or market_changed
+            orders, study_changed = update_post_exit_studies_if_due(
+                env, orders, market
+            )
+            changed = changed or market_changed or study_changed
     return orders, changed, active
 
 
@@ -3710,6 +3895,31 @@ def journal_holding_time(opened_at: Any, closed_at: Any) -> str:
     return f"{hours}시간 {minutes}분"
 
 
+def post_exit_study_memo_lines(study: dict[str, Any]) -> list[str]:
+    if not isinstance(study, dict) or not study:
+        return []
+    horizons = study.get("horizons") if isinstance(study.get("horizons"), dict) else {}
+    lines = [
+        f"시간청산 사후추적: {int(study.get('observedCount') or 0)}/{len(POST_EXIT_OBSERVATION_HORIZONS)} 완료"
+    ]
+    for key, _ in POST_EXIT_OBSERVATION_HORIZONS:
+        item = horizons.get(key) if isinstance(horizons.get(key), dict) else {}
+        if item.get("status") != "OBSERVED":
+            lines.append(f"사후 {key}: 관측 대기")
+            continue
+        lines.append(
+            f"사후 {key}: 청산가 대비 {percent(item.get('fromExitRate'))} · "
+            f"진입가 대비 {percent(item.get('hypotheticalReturnRate'))} · "
+            f"{item.get('outcome') or '판정 대기'}"
+        )
+    if study.get("status") == "COMPLETE":
+        lines.append(
+            f"사후판정: {study.get('verdict') or '관측 부족'} · "
+            f"{study.get('recommendation') or '표본을 추가 축적합니다.'}"
+        )
+    return lines
+
+
 def automatic_journal_note(
     trade: dict[str, Any],
     entry_order: dict[str, Any],
@@ -3733,6 +3943,7 @@ def automatic_journal_note(
     return_rate = decimal(trade.get("returnRate"))
     profit = decimal(trade.get("profit"))
     exit_kind = clean_text(exit_order.get("exitKind"), "", 40)
+    post_exit_study = exit_order.get("postExitStudy") if isinstance(exit_order.get("postExitStudy"), dict) else {}
     protective = entry_order.get("protectiveStopOrder") if isinstance(entry_order.get("protectiveStopOrder"), dict) else {}
     stop_rate = decimal(
         exit_order.get("stopRate")
@@ -3795,10 +4006,10 @@ def automatic_journal_note(
         [
             f"청산: {exit_reason}",
             result_line,
-            f"복기: {evaluation}",
-            f"다음 개선: {improvement}",
         ]
     )
+    memo_lines.extend(post_exit_study_memo_lines(post_exit_study))
+    memo_lines.extend([f"복기: {evaluation}", f"다음 개선: {improvement}"])
     memo = "\n".join(memo_lines)
     return {"memo": memo, "review": review, "tags": tags}
 
@@ -4742,6 +4953,11 @@ def build_trading_journal() -> dict[str, Any]:
                 ),
                 "observedExitPrice": decimal(exit_order.get("observedPrice")),
                 "observedExitReturnRate": decimal(exit_order.get("observedReturnRate")),
+                "postExitStudy": (
+                    dict(exit_order.get("postExitStudy") or {})
+                    if isinstance(exit_order.get("postExitStudy"), dict)
+                    else None
+                ),
                 "protectiveStopOrder": (
                     dict(entry_order.get("protectiveStopOrder") or {})
                     if isinstance(entry_order.get("protectiveStopOrder"), dict)

@@ -663,12 +663,16 @@ function createJournalRow(entry, compact = false) {
   row.classList.toggle("is-open", isOpen);
   row.setAttribute("aria-expanded", String(isOpen));
   const status = isClosed ? "청산 완료" : "보유 중";
+  const postExitStudy = entry.postExitStudy || {};
+  const postExitMeta = entry.exitKind === "시간청산"
+    ? ` · 사후추적 ${Number(postExitStudy.observedCount || 0)}/3${postExitStudy.status === "COMPLETE" ? ` · ${postExitStudy.verdict || "판정 완료"}` : ""}`
+    : "";
   const priceText = isClosed
     ? `${formatTradePrice(entry)} 매수 → ${formatTradePrice({ ...entry, entryPrice: entry.lastPrice })} 매도`
     : `${formatTradePrice(entry)} 매수${entry.protectiveStopOrder?.triggerPrice ? ` · 보호 ${formatTradePrice({ ...entry, entryPrice: entry.protectiveStopOrder.triggerPrice })}` : ""}`;
   const eventTime = isClosed ? (entry.closedAt || entry.createdAt) : (entry.openedAt || entry.createdAt);
   row.innerHTML = `
-    <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(eventTime)} · ${entry.market || "-"} · ${entry.sideLabel || status} · ${priceText}</small></span>
+    <span><b>${entry.name || entry.symbol}</b><small>${formatJournalTime(eventTime)} · ${entry.market || "-"} · ${entry.sideLabel || status} · ${priceText}${postExitMeta}</small></span>
     <em class="${Number(entry.returnRate || 0) >= 0 ? "positive-text" : "negative-text"}">${signedPercent(entry.returnRate || 0)}</em>
     <strong>${status}</strong>
   `;
@@ -1138,7 +1142,10 @@ function setEditorValues(prefix, entry) {
   editor.hidden = false;
   const title = `${entry.name || entry.symbol} ${entry.sideLabel || "매매"} 메모`;
   const learningMeta = entry.learningPolicy?.reason ? ` · 학습: ${entry.learningPolicy.reason}` : "";
-  const meta = `${formatJournalTime(entry.createdAt)} · ${entry.reason || "진입 사유 없음"}${learningMeta}`;
+  const postExitMeta = entry.postExitStudy
+    ? ` · 시간청산 사후 ${Number(entry.postExitStudy.observedCount || 0)}/3${entry.postExitStudy.status === "COMPLETE" ? ` · ${entry.postExitStudy.verdict || "판정 완료"}` : ""}`
+    : "";
+  const meta = `${formatJournalTime(entry.createdAt)} · ${entry.reason || "진입 사유 없음"}${learningMeta}${postExitMeta}`;
   const titleEl = document.querySelector(prefix === "page" ? "#journalPageEditorTitle" : "#journalEditorTitle");
   const metaEl = document.querySelector(prefix === "page" ? "#journalPageEditorMeta" : "#journalEditorMeta");
   const memoEl = document.querySelector(prefix === "page" ? "#journalPageMemo" : "#journalMemo");
