@@ -3476,6 +3476,15 @@ def update_candidate_strategy_registry(
             "maxDrawdown": average_drawdown >= -0.25,
         }
         ready = all(gates.values())
+        gate_pass_count = sum(1 for passed in gates.values() if passed)
+        if ready:
+            status = "READY_TO_COMPARE"
+        elif count >= RESEARCH_MIN_VALIDATION_SAMPLES and len(evidence) < 10:
+            status = "DIVERSIFYING"
+        elif count >= RESEARCH_MIN_VALIDATION_SAMPLES:
+            status = "VALIDATING"
+        else:
+            status = "DISCOVERY"
         candidate.update(
             {
                 "observationCount": count,
@@ -3491,8 +3500,9 @@ def update_candidate_strategy_registry(
                 "stopHitRate": sum(int(item.get("stopHitCount") or 0) for item in evidence) / count if count else 0.0,
                 "validationRate": min(1.0, count / RESEARCH_MIN_VALIDATION_SAMPLES),
                 "promotionGates": gates,
+                "gatePassCount": gate_pass_count,
                 "promotionEligible": ready,
-                "status": "READY_TO_COMPARE" if ready else ("VALIDATING" if count >= RESEARCH_MIN_VALIDATION_SAMPLES else "DISCOVERY"),
+                "status": status,
             }
         )
     registry.update(
@@ -3513,9 +3523,10 @@ def candidate_strategy_registry_view(raw_registry: Any) -> dict[str, Any]:
     candidates.sort(
         key=lambda item: (
             bool(item.get("promotionEligible")),
+            int(item.get("gatePassCount") or 0),
+            int(item.get("symbolCount") or 0),
             decimal(item.get("validationRate")),
             decimal(item.get("netAverageReturn")),
-            int(item.get("symbolCount") or 0),
         ),
         reverse=True,
     )
@@ -3526,7 +3537,7 @@ def candidate_strategy_registry_view(raw_registry: Any) -> dict[str, Any]:
         "researchRunCount": int(registry.get("researchRunCount") or 0),
         "minimumSamples": int(registry.get("minimumSamples") or RESEARCH_MIN_VALIDATION_SAMPLES),
         "candidateCount": len(candidates),
-        "validatingCount": sum(1 for item in candidates if item.get("status") == "VALIDATING"),
+        "validatingCount": sum(1 for item in candidates if item.get("status") in ("DIVERSIFYING", "VALIDATING")),
         "readyToCompareCount": sum(1 for item in candidates if item.get("promotionEligible")),
         "marketCounts": {
             market: sum(1 for item in candidates if item.get("market") == market)

@@ -1260,8 +1260,8 @@ function renderLearningBrain(learning = {}, entries = []) {
     } else {
       candidates.slice(0, 12).forEach((candidate) => {
         const item = document.createElement("div");
-        const statusClass = candidate.promotionEligible ? "ready" : (candidate.status === "VALIDATING" ? "validating" : "discovery");
-        const statusLabel = candidate.promotionEligible ? "비교 준비" : (candidate.status === "VALIDATING" ? "100건 검증" : "발견 단계");
+        const statusClass = candidate.promotionEligible ? "ready" : (["DIVERSIFYING", "VALIDATING"].includes(candidate.status) ? "validating" : "discovery");
+        const statusLabel = candidate.promotionEligible ? "비교 준비" : (candidate.status === "DIVERSIFYING" ? "종목 확장" : (candidate.status === "VALIDATING" ? "조건 검증" : "발견 단계"));
         item.className = `candidate-strategy-item ${statusClass}`;
         item.innerHTML = `<div><em>${candidate.market || "-"} · ${candidate.timeframe || "-"}</em><strong>${statusLabel}</strong></div><b>${candidate.pattern || "후보 패턴"}</b><small>${Number(candidate.observationCount || 0).toLocaleString("ko-KR")}건 · ${Number(candidate.symbolCount || 0)}종목 · 승률 ${(Number(candidate.winRate || 0) * 100).toFixed(1)}% · 비용후 평균 ${signedPercent(candidate.netAverageReturn || 0)} · 손익비 ${Number(candidate.payoffRatio || 0).toFixed(2)} · 평균 MDD ${signedPercent(candidate.averageMaxDrawdown || 0)}</small>`;
         candidateList.append(item);
