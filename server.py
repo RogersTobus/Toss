@@ -1453,9 +1453,7 @@ def active_market_sessions(
     us_today = CALENDAR_CACHE["US"].get("today") or {}
     us_sessions = (
         ("dayMarket", "US 데이마켓"),
-        ("preMarket", "US 프리마켓"),
         ("regularMarket", "US 정규장"),
-        ("afterMarket", "US 애프터마켓"),
     )
     for key, label in us_sessions:
         if is_open(us_today.get(key) or {}):
@@ -3662,8 +3660,14 @@ def run_multi_timeframe_study(
     summary["completeSymbolCount"] = sum(1 for item in symbol_studies if item.get("complete"))
     with LEARNING_LOCK:
         state = load_learning_state_unlocked()
-        model = state.setdefault("globalScoreModel", default_global_score_model())
-        influence = apply_off_market_backtest_influence(model, summary, study_id)
+        state.setdefault("globalScoreModel", default_global_score_model())
+        influence = {
+            "applied": False,
+            "eligible": False,
+            "tradeCount": int(summary.get("tradeCount") or 0),
+            "reason": "휴장 연구 결과는 주전 전략에 즉시 반영하지 않고 후보 전략 근거로만 저장",
+            "scope": "CANDIDATE_RESEARCH_ONLY",
+        }
         completed = now_kst()
         study = {
             "id": study_id,
@@ -4840,7 +4844,6 @@ def sync_learning_brain(
                 stop_rate,
             )
             if trade_key not in score_processed:
-                update_global_score_model(global_model, entry_order, return_rate, violation, trade_key)
                 state.setdefault("scoreModelProcessedTrades", []).append(trade_key)
                 score_processed.add(trade_key)
                 changed = True
@@ -4914,11 +4917,11 @@ def sync_learning_brain(
                 "returnRate": return_rate,
                 "profit": profit,
                 "observation": learning_observation(name, return_rate, violation, profile),
-                "appliedRule": "전체 종목 공용 점수 모델의 근거 사례로 반영",
+                "appliedRule": "해당 시장 주전 전략의 근거 사례로만 보관",
                 "scope": "CASE_ARCHIVE",
                 "requiredScore": profile.get("requiredScore"),
                 "allocationScale": profile.get("allocationScale"),
-                "appliedImmediately": True,
+                "appliedImmediately": False,
             }
             state.setdefault("memories", []).append(memory)
             state.setdefault("processedTrades", []).append(trade_key)

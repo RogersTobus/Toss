@@ -101,10 +101,10 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
                 server.LEARNING_PATH = Path(directory) / "learning_state.json"
                 first = server.sync_learning_brain(orders, {})
                 second = server.sync_learning_brain(orders, {})
-                self.assertEqual(first["globalScoreModel"]["sampleCount"], 1)
-                self.assertEqual(second["globalScoreModel"]["sampleCount"], 1)
+                self.assertEqual(first["globalScoreModel"]["sampleCount"], 0)
+                self.assertEqual(second["globalScoreModel"]["sampleCount"], 0)
                 self.assertEqual(len(second["scoreModelProcessedTrades"]), 1)
-                self.assertEqual(second["globalScoreModel"]["scope"], "GLOBAL_ALL_SYMBOLS")
+                self.assertEqual(len(second["globalScoreModel"].get("revisions") or []), 0)
         finally:
             server.LEARNING_PATH = original_path
 

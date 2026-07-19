@@ -7,6 +7,7 @@ let selectedAnalysisItem = null;
 let appVersion = null;
 let currentStrategies = [];
 let selectedJournalEntry = null;
+let latestStrategyPayload = {};
 
 function signedWon(value) {
   const amount = Number(value || 0);
@@ -278,6 +279,7 @@ function readStrategyTower() {
 }
 
 function renderStrategyPayload(payload = {}) {
+  latestStrategyPayload = payload;
   renderStrategyConfig(payload.config || {});
   if (Array.isArray(payload.strategies)) renderStrategyTower(payload.strategies);
   renderOverallAdvice(payload.overallAdvice || {});
@@ -295,6 +297,34 @@ function renderStrategyPayload(payload = {}) {
   }
 }
 
+function strategyMarketSummaries(entries = []) {
+  return ["KR", "US"].reduce((summaries, market) => {
+    const closed = entries
+      .filter((entry) => entry.status === "청산" && String(entry.market || "").toUpperCase() === market)
+      .sort((a, b) => String(a.closedAt || a.createdAt || "").localeCompare(String(b.closedAt || b.createdAt || "")));
+    const returns = closed.map((entry) => Number(entry.returnRate || 0));
+    const wins = returns.filter((value) => value > 0);
+    const losses = returns.filter((value) => value < 0);
+    let cumulative = 0;
+    let peak = 0;
+    let maxDrawdown = 0;
+    returns.forEach((value) => {
+      cumulative += value;
+      peak = Math.max(peak, cumulative);
+      maxDrawdown = Math.min(maxDrawdown, cumulative - peak);
+    });
+    const grossProfit = wins.reduce((sum, value) => sum + value, 0);
+    const grossLoss = Math.abs(losses.reduce((sum, value) => sum + value, 0));
+    summaries[market] = {
+      closedCount: closed.length,
+      winRate: closed.length ? wins.length / closed.length : 0,
+      profitFactor: grossLoss ? grossProfit / grossLoss : (grossProfit ? 99 : 0),
+      maxDrawdown,
+    };
+    return summaries;
+  }, {});
+}
+
 function renderCurrentStrategySummary(payload = {}) {
   const target = document.querySelector("#currentStrategySummary");
   const status = document.querySelector("#currentStrategyStatus");
@@ -302,31 +332,51 @@ function renderCurrentStrategySummary(payload = {}) {
   const config = payload.config || {};
   const strategies = Array.isArray(payload.strategies) ? payload.strategies : (config.strategies || []);
   const enabled = strategies.filter((strategy) => strategy.enabled !== false);
-  const groups = [
-    { label: "후보·진입", ids: ["liquidity-momentum-filter", "score-entry-80"] },
-    { label: "PAPER 운용", ids: ["adaptive-capital-utilization", "paper-learning-sprint", "unlimited-paper-experience"] },
-    { label: "손실 방어", ids: ["hard-stop-loss"] },
-    { label: "수익·시간 청산", ids: ["profit-trailing", "three-minute-exit"] },
-    { label: "계좌·재진입", ids: ["daily-risk-kill-switch", "reentry-cooldown", "overnight-extended-session"] },
+  const marketSummaries = payload.marketSummaries || config.marketSummaries || {};
+  const marketDefinitions = [
+    { market: "KR", label: "한국 정규장 전략", id: "kr_regular_momentum_champion", version: "1.0.0", session: "한국 정규장" },
+    { market: "US", label: "미국 정규장 전략", id: "us_regular_momentum_champion", version: "1.0.0", session: "미국 정규장" },
   ];
-  if (status) status.textContent = `${enabled.length}개 활성`;
+  if (status) status.textContent = "정규장 주전 2개";
   target.replaceChildren();
-  groups.forEach((group) => {
-    const items = enabled.filter((strategy) => group.ids.includes(strategy.id));
-    if (!items.length) return;
+  marketDefinitions.forEach((definition) => {
+    const marketStrategies = enabled.filter((strategy) => {
+      const market = String(strategy.market || strategy.marketCountry || "").toUpperCase();
+      return market ? market === definition.market : true;
+    });
+    const metrics = marketSummaries[definition.market] || {};
+    const closedCount = Number(metrics.closedCount || 0);
+    const winRate = Number(metrics.winRate || 0);
+    const profitFactor = Number(metrics.profitFactor || metrics.payoffRatio || 0);
+    const maxDrawdown = Number(metrics.maxDrawdown || 0);
+    const scoreStrategy = marketStrategies.find((strategy) => String(strategy.id || "").startsWith("score-entry"));
+    const stopStrategy = marketStrategies.find((strategy) => strategy.id === "hard-stop-loss");
+    const profitStrategy = marketStrategies.find((strategy) => strategy.id === "profit-trailing");
+    const timeStrategy = marketStrategies.find((strategy) => strategy.id === "three-minute-exit");
     const card = document.createElement("article");
-    card.className = "current-strategy-item";
-    const title = items.map((item) => item.title).join(" · ");
-    const detail = items.map((item) => item.judge).filter(Boolean).join(" / ");
-    card.innerHTML = `<span>${group.label}</span><b>${title}</b><small>${detail || "현재 설정 적용 중"}</small>`;
+    card.className = `market-strategy-card ${definition.market.toLowerCase()}`;
+    card.innerHTML = `
+      <div class="market-strategy-title">
+        <div><span>${definition.market} CHAMPION</span><b>${definition.label}</b><small>${definition.id} · v${definition.version}</small></div>
+        <em>주전 고정</em>
+      </div>
+      <div class="market-strategy-rules">
+        <div><span>운영</span><b>${definition.session}</b></div>
+        <div><span>진입</span><b>${scoreStrategy?.title || "82점 이상"}</b></div>
+        <div><span>보호손절</span><b>${stopStrategy?.title || "−0.45%"}</b></div>
+        <div><span>정상 익절</span><b>${profitStrategy?.title || "+1%부터"}</b></div>
+        <div><span>시간청산</span><b>${timeStrategy?.title || "3분"}</b></div>
+      </div>
+      <div class="market-strategy-metrics">
+        <div><span>청산 표본</span><b>${closedCount.toLocaleString("ko-KR")}건</b></div>
+        <div><span>승률</span><b>${(winRate * 100).toFixed(1)}%</b></div>
+        <div><span>손익비</span><b>${profitFactor ? profitFactor.toFixed(2) : "대기"}</b></div>
+        <div><span>최대낙폭</span><b>${maxDrawdown ? `${(Math.abs(maxDrawdown) * 100).toFixed(2)}%` : "대기"}</b></div>
+      </div>
+      <p>${closedCount >= 100 ? "100건 검토 가능 · 후보 전략과 비교 대기" : `다음 검토까지 ${Math.max(0, 100 - closedCount)}건`}</p>
+    `;
     target.append(card);
   });
-  if (!target.children.length) {
-    const empty = document.createElement("div");
-    empty.className = "current-strategy-empty";
-    empty.textContent = "활성화된 전략이 없습니다. 전략 설정 컨트롤타워를 확인해주세요.";
-    target.append(empty);
-  }
 }
 
 function renderOverallAdvice(advice = {}) {
@@ -1201,6 +1251,10 @@ function renderLearningBrain(learning = {}, entries = []) {
 function renderTradingJournal(payload = {}) {
   const summary = payload.summary || {};
   const entries = payload.entries || [];
+  renderCurrentStrategySummary({
+    ...latestStrategyPayload,
+    marketSummaries: strategyMarketSummaries(entries),
+  });
   const updatedText = payload.updatedAt ? `${formatJournalTime(payload.updatedAt)} 갱신` : "기록 대기";
   const updated = document.querySelector("#journalUpdatedAt");
   const pageUpdated = document.querySelector("#journalPageUpdatedAt");
