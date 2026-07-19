@@ -65,10 +65,23 @@ PAPER_UNLIMITED_OPEN_POSITIONS = True
 PAPER_MIN_EXPERIENCE_ENTRY_RATE = 0.30
 LEARNING_SCHEMA_VERSION = 2
 LEARNING_BASE_ENTRY_SCORE = 80
+MARKET_ENTRY_SCORE = 82
 GLOBAL_SCORE_FEATURES = {
     "liquidity": {"label": "거래대금 순위", "maxPoints": 40.0},
     "momentum": {"label": "당일 추세", "maxPoints": 35.0},
     "stability": {"label": "급등락 안정성", "maxPoints": 25.0},
+}
+MARKET_SCORE_FEATURES = {
+    "KR": {
+        "liquidity": {"label": "거래대금 순위", "maxPoints": 40.0},
+        "momentum": {"label": "한국장 당일 추세", "maxPoints": 35.0},
+        "stability": {"label": "급등락 안정성", "maxPoints": 25.0},
+    },
+    "US": {
+        "liquidity": {"label": "미국장 유동성 순위", "maxPoints": 35.0},
+        "momentum": {"label": "미국장 당일 추세", "maxPoints": 40.0},
+        "stability": {"label": "급등락 안정성", "maxPoints": 25.0},
+    },
 }
 GLOBAL_SCORE_WEIGHT_MIN = 0.70
 GLOBAL_SCORE_WEIGHT_MAX = 1.30
@@ -1737,8 +1750,9 @@ def paper_capital_summary(
 
 
 def confidence_allocation_rate(score: Any) -> float:
-    normalized = clamp(score, 80, 100, 80)
-    return 0.15 + ((normalized - 80) / 20) * 0.45
+    """Keep qualification confidence from magnifying a scoring error into position risk."""
+    normalized = clamp(score, MARKET_ENTRY_SCORE, 100, MARKET_ENTRY_SCORE)
+    return round(0.30 + ((normalized - MARKET_ENTRY_SCORE) / (100 - MARKET_ENTRY_SCORE)) * 0.15, 4)
 
 
 def adaptive_allocation_plan(
@@ -2746,7 +2760,7 @@ def paper_trade_locked(
                 }
             )
             continue
-        policy = learning_entry_policy(symbol, item.get("score"), learning_state)
+        policy = learning_entry_policy(symbol, item.get("score"), learning_state, market)
         if execution_policy.get("scoreFilter"):
             required_floor = int(runtime.get("entryScoreFloor") or LEARNING_BASE_ENTRY_SCORE)
             policy["requiredScore"] = max(int(policy.get("requiredScore") or 0), required_floor)
@@ -2940,16 +2954,29 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
         normalized_price = source_price * exchange_rate if source_currency == "USD" else source_price
         rate = decimal(price.get("changeRate"))
         rank = int(row.get("rank") or 30)
-        liquidity_score = max(0, 40 - ((rank - 1) * 1.2))
-        if 0.02 <= rate < 0.12:
-            momentum_score = 35
+        profile = MARKET_SCORE_FEATURES.get(market, MARKET_SCORE_FEATURES["KR"])
+        liquidity_max = decimal(profile["liquidity"]["maxPoints"])
+        momentum_max = decimal(profile["momentum"]["maxPoints"])
+        stability_max = decimal(profile["stability"]["maxPoints"])
+        liquidity_score = max(0, liquidity_max - ((rank - 1) * (liquidity_max / 33)))
+        if market == "US":
+            if 0.03 <= rate < 0.12:
+                momentum_score = momentum_max
+            elif 0 <= rate < 0.03:
+                momentum_score = momentum_max * 0.60
+            elif rate >= 0.12:
+                momentum_score = momentum_max * 0.25
+            else:
+                momentum_score = momentum_max * 0.15
+        elif 0.02 <= rate < 0.12:
+            momentum_score = momentum_max
         elif 0 <= rate < 0.02:
-            momentum_score = 20
+            momentum_score = momentum_max * 0.57
         elif rate >= 0.12:
-            momentum_score = 10
+            momentum_score = momentum_max * 0.29
         else:
-            momentum_score = 5
-        stability_score = 25 if -0.03 < rate < 0.12 else 8
+            momentum_score = momentum_max * 0.14
+        stability_score = stability_max if -0.03 < rate < 0.12 else stability_max * 0.32
         result = {
                 "rank": row.get("rank"),
                 "symbol": row.get("symbol"),
@@ -4447,14 +4474,24 @@ def normalize_global_score_model(raw: Any) -> dict[str, Any]:
 def global_score_audit(
     components: dict[str, Any],
     model: dict[str, Any],
+    market: str | None = None,
 ) -> dict[str, Any]:
     refreshed = refresh_global_score_model(model)
-    effective = refreshed.get("effectiveWeights") or {}
+    market_key = str(market or "").upper()
+    market_profile = MARKET_SCORE_FEATURES.get(market_key)
+    feature_config = market_profile or GLOBAL_SCORE_FEATURES
+    # Production market strategies are frozen champions. Legacy global learning
+    # weights must not leak from one market into the other.
+    effective = (
+        {key: 1.0 for key in feature_config}
+        if market_profile
+        else (refreshed.get("effectiveWeights") or {})
+    )
     numerator = 0.0
     denominator = 0.0
     feature_values: dict[str, float] = {}
     component_points: dict[str, float] = {}
-    for key, config in GLOBAL_SCORE_FEATURES.items():
+    for key, config in feature_config.items():
         max_points = decimal(config.get("maxPoints"))
         points = clamp(components.get(key), 0, max_points, 0)
         weight = clamp(effective.get(key), 0.5, 1.5, 1.0)
@@ -4465,11 +4502,11 @@ def global_score_audit(
     base_score = round(sum(component_points.values()), 1)
     adaptive_score = round(100 * numerator / denominator, 1) if denominator else base_score
     return {
-        "scope": "GLOBAL_ALL_SYMBOLS",
+        "scope": f"MARKET_{market_key}" if market_profile else "GLOBAL_ALL_SYMBOLS",
         "baseScore": base_score,
         "adaptiveScore": adaptive_score,
         "delta": round(adaptive_score - base_score, 1),
-        "entryThreshold": int(refreshed.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE),
+        "entryThreshold": MARKET_ENTRY_SCORE if market_profile else int(refreshed.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE),
         "sampleCount": int(refreshed.get("sampleCount") or 0),
         "confidence": decimal(refreshed.get("confidence")),
         "components": component_points,
@@ -4481,24 +4518,36 @@ def global_score_audit(
 
 def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
     components = item.get("scoreComponents") if isinstance(item.get("scoreComponents"), dict) else {}
-    audit = global_score_audit(components, model)
+    market = str(item.get("marketCountry") or item.get("market") or "").upper()
+    audit = global_score_audit(components, model, market)
     score = decimal(audit.get("adaptiveScore"))
     threshold = int(audit.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE)
     rate = decimal(item.get("dailyRate"))
-    if rate >= 0.12 or rate <= -0.08:
-        verdict, reason = "진입 불가", f"급등락 추격 위험 · 전역 학습 평가 {score:.1f}점"
+    source_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+    minimum_price = 5.0 if market == "US" else 5000.0 if market == "KR" else 0.0
+    gate_checks = {
+        "minimumPrice": source_price >= minimum_price,
+        "overheatRange": -0.08 < rate < 0.12,
+    }
+    gates_passed = all(gate_checks.values())
+    if not gate_checks["minimumPrice"]:
+        verdict, reason = "진입 불가", f"{market or '공통'} 최소가격 기준 미달"
+    elif not gate_checks["overheatRange"]:
+        verdict, reason = "진입 불가", f"급등락 추격 위험 · {market or '공통'} 전략 평가 {score:.1f}점"
     elif score >= threshold:
-        verdict, reason = "정밀 분석", f"전역 학습 {threshold}점 통과 · 기본 {audit['baseScore']:.1f} → {score:.1f}점"
+        verdict, reason = "정밀 분석", f"{market or '공통'} 전략 {threshold}점 통과 · {score:.1f}점"
     elif score >= max(60, threshold - 20):
-        verdict, reason = "관찰", f"전역 기준 {threshold}점 미달 · 기본 {audit['baseScore']:.1f} → {score:.1f}점"
+        verdict, reason = "관찰", f"{market or '공통'} 전략 {threshold}점 미달 · {score:.1f}점"
     else:
-        verdict, reason = "진입 보류", f"전역 전략 기준 미달 · 기본 {audit['baseScore']:.1f} → {score:.1f}점"
+        verdict, reason = "진입 보류", f"{market or '공통'} 전략 기준 미달 · {score:.1f}점"
     item.update(
         {
             "baseScore": audit.get("baseScore"),
             "score": score,
             "scoreFeatures": audit.get("features"),
             "scoreAudit": audit,
+            "entryGates": gate_checks,
+            "entryGatesPassed": gates_passed,
             "verdict": verdict,
             "reason": reason,
         }
@@ -4940,17 +4989,18 @@ def sync_learning_brain(
         return json.loads(json.dumps(state, ensure_ascii=False))
 
 
-def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any]) -> dict[str, Any]:
+def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any], market: str | None = None) -> dict[str, Any]:
     model = normalize_global_score_model(state.get("globalScoreModel"))
-    required_score = int(model.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE)
+    market_key = str(market or "").upper()
+    required_score = MARKET_ENTRY_SCORE if market_key in MARKET_SCORE_FEATURES else int(model.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE)
     allocation_scale = 1.0
     cooldown_remaining = 0
     candidate_score = decimal(score)
     allowed = candidate_score >= required_score
     if candidate_score < required_score:
-        reason = f"전역 학습 기준 · {required_score}점 필요 (현재 {candidate_score:.1f}점)"
+        reason = f"{market_key or '전역'} 전략 기준 · {required_score}점 필요 (현재 {candidate_score:.1f}점)"
     else:
-        reason = f"전체 거래 공용 뇌 통과 · {required_score}점 기준 · 모든 종목 동일 적용"
+        reason = f"{market_key or '전역'} 고정 전략 통과 · {required_score}점 기준"
     strongest = model.get("strongestFeature") or {}
     weakest = model.get("weakestFeature") or {}
     traits = [
@@ -4967,7 +5017,7 @@ def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any]) -> dic
         "cooldownRemainingSec": cooldown_remaining,
         "status": model.get("phase") or "초기 관찰",
         "traits": traits,
-        "scope": "GLOBAL_ALL_SYMBOLS",
+        "scope": f"MARKET_{market_key}" if market_key in MARKET_SCORE_FEATURES else "GLOBAL_ALL_SYMBOLS",
         "globalSampleCount": int(model.get("sampleCount") or 0),
         "appliedImmediately": True,
     }

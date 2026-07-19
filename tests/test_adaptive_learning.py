@@ -28,6 +28,38 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
         self.assertEqual(audit["adaptiveScore"], 79.0)
         self.assertEqual(audit["delta"], 0.0)
 
+    def test_market_champions_use_separate_frozen_profiles(self):
+        model = server.default_global_score_model()
+        model["weights"]["liquidity"] = 1.3
+        kr = server.global_score_audit(
+            {"liquidity": 40, "momentum": 20, "stability": 25}, model, "KR"
+        )
+        us = server.global_score_audit(
+            {"liquidity": 35, "momentum": 20, "stability": 25}, model, "US"
+        )
+        self.assertEqual(kr["scope"], "MARKET_KR")
+        self.assertEqual(us["scope"], "MARKET_US")
+        self.assertEqual(kr["entryThreshold"], 82)
+        self.assertEqual(us["entryThreshold"], 82)
+        self.assertEqual(kr["weights"]["liquidity"], 1.0)
+        self.assertEqual(us["weights"]["liquidity"], 1.0)
+
+    def test_minimum_price_is_a_gate_not_a_score_component(self):
+        candidate = {
+            "marketCountry": "US",
+            "sourcePrice": 4.99,
+            "dailyRate": 0.05,
+            "scoreComponents": {"liquidity": 35, "momentum": 40, "stability": 25},
+        }
+        result = server.apply_global_score_to_candidate(candidate, server.default_global_score_model())
+        self.assertEqual(result["score"], 100)
+        self.assertFalse(result["entryGatesPassed"])
+        self.assertEqual(result["verdict"], "진입 불가")
+
+    def test_score_sizing_is_kept_in_a_narrow_risk_band(self):
+        self.assertEqual(server.confidence_allocation_rate(82), 0.30)
+        self.assertEqual(server.confidence_allocation_rate(100), 0.45)
+
     def test_winner_strengthens_high_feature_for_all_symbols(self):
         model = server.default_global_score_model()
         revision = server.update_global_score_model(
