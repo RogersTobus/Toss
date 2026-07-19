@@ -91,8 +91,10 @@ OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 50
 OFF_MARKET_STUDY_BATCH_PER_MARKET = 8
 OFF_MARKET_STUDY_CANDLE_PAGES = 3
 OFF_MARKET_STUDY_POLL_SECONDS = 300
-STUDY_AGGREGATION_VERSION = 3
+STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
+RESEARCH_MIN_VALIDATION_SAMPLES = 100
+RESEARCH_ROUND_TRIP_COST = {"KR": 0.003, "US": 0.004}
 DEFAULT_STRATEGY_CONFIG = {
     "targetRate": PAPER_TARGET_RATE,
     "stopRate": PAPER_STOP_RATE,
@@ -3284,6 +3286,8 @@ def study_pattern_observations(candles: list[dict[str, Any]], timeframe: str) ->
                 "return1Sum": 0.0,
                 "return3Sum": 0.0,
                 "return5Sum": 0.0,
+                "positiveReturn5Sum": 0.0,
+                "negativeReturn5Sum": 0.0,
                 "targetHitCount": 0,
                 "stopHitCount": 0,
             },
@@ -3294,6 +3298,10 @@ def study_pattern_observations(candles: list[dict[str, Any]], timeframe: str) ->
             bucket[f"return{horizon}Sum"] += value
             if value > 0:
                 bucket[f"win{horizon}"] += 1
+        if future_returns["return5"] > 0:
+            bucket["positiveReturn5Sum"] += future_returns["return5"]
+        elif future_returns["return5"] < 0:
+            bucket["negativeReturn5Sum"] += future_returns["return5"]
         if target_hit:
             bucket["targetHitCount"] += 1
         if stop_hit:
@@ -3393,6 +3401,138 @@ def summarize_study_patterns(analyses: list[dict[str, Any]]) -> dict[str, Any]:
         "positive": positive,
         "negative": negative,
         "journal": journal,
+    }
+
+
+def update_candidate_strategy_registry(
+    raw_registry: Any,
+    analyses: list[dict[str, Any]],
+    study_id: str,
+    updated_at: str,
+) -> dict[str, Any]:
+    registry = dict(raw_registry) if isinstance(raw_registry, dict) else {}
+    candidates = registry.get("candidates") if isinstance(registry.get("candidates"), dict) else {}
+    touched: set[str] = set()
+    for analysis in analyses:
+        market = str(analysis.get("market") or "").upper()
+        symbol = str(analysis.get("symbol") or "")
+        timeframe = str(analysis.get("timeframe") or "")
+        backtest = analysis.get("backtest") if isinstance(analysis.get("backtest"), dict) else {}
+        if market not in ("KR", "US") or not symbol or timeframe not in ("1d", "1w", "1mo"):
+            continue
+        for pattern in analysis.get("patterns") or []:
+            pattern_key = str(pattern.get("key") or "")
+            if not pattern_key:
+                continue
+            candidate_id = hashlib.sha1(f"{market}:{timeframe}:{pattern_key}".encode("utf-8")).hexdigest()[:16]
+            candidate = candidates.setdefault(
+                candidate_id,
+                {
+                    "id": candidate_id,
+                    "market": market,
+                    "timeframe": timeframe,
+                    "patternKey": pattern_key,
+                    "pattern": pattern.get("label") or pattern_key,
+                    "evidenceBySymbol": {},
+                    "createdAt": updated_at,
+                },
+            )
+            evidence = candidate.setdefault("evidenceBySymbol", {})
+            evidence[symbol] = {
+                "count": int(pattern.get("count") or 0),
+                "win5": int(pattern.get("win5") or 0),
+                "return5Sum": decimal(pattern.get("return5Sum")),
+                "positiveReturn5Sum": decimal(pattern.get("positiveReturn5Sum")),
+                "negativeReturn5Sum": decimal(pattern.get("negativeReturn5Sum")),
+                "targetHitCount": int(pattern.get("targetHitCount") or 0),
+                "stopHitCount": int(pattern.get("stopHitCount") or 0),
+                "profitFactor": decimal(backtest.get("profitFactor")),
+                "maxDrawdown": decimal(backtest.get("maxDrawdown")),
+                "studyId": study_id,
+            }
+            candidate["lastStudiedAt"] = updated_at
+            touched.add(candidate_id)
+    for candidate_id in touched:
+        candidate = candidates[candidate_id]
+        evidence = list((candidate.get("evidenceBySymbol") or {}).values())
+        count = sum(int(item.get("count") or 0) for item in evidence)
+        positive_sum = sum(decimal(item.get("positiveReturn5Sum")) for item in evidence)
+        negative_sum = sum(decimal(item.get("negativeReturn5Sum")) for item in evidence)
+        gross_return_sum = sum(decimal(item.get("return5Sum")) for item in evidence)
+        market = str(candidate.get("market") or "KR")
+        cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+        payoff_ratio = positive_sum / abs(negative_sum) if negative_sum < 0 else (99.0 if positive_sum > 0 else 0.0)
+        average_drawdown = sum(decimal(item.get("maxDrawdown")) for item in evidence) / len(evidence) if evidence else 0.0
+        average_profit_factor = sum(decimal(item.get("profitFactor")) for item in evidence) / len(evidence) if evidence else 0.0
+        win_rate = sum(int(item.get("win5") or 0) for item in evidence) / count if count else 0.0
+        average_return = gross_return_sum / count if count else 0.0
+        net_average_return = average_return - cost_rate
+        gates = {
+            "sampleCount": count >= RESEARCH_MIN_VALIDATION_SAMPLES,
+            "symbolDiversity": len(evidence) >= 10,
+            "winRate": win_rate >= 0.55,
+            "netAverageReturn": net_average_return > 0,
+            "payoffRatio": payoff_ratio >= 1.20,
+            "maxDrawdown": average_drawdown >= -0.25,
+        }
+        ready = all(gates.values())
+        candidate.update(
+            {
+                "observationCount": count,
+                "symbolCount": len(evidence),
+                "winRate": win_rate,
+                "grossAverageReturn": average_return,
+                "estimatedCostRate": cost_rate,
+                "netAverageReturn": net_average_return,
+                "payoffRatio": payoff_ratio,
+                "averageProfitFactor": average_profit_factor,
+                "averageMaxDrawdown": average_drawdown,
+                "targetHitRate": sum(int(item.get("targetHitCount") or 0) for item in evidence) / count if count else 0.0,
+                "stopHitRate": sum(int(item.get("stopHitCount") or 0) for item in evidence) / count if count else 0.0,
+                "validationRate": min(1.0, count / RESEARCH_MIN_VALIDATION_SAMPLES),
+                "promotionGates": gates,
+                "promotionEligible": ready,
+                "status": "READY_TO_COMPARE" if ready else ("VALIDATING" if count >= RESEARCH_MIN_VALIDATION_SAMPLES else "DISCOVERY"),
+            }
+        )
+    registry.update(
+        {
+            "version": 1,
+            "minimumSamples": RESEARCH_MIN_VALIDATION_SAMPLES,
+            "researchRunCount": int(registry.get("researchRunCount") or 0) + 1,
+            "updatedAt": updated_at,
+            "candidates": candidates,
+        }
+    )
+    return registry
+
+
+def candidate_strategy_registry_view(raw_registry: Any) -> dict[str, Any]:
+    registry = raw_registry if isinstance(raw_registry, dict) else {}
+    candidates = list((registry.get("candidates") or {}).values())
+    candidates.sort(
+        key=lambda item: (
+            bool(item.get("promotionEligible")),
+            decimal(item.get("validationRate")),
+            decimal(item.get("netAverageReturn")),
+            int(item.get("symbolCount") or 0),
+        ),
+        reverse=True,
+    )
+    def compact(item: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in item.items() if key != "evidenceBySymbol"}
+    return {
+        "updatedAt": registry.get("updatedAt"),
+        "researchRunCount": int(registry.get("researchRunCount") or 0),
+        "minimumSamples": int(registry.get("minimumSamples") or RESEARCH_MIN_VALIDATION_SAMPLES),
+        "candidateCount": len(candidates),
+        "validatingCount": sum(1 for item in candidates if item.get("status") == "VALIDATING"),
+        "readyToCompareCount": sum(1 for item in candidates if item.get("promotionEligible")),
+        "marketCounts": {
+            market: sum(1 for item in candidates if item.get("market") == market)
+            for market in ("KR", "US")
+        },
+        "topCandidates": [compact(item) for item in candidates[:20]],
     }
 
 
@@ -3681,6 +3821,8 @@ def run_multi_timeframe_study(
         state = load_learning_state_unlocked()
         previous_study = state.get(state_key) if isinstance(state.get(state_key), dict) else {}
         universe_cursors = dict(previous_study.get("universeCursors") or {})
+        research_cycles = dict(previous_study.get("researchCycles") or {})
+        research_progress = dict(previous_study.get("researchProgress") or {})
         state[state_key] = {
             "id": study_id,
             "studyType": study_type,
@@ -3693,6 +3835,8 @@ def run_multi_timeframe_study(
             "nextRun": next_run,
             "continuousRotation": continuous_rotation,
             "universeCursors": universe_cursors,
+            "researchCycles": research_cycles,
+            "researchProgress": research_progress,
         }
         save_learning_state_unlocked(state)
     for market in markets:
@@ -3707,7 +3851,21 @@ def run_multi_timeframe_study(
             start_index = int(universe_cursors.get(market) or 0) % len(universe)
             batch_size = min(OFF_MARKET_STUDY_BATCH_PER_MARKET, len(universe))
             selected_universe = [universe[(start_index + offset) % len(universe)] for offset in range(batch_size)]
-            universe_cursors[market] = (start_index + batch_size) % len(universe)
+            raw_next = start_index + batch_size
+            wrapped = raw_next >= len(universe)
+            next_index = raw_next % len(universe)
+            universe_cursors[market] = next_index
+            if wrapped:
+                research_cycles[market] = int(research_cycles.get(market) or 0) + 1
+            completed_in_cycle = len(universe) if wrapped else next_index
+            research_progress[market] = {
+                "totalCount": len(universe),
+                "completedInCycle": completed_in_cycle,
+                "progressRate": completed_in_cycle / len(universe),
+                "cycleCount": int(research_cycles.get(market) or 0),
+                "batchSize": batch_size,
+                "nextIndex": next_index,
+            }
         for stock in selected_universe:
             try:
                 daily = study_daily_candles(env, str(stock.get("symbol") or ""))
@@ -3753,6 +3911,11 @@ def run_multi_timeframe_study(
             "scope": "CANDIDATE_RESEARCH_ONLY",
         }
         completed = now_kst()
+        completed_at = completed.strftime("%Y-%m-%dT%H:%M:%S%z")
+        candidate_registry = update_candidate_strategy_registry(
+            state.get("candidateStrategyRegistry"), analyses, study_id, completed_at
+        )
+        candidate_view = candidate_strategy_registry_view(candidate_registry)
         study = {
             "id": study_id,
             "studyType": study_type,
@@ -3760,7 +3923,7 @@ def run_multi_timeframe_study(
             "status": "completed" if analyses else "error",
             "lastRunDate": started.strftime("%Y-%m-%d"),
             "startedAt": started.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "completedAt": completed.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "completedAt": completed_at,
             "markets": list(markets),
             "timeframes": ["1d", "1w", "1mo"],
             "researchPass": research_pass_name,
@@ -3768,6 +3931,9 @@ def run_multi_timeframe_study(
             "analyzedSymbolCount": len(symbol_studies),
             "continuousRotation": continuous_rotation,
             "universeCursors": universe_cursors,
+            "researchCycles": research_cycles,
+            "researchProgress": research_progress,
+            "candidateStrategies": candidate_view,
             "summary": summary,
             "patternResearch": pattern_summary,
             "journal": pattern_summary.get("journal") or [],
@@ -3778,6 +3944,7 @@ def run_multi_timeframe_study(
             "nextRun": next_run,
         }
         state[state_key] = study
+        state["candidateStrategyRegistry"] = candidate_registry
         history = list(state.get(history_key) or [])
         history.append(
             {
@@ -4726,6 +4893,7 @@ def default_learning_state() -> dict[str, Any]:
         "domesticDayReviewHistory": [],
         "offlineStudy": {},
         "offlineStudyHistory": [],
+        "candidateStrategyRegistry": {},
         "symbols": {},
         "memories": [],
         "updatedAt": None,
@@ -4750,6 +4918,7 @@ def load_learning_state_unlocked() -> dict[str, Any]:
         "domesticDayReviewHistory": list(raw.get("domesticDayReviewHistory") or [])[-30:],
         "offlineStudy": dict(raw.get("offlineStudy") or {}),
         "offlineStudyHistory": list(raw.get("offlineStudyHistory") or [])[-30:],
+        "candidateStrategyRegistry": dict(raw.get("candidateStrategyRegistry") or {}),
         "symbols": dict(raw.get("symbols") or {}),
         "memories": list(raw.get("memories") or []),
         "updatedAt": raw.get("updatedAt"),
@@ -5094,6 +5263,7 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
     global_view["revisions"] = list(reversed(global_model.get("revisions") or []))[:40]
     domestic_review = state.get("domesticDayReview") if isinstance(state.get("domesticDayReview"), dict) else {}
     offline_study = state.get("offlineStudy") if isinstance(state.get("offlineStudy"), dict) else {}
+    candidate_strategies = candidate_strategy_registry_view(state.get("candidateStrategyRegistry"))
     return {
         "updatedAt": state.get("updatedAt"),
         "summary": {
@@ -5113,6 +5283,7 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
         "domesticDayReviewHistory": list(reversed(state.get("domesticDayReviewHistory") or []))[:30],
         "offlineStudy": offline_study,
         "offlineStudyHistory": list(reversed(state.get("offlineStudyHistory") or []))[:30],
+        "candidateStrategies": candidate_strategies,
         "symbols": symbols,
         "memories": memories[:40],
     }

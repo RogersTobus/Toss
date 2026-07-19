@@ -1041,6 +1041,7 @@ function renderLearningBrain(learning = {}, entries = []) {
   const globalBrain = learning.global || {};
   const domesticReview = learning.domesticDayReview || {};
   const offlineStudy = learning.offlineStudy || {};
+  const candidateStrategies = learning.candidateStrategies || offlineStudy.candidateStrategies || {};
   const symbols = learning.symbols || [];
   const memories = globalBrain.revisions || [];
   const updated = document.querySelector("#learningBrainUpdatedAt");
@@ -1209,17 +1210,19 @@ function renderLearningBrain(learning = {}, entries = []) {
   const offlineJournal = document.querySelector("#offlineStudyJournal");
   if (offlineStatus) {
     offlineStatus.textContent = offlineStudy.status === "completed"
-      ? `${offlineStudy.researchPass || "검증"} 완료 · ${formatJournalTime(offlineStudy.completedAt)}`
-      : (offlineStudy.status === "error" ? "연구 오류 · 다음 주기 재시도" : "다음 휴장 학습 대기");
-    offlineStatus.classList.toggle("is-live", offlineStudy.status === "completed");
+      ? `전체 종목 순환 중 · ${formatJournalTime(offlineStudy.completedAt)}`
+      : (offlineStudy.status === "running" ? "다음 종목 묶음 분석 중" : (offlineStudy.status === "error" ? "연구 오류 · 다음 주기 재시도" : "정규장 외 연구 대기"));
+    offlineStatus.classList.toggle("is-live", ["running", "completed"].includes(offlineStudy.status));
   }
   if (offlineSummary) {
     const studySummary = offlineStudy.summary || {};
     const items = [
-      ["분석 종목", `${Number(offlineStudy.universeCount || 0)}개`],
-      ["차트 분석", `${Number(studySummary.analysisCount || 0)}건`],
+      ["전체 유니버스", `${Number(offlineStudy.universeCount || 0).toLocaleString("ko-KR")}개`],
+      ["이번 묶음", `${Number(offlineStudy.analyzedSymbolCount || 0)}종목`],
       ["패턴 관찰", `${Number(studySummary.patternObservationCount || 0).toLocaleString("ko-KR")}건`],
-      ["검증 패턴", `${Number(studySummary.reliablePatternCount || 0)}개`],
+      ["누적 후보", `${Number(candidateStrategies.candidateCount || 0).toLocaleString("ko-KR")}개`],
+      ["100건 검증", `${Number(candidateStrategies.validatingCount || 0)}개`],
+      ["비교 준비", `${Number(candidateStrategies.readyToCompareCount || 0)}개`],
     ];
     offlineSummary.replaceChildren();
     items.forEach(([label, value]) => {
@@ -1228,13 +1231,50 @@ function renderLearningBrain(learning = {}, entries = []) {
       offlineSummary.append(box);
     });
   }
+  const progressTarget = document.querySelector("#researchCycleProgress");
+  if (progressTarget) {
+    progressTarget.replaceChildren();
+    const progress = offlineStudy.researchProgress || {};
+    ["KR", "US"].forEach((market) => {
+      const item = progress[market] || {};
+      const total = Number(item.totalCount || 0);
+      const completed = Number(item.completedInCycle || 0);
+      const rate = Math.max(0, Math.min(1, Number(item.progressRate || 0)));
+      const box = document.createElement("div");
+      box.className = "research-progress-item";
+      box.innerHTML = `<div><b>${market === "KR" ? "한국 전체 순환" : "미국 전체 순환"}</b><span>${completed.toLocaleString("ko-KR")} / ${total.toLocaleString("ko-KR")} · ${(rate * 100).toFixed(1)}% · ${Number(item.cycleCount || 0)}회 완주</span></div><div class="research-progress-track"><i style="width:${(rate * 100).toFixed(2)}%"></i></div>`;
+      progressTarget.append(box);
+    });
+  }
+  const candidateCount = document.querySelector("#candidateStrategyCount");
+  const candidateList = document.querySelector("#candidateStrategyList");
+  if (candidateCount) candidateCount.textContent = `${Number(candidateStrategies.candidateCount || 0).toLocaleString("ko-KR")}개 · 비교 준비 ${Number(candidateStrategies.readyToCompareCount || 0)}개`;
+  if (candidateList) {
+    candidateList.replaceChildren();
+    const candidates = candidateStrategies.topCandidates || [];
+    if (!candidates.length) {
+      const empty = document.createElement("div");
+      empty.className = "learning-empty";
+      empty.textContent = "전체 종목에서 반복되는 패턴을 시장·시간봉별로 누적하고 있습니다.";
+      candidateList.append(empty);
+    } else {
+      candidates.slice(0, 12).forEach((candidate) => {
+        const item = document.createElement("div");
+        const statusClass = candidate.promotionEligible ? "ready" : (candidate.status === "VALIDATING" ? "validating" : "discovery");
+        const statusLabel = candidate.promotionEligible ? "비교 준비" : (candidate.status === "VALIDATING" ? "100건 검증" : "발견 단계");
+        item.className = `candidate-strategy-item ${statusClass}`;
+        item.innerHTML = `<div><em>${candidate.market || "-"} · ${candidate.timeframe || "-"}</em><strong>${statusLabel}</strong></div><b>${candidate.pattern || "후보 패턴"}</b><small>${Number(candidate.observationCount || 0).toLocaleString("ko-KR")}건 · ${Number(candidate.symbolCount || 0)}종목 · 승률 ${(Number(candidate.winRate || 0) * 100).toFixed(1)}% · 비용후 평균 ${signedPercent(candidate.netAverageReturn || 0)} · 손익비 ${Number(candidate.payoffRatio || 0).toFixed(2)} · 평균 MDD ${signedPercent(candidate.averageMaxDrawdown || 0)}</small>`;
+        candidateList.append(item);
+      });
+    }
+  }
   if (offlineJournal) {
     offlineJournal.replaceChildren();
     const journal = offlineStudy.journal || [];
     if (!journal.length) {
       const empty = document.createElement("div");
       empty.className = "learning-empty";
-      empty.textContent = offlineStudy.lastError || "한국·미국 장이 함께 닫히면 일·주·월봉 패턴 연구를 시작합니다.";
+      empty.textContent = offlineStudy.lastError || "한국·미국 정규장 외 시간에 전체 종목의 일·주·월봉 연구를 계속합니다.";
       offlineJournal.append(empty);
     } else {
       journal.slice(0, 10).forEach((note) => {

@@ -209,6 +209,40 @@ class OffMarketResearchTests(unittest.TestCase):
             ["일봉", "주봉", "월봉"],
         )
 
+    def test_candidate_registry_accumulates_distinct_symbols_without_double_counting(self):
+        analyses = []
+        for index in range(10):
+            analyses.append(
+                {
+                    "market": "KR",
+                    "symbol": f"S{index}",
+                    "timeframe": "1d",
+                    "backtest": {"profitFactor": 1.8, "maxDrawdown": -0.10},
+                    "patterns": [
+                        {
+                            "key": "상승정렬|상승",
+                            "label": "상승정렬 · 상승",
+                            "count": 10,
+                            "win5": 6,
+                            "return5Sum": 0.20,
+                            "positiveReturn5Sum": 0.30,
+                            "negativeReturn5Sum": -0.10,
+                            "targetHitCount": 6,
+                            "stopHitCount": 3,
+                        }
+                    ],
+                }
+            )
+        first = server.update_candidate_strategy_registry({}, analyses, "STUDY-1", "2026-07-19T00:00:00+0900")
+        view = server.candidate_strategy_registry_view(first)
+        self.assertEqual(view["candidateCount"], 1)
+        self.assertEqual(view["readyToCompareCount"], 1)
+        self.assertEqual(view["topCandidates"][0]["observationCount"], 100)
+        second = server.update_candidate_strategy_registry(first, analyses, "STUDY-2", "2026-07-19T01:00:00+0900")
+        second_view = server.candidate_strategy_registry_view(second)
+        self.assertEqual(second_view["topCandidates"][0]["observationCount"], 100)
+        self.assertEqual(second_view["researchRunCount"], 2)
+
     def test_backtest_influence_is_lower_than_real_trade_step(self):
         model = server.default_global_score_model()
         summary = {
