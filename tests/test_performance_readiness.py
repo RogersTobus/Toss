@@ -120,6 +120,20 @@ class PerformanceAnalyticsTests(unittest.TestCase):
         self.assertEqual(risk["dayStartCapitalKrw"], 1_010_000)
         self.assertEqual(risk["targetProfitKrw"], 10_100)
 
+    def test_legacy_unlimited_positions_do_not_contaminate_new_compound_ledger(self):
+        trades = [
+            {
+                "status": "OPEN", "market": "US", "openedAt": "2026-07-18T22:00:00+0900",
+                "netProfit": -20000, "invested": 2_000_000,
+            }
+        ]
+        risk = server.daily_account_risk(
+            trades, "2026-07-19", "2026-07-19T19:00:00+0900"
+        )
+        self.assertEqual(risk["dayStartCapitalKrw"], 1_000_000)
+        self.assertEqual(risk["netProfitKrw"], 0)
+        self.assertEqual(risk["openRiskKrw"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

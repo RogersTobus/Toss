@@ -1809,12 +1809,22 @@ def paper_capital_summary(
         and (
             not risk_started
             or (
-                parse_order_time(item.get("closedAt")) is not None
-                and parse_order_time(item.get("closedAt")) >= risk_started
+                parse_order_time(item.get("openedAt")) is not None
+                and parse_order_time(item.get("openedAt")) >= risk_started
             )
         )
     ]
-    opened = [item for item in trades if item.get("status") == "OPEN"]
+    opened = [
+        item for item in trades
+        if item.get("status") == "OPEN"
+        and (
+            not risk_started
+            or (
+                parse_order_time(item.get("openedAt")) is not None
+                and parse_order_time(item.get("openedAt")) >= risk_started
+            )
+        )
+    ]
     realized = sum(
         decimal(item.get("netProfit") if item.get("netProfit") is not None else item.get("profit"))
         for item in closed
@@ -2167,8 +2177,8 @@ def daily_account_risk(
         and (
             not risk_started
             or (
-                parse_order_time(trade.get("closedAt")) is not None
-                and parse_order_time(trade.get("closedAt")) >= risk_started
+                parse_order_time(trade.get("openedAt")) is not None
+                and parse_order_time(trade.get("openedAt")) >= risk_started
             )
         )
     ]
@@ -2183,8 +2193,17 @@ def daily_account_risk(
     ]
     prior_net_profit = sum(decimal(trade.get("netProfit")) for trade in prior_closed)
     day_start_capital = max(1.0, PAPER_STARTING_CAPITAL_KRW + prior_net_profit)
-    # Carry positions still consume today's shared account risk budget.
-    opened = [trade for trade in trades if trade.get("status") == "OPEN"]
+    opened = [
+        trade for trade in trades
+        if trade.get("status") == "OPEN"
+        and (
+            not risk_started
+            or (
+                parse_order_time(trade.get("openedAt")) is not None
+                and parse_order_time(trade.get("openedAt")) >= risk_started
+            )
+        )
+    ]
     realized = sum(decimal(trade.get("netProfit")) for trade in closed)
     unrealized = sum(decimal(trade.get("netProfit")) for trade in opened)
     net_profit = realized + unrealized
