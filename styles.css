@@ -1880,3 +1880,104 @@ body[data-page="journal"] .journal-page {
   .operations-grid { grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); }
   .performance-trend-body { grid-template-columns: minmax(0, 1fr) minmax(220px, .28fr); }
 }
+
+/* ---------- 20. Focus mode: preserve every engine, reduce the dashboard ---------- */
+.sidebar { justify-content: flex-start; }
+.primary-nav { margin-top: 24px; }
+.topbar { justify-content: flex-start; }
+.hero-layout {
+  grid-template-columns: minmax(260px, 1fr) minmax(210px, .62fr) minmax(210px, .62fr);
+  gap: 12px;
+}
+.hero-welcome,
+.balance-card .chart-range,
+.balance-card .hero-chart,
+.balance-card .gain,
+.daily-card .metric-note { display: none; }
+.balance-card,
+.daily-card { min-height: 118px; padding: 18px; }
+.balance-card .total-value { margin-top: auto; }
+.connection-stack { min-height: 118px; }
+
+body[data-page="quant"] .overview-research-card,
+body[data-page="journal"] .overview-research-card { display: none; }
+
+.overview-research-card { padding: 16px; }
+.overview-research-card .learning-brain-summary { display: none; }
+.overview-research-card .offline-study-panel { margin-top: 12px; }
+.overview-research-card .offline-study-head .eyebrow,
+.overview-research-card .offline-study-head h3 { display: none; }
+.overview-research-card .offline-study-head { justify-content: flex-end; min-height: 0; }
+.overview-research-card .research-health-strip { padding: 9px 12px; }
+
+.operations-grid { grid-template-columns: minmax(420px, .9fr) minmax(520px, 1.1fr); gap: 12px; }
+.panel { padding: 16px; }
+.capital-utilization,
+.risk-row,
+.decision-card,
+.trading-journal-panel,
+.bot-panel > .secondary-btn,
+.symbol-detail-card { display: none !important; }
+.bot-stats { margin-top: 12px; }
+.bot-panel > .strategy-btn { margin-top: 12px; }
+.daytrade-table { max-height: 200px; overflow: auto; }
+.watch-panel { min-height: 0; }
+.watch-table { max-height: 390px; overflow: auto; }
+
+.strategy-page-head > div > p:last-child,
+.slack-test-panel,
+.ai-overview-card > div:first-child > p:not(.eyebrow),
+.ai-overview-advice,
+.strategy-col-labels,
+.strat-desc-input,
+.strat-ai { display: none; }
+.strategy-control-page { gap: 12px; }
+.strategy-page-head { min-height: auto; }
+.ai-overview-card { grid-template-columns: minmax(220px, .7fr) minmax(320px, 1.3fr); padding: 14px 16px; }
+.ai-overview-metrics { min-width: 0; grid-template-columns: repeat(4, minmax(72px, 1fr)); }
+.strategy-control-board { padding: 16px; }
+.strategy-board-head { margin-bottom: 8px; }
+.strategy-control-list > div {
+  grid-template-columns: 34px minmax(180px, 1.4fr) minmax(180px, 1fr) minmax(110px, .6fr) 44px;
+  padding: 10px 12px;
+}
+.strategy-control-list > div > b { width: 26px; height: 26px; }
+.strat-title-input { min-height: 34px; }
+.strat-judge { min-height: 48px; }
+.strat-ai-wrap { justify-items: start; }
+.apply-ai-btn { padding: 7px 10px; }
+
+.journal-page-head > div > p:last-child,
+.goal-roadmap-stages,
+.research-library-card,
+.performance-trend-card,
+.journal-review-grid { display: none !important; }
+.journal-page { gap: 12px; }
+.journal-page-head { min-height: auto; }
+.goal-roadmap-card { padding: 13px 16px; }
+.goal-roadmap-now { margin-top: 8px; }
+.current-strategy-card { padding: 16px; }
+.current-strategy-head p:last-child { display: none; }
+.journal-history-section { margin-top: 0; }
+
+@media (max-width: 1180px) {
+  .operations-grid { grid-template-columns: 1fr; }
+  .watch-table { max-height: 320px; }
+}
+
+@media (max-width: 760px) {
+  .hero-layout { grid-template-columns: 1fr; }
+  .balance-card, .daily-card, .connection-stack { min-height: auto; }
+  .operations-grid { grid-template-columns: 1fr; }
+  .ai-overview-card { grid-template-columns: 1fr; }
+  .ai-overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .strategy-control-list > div {
+    grid-template-columns: 28px minmax(0, 1fr) 42px;
+    grid-template-areas: "number title toggle" "judge judge judge" "ai ai ai";
+  }
+  .strategy-control-list > div > b { grid-area: number; }
+  .strat-title { grid-area: title; }
+  .strat-judge { grid-area: judge; }
+  .strat-ai-wrap { grid-area: ai; }
+  .strategy-control-list > div > .switch { grid-area: toggle; }
+}

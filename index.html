@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=orbit-redesign1" />
+  <link rel="stylesheet" href="styles.css?v=orbit-focus1" />
 </head>
 <body data-page="overview">
   <div class="app-shell">
@@ -20,29 +20,17 @@
 
       <nav class="primary-nav" aria-label="주요 메뉴">
         <button class="nav-item active" data-page="overview">
-          <span class="nav-icon">⌁</span><span>Overview</span>
-        </button>
-        <button class="nav-item" data-page="portfolio">
-          <span class="nav-icon">◫</span><span>Portfolio</span>
+          <span class="nav-icon">⌁</span><span>현황</span>
         </button>
         <button class="nav-item" data-page="quant">
-          <span class="nav-icon">⌘</span><span>Quant Lab</span>
+          <span class="nav-icon">⌘</span><span>전략</span>
         </button>
         <button class="nav-item" data-page="journal">
-          <span class="nav-icon">↗</span><span>매매일지</span>
+          <span class="nav-icon">↗</span><span>기록</span>
           <span class="nav-count" id="journalNavCount">0</span>
         </button>
       </nav>
 
-      <div class="sidebar-bottom">
-        <button class="nav-item"><span class="nav-icon">?</span><span>Help</span></button>
-        <button class="nav-item"><span class="nav-icon">⚙</span><span>Settings</span></button>
-        <div class="profile">
-          <div class="avatar">HJ</div>
-          <div class="profile-copy"><strong>투자자</strong><span>Personal account</span></div>
-          <button aria-label="프로필 메뉴">•••</button>
-        </div>
-      </div>
     </aside>
     <button class="sidebar-scrim" type="button" aria-label="메뉴 닫기" tabindex="-1"></button>
 
@@ -54,11 +42,6 @@
           <span class="pulse"></span>
           <strong id="marketClockLabel">시장 확인 중</strong>
           <span id="marketClockTime">--:--:-- KST</span>
-        </div>
-        <div class="top-actions">
-          <button class="icon-btn" aria-label="검색">⌕</button>
-          <button class="icon-btn notification" aria-label="알림">♢<i></i></button>
-          <button class="add-btn"><span>＋</span> 전략 추가</button>
         </div>
       </header>
 
