@@ -5727,6 +5727,14 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
 
     domestic_review = compact_study(state.get("domesticDayReview"))
     offline_study = compact_study(state.get("offlineStudy"))
+    domestic_history = [
+        compact_study(item)
+        for item in list(reversed(state.get("domesticDayReviewHistory") or []))[:10]
+    ]
+    offline_history = [
+        compact_study(item)
+        for item in list(reversed(state.get("offlineStudyHistory") or []))[:10]
+    ]
     candidate_strategies = candidate_strategy_registry_view(state.get("candidateStrategyRegistry"))
     return {
         "updatedAt": state.get("updatedAt"),
@@ -5744,9 +5752,9 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
         },
         "global": global_view,
         "domesticDayReview": domestic_review,
-        "domesticDayReviewHistory": list(reversed(state.get("domesticDayReviewHistory") or []))[:30],
+        "domesticDayReviewHistory": domestic_history,
         "offlineStudy": offline_study,
-        "offlineStudyHistory": list(reversed(state.get("offlineStudyHistory") or []))[:30],
+        "offlineStudyHistory": offline_history,
         "candidateStrategies": candidate_strategies,
         "symbols": symbols[:100],
         "memories": memories[:40],
@@ -6253,7 +6261,7 @@ def build_trading_journal() -> dict[str, Any]:
     return {
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "summary": summary,
-        "entries": entries[:200],
+        "entries": entries[:50],
         "coaching": {
             "active": active_mistake_note,
             "days": mistake_notes,
