@@ -142,6 +142,37 @@ class StrategyExecutionTests(unittest.TestCase):
         self.assertEqual(unlimited["fundingLimit"], "UNLIMITED")
         self.assertTrue(unlimited["referenceOnly"])
 
+    def test_live_paper_policy_cannot_enable_unlimited_sprint(self):
+        strategies = server.normalize_strategies()
+        for strategy in strategies:
+            if strategy["id"] in ("paper-learning-sprint", "unlimited-paper-experience"):
+                strategy["enabled"] = True
+        policy = server.strategy_execution_policy(
+            {**server.DEFAULT_STRATEGY_CONFIG, "strategies": strategies}
+        )
+        self.assertFalse(policy["learningSprint"])
+        self.assertFalse(policy["unlimitedFunding"])
+        self.assertFalse(policy["unlimitedPositions"])
+
+    def test_two_consecutive_market_losses_start_ten_minute_cooldown(self):
+        now = datetime(2026, 7, 17, 1, 0, tzinfo=timezone.utc)
+        orders = [
+            {
+                "side": "SELL", "status": "FILLED", "market": "KR",
+                "symbol": "A", "returnRate": -0.005,
+                "createdAt": (now - timedelta(seconds=120)).strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+            {
+                "side": "SELL", "status": "FILLED", "market": "KR",
+                "symbol": "B", "returnRate": -0.004,
+                "createdAt": (now - timedelta(seconds=30)).strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+        ]
+        cooldown = server.market_loss_streak_cooldown(orders, "KR", now)
+        self.assertTrue(cooldown["blocked"])
+        self.assertEqual(cooldown["consecutiveLosses"], 2)
+        self.assertEqual(cooldown["remainingSeconds"], 570)
+
     def test_overlapping_kr_and_us_sessions_are_both_active(self):
         original_cache = dict(server.CALENDAR_CACHE)
         moment = datetime(2026, 7, 16, 5, 0, tzinfo=timezone.utc)

@@ -64,13 +64,17 @@ POST_EXIT_MEANINGFUL_MOVE_RATE = 0.001
 PAPER_MAX_DAILY_ORDERS = 3
 PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
+PAPER_DAILY_ENTRY_LOCK_RATE = -0.008
+PAPER_DAILY_LIQUIDATION_RATE = -0.01
+PAPER_TOTAL_OPEN_RISK_RATE = 0.01
+PAPER_LOSS_STREAK_COOLDOWN_SECONDS = 600
 PAPER_CAPITAL_TARGET_RATE = 0.90
 PAPER_CASH_RESERVE_RATE = 0.10
-PAPER_MAX_SINGLE_POSITION_RATE = 0.60
-PAPER_LEARNING_SPRINT_MODE = True
-PAPER_UNLIMITED_VIRTUAL_CAPITAL = True
-PAPER_UNLIMITED_OPEN_POSITIONS = True
-PAPER_MIN_EXPERIENCE_ENTRY_RATE = 0.30
+PAPER_MAX_SINGLE_POSITION_RATE = 0.30
+PAPER_LEARNING_SPRINT_MODE = False
+PAPER_UNLIMITED_VIRTUAL_CAPITAL = False
+PAPER_UNLIMITED_OPEN_POSITIONS = False
+PAPER_MIN_EXPERIENCE_ENTRY_RATE = 0.10
 LEARNING_SCHEMA_VERSION = 2
 LEARNING_BASE_ENTRY_SCORE = 80
 MARKET_ENTRY_SCORE = 82
@@ -128,7 +132,7 @@ DEFAULT_STRATEGIES = [
     {
         "id": "liquidity-momentum-filter",
         "title": "유동성·모멘텀 후보 필터",
-        "description": "한국·미국 주식/ETF/ADR 중 거래대금, 당일 상승률, 최소 가격, 스프레드, 상대 거래량, 돌파 유지 조건을 통과한 종목만 후보로 올립니다.",
+        "description": "한국·미국 주식/ETF/ADR 중 실제 수집되는 거래대금 순위, 당일 추세, 최소 가격, 급등락 안정성 조건을 통과한 종목만 후보로 올립니다. 스프레드·VWAP·상대 거래량은 데이터 연결 전까지 점수에 포함하지 않습니다.",
         "judge": "필수조건 통과 전에는 진입 금지",
         "enabled": True,
     },
@@ -141,24 +145,24 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "adaptive-capital-utilization",
-        "title": "무제한 가상자금·점수 비중 자동배분",
-        "description": "100만 원은 성과 비교 기준금으로만 사용하고, 전역 학습 점수를 통과한 종목마다 기준금의 30~60%를 배정합니다.",
-        "judge": "자금 한도 없음 · 학습 비중 우선",
+        "title": "100만 원 한도·점수 비중 자동배분",
+        "description": "총 PAPER 자금 100만 원 안에서 종목당 최대 30%를 배정하고, 전체 미청산 위험을 계좌의 1% 이내로 제한합니다.",
+        "judge": "종목당 30% · 총위험 1% 이내",
         "enabled": True,
     },
     {
         "id": "paper-learning-sprint",
-        "title": "PAPER 무제한 경험 축적",
-        "description": "일일 횟수·가상자금·동시 포지션·일 손익·연속 손실에 따른 신규 진입 잠금을 해제하고, 전역 점수 기준을 통과한 모든 후보의 성공과 실패를 공용 오답 표본으로 쌓습니다.",
-        "judge": "진입 제한 없음 · 개별 손절 유지",
-        "enabled": True,
+        "title": "장외 연구 전용 경험 축적",
+        "description": "무제한 표본 연구는 장외 과거데이터 분석에서만 수행합니다. 정규장 PAPER 주문의 자금·포지션·손실 제한은 해제하지 않습니다.",
+        "judge": "정규장 주문 제한 우회 금지",
+        "enabled": False,
     },
     {
         "id": "unlimited-paper-experience",
-        "title": "무제한 가상자금 경험 랩",
-        "description": "100만 원은 성과 비교 기준으로만 유지합니다. 가상자금과 동시 포지션 수에는 상한을 두지 않고, 전역 학습 점수를 통과한 후보는 최소 1주 이상 경험 데이터로 기록합니다.",
-        "judge": "자금·포지션 무제한 · 점수 필수",
-        "enabled": True,
+        "title": "무제한 주문 모드 폐기",
+        "description": "실제 운용과 다른 무제한 가상자금·무제한 동시 포지션 모드는 사용하지 않습니다. 과거데이터 연구 결과만 후보 전략 저장소에 축적합니다.",
+        "judge": "정규장 PAPER 운용에는 사용 안 함",
+        "enabled": False,
     },
     {
         "id": "hard-stop-loss",
@@ -402,8 +406,10 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
         if item.get("enabled") and item.get("id")
     ]
     enabled = set(enabled_ids)
-    sprint = "paper-learning-sprint" in enabled
-    unlimited = "unlimited-paper-experience" in enabled
+    # Historical research may run continuously, but live-session PAPER orders
+    # must always remain inside the same bounded risk envelope as a real account.
+    sprint = False
+    unlimited = False
     return {
         "revision": int(config.get("revision") or 0),
         "savedAt": config.get("savedAt"),
@@ -455,6 +461,17 @@ def strategy_config() -> dict[str, Any]:
                     "매수 체결과 동시에 평균 체결가 대비 −0.5%에 PAPER 보호매도를 "
                     "예약하고, 별도 포지션 감시기가 발동가 도달 시 전량 청산합니다."
                 )
+            elif strategy.get("id") in ("paper-learning-sprint", "unlimited-paper-experience"):
+                replacement = next(
+                    item for item in DEFAULT_STRATEGIES if item.get("id") == strategy.get("id")
+                )
+                strategy.update(replacement)
+                strategy["enabled"] = False
+            elif strategy.get("id") in ("liquidity-momentum-filter", "adaptive-capital-utilization"):
+                replacement = next(
+                    item for item in DEFAULT_STRATEGIES if item.get("id") == strategy.get("id")
+                )
+                strategy.update({key: replacement[key] for key in ("title", "description", "judge")})
         normalized["paperLearningSprint"] = strategy_execution_policy(normalized)["learningSprint"]
         return normalized
 
@@ -1551,7 +1568,7 @@ def new_paper_state() -> dict[str, Any]:
     return {
         "schemaVersion": PAPER_SCHEMA_VERSION,
         "startingCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
-        "allocationMode": "unlimited-paper-experience",
+        "allocationMode": "bounded-paper-capital",
         "currency": "KRW",
         "resetAt": now_kst().strftime("%Y-%m-%dT%H:%M:%S%z"),
         "orders": [],
@@ -1578,7 +1595,7 @@ def load_paper_state() -> dict[str, Any]:
         save_paper_state(state)
         save_journal_state({"notes": {}, "reviews": {}})
     state.setdefault("startingCapitalKrw", PAPER_STARTING_CAPITAL_KRW)
-    state["allocationMode"] = "unlimited-paper-experience"
+    state["allocationMode"] = "bounded-paper-capital"
     state.setdefault("currency", "KRW")
     state.setdefault("orders", [])
     return state
@@ -1712,6 +1729,8 @@ def paper_trade_ledger(
         last_price = decimal(current.get("lastPrice") or entry.get("lastPrice") or entry_price)
         invested = entry_price * quantity
         profit = (last_price - entry_price) * quantity if entry_price and last_price else 0.0
+        estimated_cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+        estimated_cost = invested * estimated_cost_rate
         trades.append(
             {
                 "entryOrderId": entry_id,
@@ -1727,6 +1746,10 @@ def paper_trade_ledger(
                 "invested": invested,
                 "profit": profit,
                 "returnRate": profit / invested if invested else 0.0,
+                "estimatedCostRate": estimated_cost_rate,
+                "estimatedCost": estimated_cost,
+                "netProfit": profit - estimated_cost,
+                "netReturnRate": (profit - estimated_cost) / invested if invested else 0.0,
             }
         )
     return trades
@@ -1752,7 +1775,9 @@ def period_profit_summary(trades: list[dict[str, Any]]) -> dict[str, dict[str, A
         except ValueError:
             continue
         invested = decimal(trade.get("invested"))
-        profit = decimal(trade.get("profit"))
+        profit = decimal(
+            trade.get("netProfit") if trade.get("netProfit") is not None else trade.get("profit")
+        )
         for key, start in starts.items():
             if created_at >= start:
                 summary[key]["profitKrw"] += profit
@@ -1774,8 +1799,14 @@ def paper_capital_summary(
     starting = decimal(state.get("startingCapitalKrw") or PAPER_STARTING_CAPITAL_KRW)
     closed = [item for item in trades if item.get("status") == "CLOSED"]
     opened = [item for item in trades if item.get("status") == "OPEN"]
-    realized = sum(decimal(item.get("profit")) for item in closed)
-    unrealized = sum(decimal(item.get("profit")) for item in opened)
+    realized = sum(
+        decimal(item.get("netProfit") if item.get("netProfit") is not None else item.get("profit"))
+        for item in closed
+    )
+    unrealized = sum(
+        decimal(item.get("netProfit") if item.get("netProfit") is not None else item.get("profit"))
+        for item in opened
+    )
     open_invested = sum(decimal(item.get("invested")) for item in opened)
     cash = max(0.0, starting + realized - open_invested)
     working_capital = max(0.0, starting + realized)
@@ -2106,6 +2137,52 @@ def trade_outcome_stats(
     }
 
 
+def daily_account_risk(
+    trades: list[dict[str, Any]], trading_day: str | None = None
+) -> dict[str, Any]:
+    """Cost-adjusted, account-level PAPER risk for the shared KR/US budget."""
+    day = trading_day or paper_trading_day()
+    closed = [
+        trade
+        for trade in trades
+        if trade.get("status") == "CLOSED"
+        if paper_trading_day(trade.get("closedAt") or trade.get("openedAt")) == day
+    ]
+    prior_closed = [
+        trade
+        for trade in trades
+        if trade.get("status") == "CLOSED"
+        and paper_trading_day(trade.get("closedAt") or trade.get("openedAt")) < day
+    ]
+    prior_net_profit = sum(decimal(trade.get("netProfit")) for trade in prior_closed)
+    day_start_capital = max(1.0, PAPER_STARTING_CAPITAL_KRW + prior_net_profit)
+    # Carry positions still consume today's shared account risk budget.
+    opened = [trade for trade in trades if trade.get("status") == "OPEN"]
+    realized = sum(decimal(trade.get("netProfit")) for trade in closed)
+    unrealized = sum(decimal(trade.get("netProfit")) for trade in opened)
+    net_profit = realized + unrealized
+    risk_rate = net_profit / day_start_capital
+    open_risk_krw = sum(
+        decimal(trade.get("invested")) * abs(PAPER_STOP_RATE) for trade in opened
+    )
+    return {
+        "tradingDay": day,
+        "dayStartCapitalKrw": day_start_capital,
+        "targetProfitKrw": day_start_capital * PAPER_TARGET_RATE,
+        "realizedNetProfitKrw": realized,
+        "unrealizedNetProfitKrw": unrealized,
+        "netProfitKrw": net_profit,
+        "returnRate": risk_rate,
+        "entryLockRate": PAPER_DAILY_ENTRY_LOCK_RATE,
+        "liquidationRate": PAPER_DAILY_LIQUIDATION_RATE,
+        "openRiskKrw": open_risk_krw,
+        "openRiskRate": open_risk_krw / day_start_capital,
+        "maxOpenRiskRate": PAPER_TOTAL_OPEN_RISK_RATE,
+        "entryLocked": risk_rate <= PAPER_DAILY_ENTRY_LOCK_RATE,
+        "liquidationRequired": risk_rate <= PAPER_DAILY_LIQUIDATION_RATE,
+    }
+
+
 def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -> dict[str, Any]:
     config = strategy_config()
     execution_policy = strategy_execution_policy(config)
@@ -2130,6 +2207,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     results_by_symbol = {str(item.get("symbol")): item for item in results}
     trade_ledger = paper_trade_ledger(orders, results_by_symbol)
     today_trade_stats = trade_outcome_stats(trade_ledger, today)
+    account_risk = daily_account_risk(trade_ledger, today)
     capital = paper_capital_summary(trade_ledger, execution_policy)
     position_returns = []
     for symbol, order in positions.items():
@@ -2143,15 +2221,16 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         sum(position_returns) / len(position_returns) if position_returns else 0.0
     )
     tech_review = technical_review(positions, results_by_symbol)
-    target_hit = average_return >= target_rate
-    daily_lock_rate = decimal(runtime.get("dailyEntryLockRate") or stop_rate)
-    stop_hit = average_return <= daily_lock_rate
-    locked = bool(execution_policy.get("dailyRisk")) and (target_hit or stop_hit) and not execution_policy.get("learningSprint")
+    target_hit = decimal(account_risk.get("returnRate")) >= target_rate
+    daily_lock_rate = PAPER_DAILY_ENTRY_LOCK_RATE
+    stop_hit = bool(account_risk.get("entryLocked"))
+    locked = bool(execution_policy.get("dailyRisk")) and stop_hit
     lock_reason = None
-    if target_hit and locked:
-        lock_reason = f"일 목표 {percent(target_rate)} 도달 · 신규 진입 잠금"
-    elif stop_hit and locked:
-        lock_reason = f"통합 손실 예산 {percent(daily_lock_rate)} 도달 · 신규 진입 중지"
+    if stop_hit and locked:
+        lock_reason = (
+            f"비용 후 통합 손실 {percent(account_risk.get('returnRate'))} · "
+            f"신규 진입 기준 {percent(daily_lock_rate)} 도달"
+        )
 
     return {
         "targetRate": target_rate,
@@ -2182,6 +2261,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         },
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(trade_ledger),
+        "dailyAccountRisk": account_risk,
         "todayTradeStats": today_trade_stats,
         "technicalReview": tech_review,
         "timeExitFollowUp": post_exit_study_summary(orders),
@@ -2239,7 +2319,7 @@ def build_protective_stop_order(
         "triggerPrice": trigger_price,
         "quantity": decimal(entry_order.get("remainingQuantity") or entry_order.get("quantity") or 1),
         "createdAt": created_at,
-        "fillPolicy": "TRIGGER_PRICE",
+        "fillPolicy": "TRIGGER_ACTIVATION_OBSERVED_FILL",
     }
 
 
@@ -2331,6 +2411,48 @@ def recent_exit_cooldown_symbols(
             blocked.add(str(order.get("symbol") or ""))
     blocked.discard("")
     return blocked
+
+
+def market_loss_streak_cooldown(
+    orders: list[dict[str, Any]], market: str, now: datetime | None = None
+) -> dict[str, Any]:
+    current = now or datetime.now().astimezone()
+    exits = [
+        order
+        for order in orders
+        if str(order.get("side") or "").upper() == "SELL"
+        and not order.get("partial")
+        and order.get("market") == market
+        and str(order.get("status") or "FILLED").upper() == "FILLED"
+    ]
+    exits.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+    streak = 0
+    latest_loss_at = None
+    for order in exits:
+        if order.get("netReturnRate") is not None:
+            net_rate = decimal(order.get("netReturnRate"))
+        else:
+            net_rate = decimal(order.get("returnRate")) - decimal(
+                RESEARCH_ROUND_TRIP_COST.get(market)
+            )
+        if net_rate < 0:
+            streak += 1
+            latest_loss_at = latest_loss_at or parse_order_time(order.get("createdAt"))
+        else:
+            break
+    remaining = 0
+    if streak >= PAPER_MAX_CONSECUTIVE_LOSSES and latest_loss_at:
+        if latest_loss_at.tzinfo is None:
+            latest_loss_at = latest_loss_at.replace(tzinfo=KST)
+        elapsed = max(0.0, (current.astimezone(KST) - latest_loss_at.astimezone(KST)).total_seconds())
+        remaining = max(0, int(PAPER_LOSS_STREAK_COOLDOWN_SECONDS - elapsed))
+    return {
+        "market": market,
+        "consecutiveLosses": streak,
+        "cooldownSeconds": PAPER_LOSS_STREAK_COOLDOWN_SECONDS,
+        "remainingSeconds": remaining,
+        "blocked": remaining > 0,
+    }
 
 
 def market_entry_sample_counts(
@@ -2670,7 +2792,9 @@ def close_paper_positions_if_needed(
         if hard_stop_enabled and protective.get("status") == "WORKING" and trigger_price and last <= trigger_price:
             trailing_exit = protective.get("mode") == "TRAILING"
             exit_kind = "추적손절" if trailing_exit else "손실선"
-            fill_price = trigger_price
+            # The trigger remains exact, but PAPER fill never assumes liquidity
+            # existed above the first observed executable price after a gap.
+            fill_price = min(trigger_price, last)
             rate = (fill_price - entry) / entry
             reason = (
                 f"{'고점 추적매도' if trailing_exit else '예약 보호매도'} {percent(protective_rate)} 체결"
@@ -2792,7 +2916,7 @@ def close_paper_positions_if_needed(
                 "returnRate": rate,
                 "observedReturnRate": observed_rate,
                 "profit": (fill_price - entry) * decimal(order.get("remainingQuantity") or order.get("quantity") or 1),
-                "fillPolicy": protective.get("fillPolicy") or "LAST_OBSERVED_PRICE",
+                "fillPolicy": "WORST_OF_TRIGGER_OR_OBSERVED_PRICE",
                 "strategyRevision": entry_policy.get("revision") or order.get("strategyRevision"),
             }
         if exit_kind == "시간청산":
@@ -2847,17 +2971,25 @@ def paper_trade_locked(
             summary["entryBlockedReason"] = readiness.get("entryBlockReason")
         return orders[-50:], summary
 
+    loss_streak = market_loss_streak_cooldown(orders, market)
+    summary["lossStreakCooldown"] = loss_streak
+    if loss_streak.get("blocked"):
+        summary["entryBlockedReason"] = (
+            f"{market} 연속 {loss_streak.get('consecutiveLosses')}회 비용 후 손실 · "
+            f"{loss_streak.get('remainingSeconds')}초 대기"
+        )
+        return orders[-50:], summary
+
     today = paper_trading_day()
-    todays_market_orders = [
+    todays_orders = [
         item
         for item in orders
         if str(item.get("side") or "").upper() == "BUY"
-        and item.get("market") == market
         and paper_trading_day(item.get("createdAt")) == today
     ]
     if (
         not execution_policy.get("learningSprint")
-        and len(todays_market_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
+        and len(todays_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
     ):
         return orders[-50:], summary
     existing = {(item.get("market"), item.get("symbol")) for item in open_paper_positions(orders).values()}
@@ -2952,6 +3084,19 @@ def paper_trade_locked(
             execution_policy,
         )
         budget = decimal(capital_plan.get("plannedBudgetKrw"))
+        account_risk = summary.get("dailyAccountRisk") or {}
+        projected_open_risk = decimal(account_risk.get("openRiskKrw")) + budget * abs(PAPER_STOP_RATE)
+        max_open_risk = PAPER_STARTING_CAPITAL_KRW * PAPER_TOTAL_OPEN_RISK_RATE
+        if projected_open_risk > max_open_risk + 0.000001:
+            allowed_budget = max(
+                0.0,
+                (max_open_risk - decimal(account_risk.get("openRiskKrw"))) / abs(PAPER_STOP_RATE),
+            )
+            budget = min(budget, allowed_budget)
+            capital_plan["plannedBudgetKrw"] = budget
+            capital_plan["riskBudgetAdjusted"] = True
+            capital_plan["projectedOpenRiskKrw"] = decimal(account_risk.get("openRiskKrw")) + budget * abs(PAPER_STOP_RATE)
+            capital_plan["maxOpenRiskKrw"] = max_open_risk
         decision["capitalAllowed"] = budget > 0
         decision["capitalPlan"] = capital_plan
         if budget <= 0:
@@ -4639,6 +4784,14 @@ def operational_readiness(
     ]
     if unprotected:
         add("UNPROTECTED_POSITION", "critical", f"보호주문 없는 포지션 {len(unprotected)}개", "신규 진입 중단 · 기존 포지션 우선 보호")
+    max_positions = int(strategy_config().get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
+    if len(open_positions) > max_positions:
+        add(
+            "POSITION_LIMIT_EXCEEDED",
+            "critical",
+            f"기존 포지션 {len(open_positions)}개가 안전 한도 {max_positions}개를 초과했습니다.",
+            "신규 진입 중단 · 기존 청산 규칙으로 한도 이내 복귀",
+        )
 
     critical = [item for item in warnings if item.get("level") == "critical"]
     return {
@@ -6346,6 +6499,17 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(data, dict):
             raise TossApiError(400, "invalid-json", "설정 값은 객체 형태여야 합니다.")
         return data
+
+    def validate_write_origin(self) -> None:
+        """Block cross-site browser mutations without breaking local/API operators."""
+        origin = str(self.headers.get("Origin") or "").strip()
+        if not origin:
+            return
+        parsed = urllib.parse.urlparse(origin)
+        request_host = str(self.headers.get("Host") or "").lower()
+        if parsed.scheme not in ("http", "https") or str(parsed.netloc).lower() != request_host:
+            raise TossApiError(403, "cross-origin-write-blocked", "다른 사이트에서 보낸 변경 요청은 허용되지 않습니다.")
+
     def do_GET(self) -> None:
         path = urllib.parse.urlparse(self.path).path
         if path == "/api/dashboard":
@@ -6432,6 +6596,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urllib.parse.urlparse(self.path).path
+        try:
+            self.validate_write_origin()
+        except TossApiError as exc:
+            self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
+            return
         if path == "/api/slack/test":
             try:
                 payload = self.read_json_body()

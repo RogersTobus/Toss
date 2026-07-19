@@ -62,7 +62,7 @@ class ProtectiveStopTests(unittest.TestCase):
 
     @patch("server.strategy_config", return_value={"targetRate": 0.01, "stopRate": -0.0045})
     @patch("server.refresh_position_prices", return_value={"TEST": 97.0})
-    def test_gap_executes_pre_registered_paper_stop_at_trigger_price(self, _prices, _config):
+    def test_gap_triggers_registered_stop_but_fills_at_observed_price(self, _prices, _config):
         orders = [self.buy()]
         updated, changed = server.close_paper_positions_if_needed(
             {}, orders, [], "US", "US 프리마켓", stop_only=True
@@ -72,18 +72,19 @@ class ProtectiveStopTests(unittest.TestCase):
         protective = updated[0]["protectiveStopOrder"]
         exit_order = updated[1]
         self.assertEqual(protective["status"], "FILLED")
-        self.assertAlmostEqual(exit_order["price"], 99.5)
-        self.assertAlmostEqual(exit_order["returnRate"], -0.005)
+        self.assertAlmostEqual(exit_order["price"], 97.0)
+        self.assertAlmostEqual(exit_order["returnRate"], -0.03)
         self.assertAlmostEqual(exit_order["observedPrice"], 97.0)
         self.assertAlmostEqual(exit_order["observedReturnRate"], -0.03)
         self.assertEqual(exit_order["protectiveStopOrderId"], protective["id"])
         self.assertFalse(server.open_paper_positions(updated))
         journal_entry = {
+            "status": "청산",
             "exitKind": "손실선",
             "returnRate": exit_order["returnRate"],
             "stopRateAtExit": exit_order["stopRate"],
         }
-        self.assertIsNone(server.journal_rule_violation(journal_entry, -0.005))
+        self.assertIsNotNone(server.journal_rule_violation(journal_entry, -0.005))
 
     @patch("server.strategy_config", return_value={"targetRate": 0.01, "stopRate": -0.0045})
     @patch("server.refresh_position_prices", return_value={"TEST": 101.2})

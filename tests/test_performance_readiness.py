@@ -71,6 +71,55 @@ class PerformanceAnalyticsTests(unittest.TestCase):
         self.assertFalse(readiness["entryBlocked"])
         self.assertEqual(readiness["protectedPositionCount"], 1)
 
+    def test_daily_account_risk_uses_cost_adjusted_shared_budget(self):
+        trades = [
+            {
+                "status": "CLOSED",
+                "market": "KR",
+                "openedAt": "2026-07-17T09:10:00+0900",
+                "closedAt": "2026-07-17T09:13:00+0900",
+                "netProfit": -5000,
+            },
+            {
+                "status": "OPEN",
+                "market": "US",
+                "openedAt": "2026-07-17T22:40:00+0900",
+                "netProfit": -3500,
+                "invested": 300000,
+            },
+        ]
+        risk = server.daily_account_risk(trades, "2026-07-17")
+        self.assertAlmostEqual(risk["returnRate"], -0.0085)
+        self.assertTrue(risk["entryLocked"])
+        self.assertFalse(risk["liquidationRequired"])
+        self.assertAlmostEqual(risk["openRiskRate"], 0.0015)
+
+    def test_existing_positions_above_limit_block_new_entries(self):
+        orders = []
+        for index in range(server.PAPER_MAX_OPEN_POSITIONS + 1):
+            orders.append(
+                {
+                    "id": f"BUY-{index}", "market": "KR", "symbol": f"S{index}",
+                    "side": "BUY", "price": 100, "quantity": 1,
+                    "protectiveStopOrder": {"status": "WORKING"},
+                }
+            )
+        readiness = server.operational_readiness({"enabled": False}, orders)
+        self.assertTrue(readiness["entryBlocked"])
+        self.assertEqual(readiness["warnings"][0]["code"], "POSITION_LIMIT_EXCEEDED")
+
+    def test_daily_target_compounds_from_prior_net_profit(self):
+        trades = [
+            {
+                "status": "CLOSED", "market": "KR",
+                "openedAt": "2026-07-16T09:10:00+0900",
+                "closedAt": "2026-07-16T09:13:00+0900", "netProfit": 10000,
+            }
+        ]
+        risk = server.daily_account_risk(trades, "2026-07-17")
+        self.assertEqual(risk["dayStartCapitalKrw"], 1_010_000)
+        self.assertEqual(risk["targetProfitKrw"], 10_100)
+
 
 if __name__ == "__main__":
     unittest.main()

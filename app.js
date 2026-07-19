@@ -363,7 +363,7 @@ function renderCurrentStrategySummary(payload = {}) {
       <div class="market-strategy-rules">
         <div><span>운영</span><b>${definition.session}</b></div>
         <div><span>진입</span><b>${scoreStrategy?.title || "82점 이상"}</b></div>
-        <div><span>보호손절</span><b>${stopStrategy?.title || "−0.45%"}</b></div>
+        <div><span>보호손절</span><b>${stopStrategy?.title || "−0.5%"}</b></div>
         <div><span>정상 익절</span><b>${profitStrategy?.title || "+1%부터"}</b></div>
         <div><span>시간청산</span><b>${timeStrategy?.title || "3분"}</b></div>
       </div>
@@ -1583,6 +1583,8 @@ function renderPaperSummary(state) {
   renderOperationalReadiness(state.operationalReadiness || summary.operationalReadiness || {});
   const capital = summary.capital || {};
   const averageReturn = Number(summary.averageReturn || 0);
+  const dailyAccountRisk = summary.dailyAccountRisk || {};
+  const accountReturn = Number(dailyAccountRisk.returnRate ?? averageReturn);
   const targetRate = Number(summary.targetRate || 0.01);
   const stopRate = Number(summary.stopRate || -0.0045);
   const todayOrderCount = Number(summary.todayOrderCount || 0);
@@ -1617,9 +1619,10 @@ function renderPaperSummary(state) {
   const riskLimitLabel = document.querySelector("#riskLimitLabel");
   const riskRemainingStop = document.querySelector("#riskRemainingStop");
   const riskRemainingTarget = document.querySelector("#riskRemainingTarget");
-  if (riskLimitLabel) riskLimitLabel.textContent = `${signedPercent(averageReturn)} / ${signedPercent(stopRate)}`;
-  if (riskRemainingStop) riskRemainingStop.textContent = `손실선까지 여유 ${signedPercent(Number(decision.remainingToStop ?? averageReturn - stopRate))}`;
-  if (riskRemainingTarget) riskRemainingTarget.textContent = `목표까지 ${signedPercent(Number(decision.remainingToTarget ?? targetRate - averageReturn))}`;
+  const entryLockRate = Number(dailyAccountRisk.entryLockRate ?? -0.008);
+  if (riskLimitLabel) riskLimitLabel.textContent = `${signedPercent(accountReturn)} / ${signedPercent(entryLockRate)}`;
+  if (riskRemainingStop) riskRemainingStop.textContent = `신규진입 중단까지 ${signedPercent(accountReturn - entryLockRate)}`;
+  if (riskRemainingTarget) riskRemainingTarget.textContent = `목표까지 ${signedPercent(targetRate - accountReturn)}`;
 
   renderSafetyRules(summary);
   renderStrategyConfig(summary.strategyConfig || { targetRate, stopRate });
@@ -1668,13 +1671,9 @@ function renderPaperSummary(state) {
   }
   if (utilizationStatus) utilizationStatus.textContent = capital.utilizationStatus || "진입 기회 대기";
   if (allocationRule) {
-    allocationRule.textContent = learningSprint.enabled && unlimitedFunding
-      ? "PAPER 경험 가속 · 자금/횟수/포지션 무제한 · 전역 학습점수/손절 유지"
-      : (learningSprint.enabled
-      ? "PAPER 학습 가속 · 진입 횟수 무제한 · 전체 투자 공용 점수 유지"
-      : (summary.learningCoverage === "GLOBAL_ALL_SYMBOLS"
+    allocationRule.textContent = summary.learningCoverage === "GLOBAL_ALL_SYMBOLS"
       ? "모든 신규 거래 · 전역 학습 점수 적용 후 배정"
-      : "전체 투자 공용 학습 기준 확인 중"));
+      : "전체 투자 공용 학습 기준 확인 중";
   }
   const investedTarget = document.querySelector("#capitalInvestedKrw");
   const cashTarget = document.querySelector("#capitalCashKrw");
@@ -1699,7 +1698,7 @@ function renderPaperSummary(state) {
       : "운용 목표 충족");
   }
   const paperModeBadge = document.querySelector("#paperModeBadge");
-  if (paperModeBadge) paperModeBadge.textContent = learningSprint.enabled ? "PAPER SPRINT" : "PAPER";
+  if (paperModeBadge) paperModeBadge.textContent = "PAPER";
   document.querySelector("#botStatus").textContent = `${unlimitedFunding ? "모의 순자산" : "모의자산"} ${plainWon(equityKrw)} · ${openPositionCount}개 포지션 · 오늘 ${todayOrderCount}건`;
   const positionInsight = document.querySelector("#positionInsight");
   const orderInsight = document.querySelector("#orderInsight");
@@ -1707,8 +1706,8 @@ function renderPaperSummary(state) {
   if (orderInsight) orderInsight.textContent = `${todayOrderCount}건`;
   const avgInsight = document.querySelector("#avgReturnInsight");
   if (avgInsight) {
-    avgInsight.textContent = signedPercent(averageReturn);
-    applyTone(avgInsight, averageReturn);
+    avgInsight.textContent = signedPercent(accountReturn);
+    applyTone(avgInsight, accountReturn);
   }
 
   const updatedAt = state.lastRunAt
@@ -1718,16 +1717,16 @@ function renderPaperSummary(state) {
     ? `보호 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} · ${updatedAt}`
     : (summary.locked ? "오늘 거래 잠금" : updatedAt);
 
-  const progress = targetRate > 0 ? Math.max(0, Math.min(100, (averageReturn / targetRate) * 100)) : 0;
-  document.querySelector("#analysisPulseBar").style.width = `${summary.locked && averageReturn < 0 ? 100 : Math.max(4, progress)}%`;
-  document.querySelector("#analysisPulseBar").classList.toggle("danger", averageReturn < 0);
+  const progress = targetRate > 0 ? Math.max(0, Math.min(100, (accountReturn / targetRate) * 100)) : 0;
+  document.querySelector("#analysisPulseBar").style.width = `${summary.locked && accountReturn < 0 ? 100 : Math.max(4, progress)}%`;
+  document.querySelector("#analysisPulseBar").classList.toggle("danger", accountReturn < 0);
   document.querySelector("#analysisCycleCopy").textContent = sessionMode.mode === "REVIEW"
     ? `US 데이 신규진입 중지 · 국내장 ${Number(state.results?.length || 0)}종목 복기 · 기존 포지션 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} 보호`
     : (learningSprint.enabled
     ? `${monitoredMarkets.join("·") || state.activeMarket} ${Number(protectiveStops.monitorIntervalSec || 1)}초 보호감시 · 예약매도 ${Number(protectiveStops.workingCount || 0)}/${openPositionCount} · ${Number(sampleDiversity.uniqueSymbolCount || 0)}종목·${Math.round(Number(sampleDiversity.cooldownSeconds || 600) / 60)}분 회전`
     : (summary.locked
     ? summary.lockReason
-    : `${state.activeMarket} 시장 · 일 목표 ${signedPercent(targetRate)} · 현재 ${signedPercent(averageReturn)} · 손실선 ${signedPercent(stopRate)}`));
+    : `${state.activeMarket} 시장 · 비용후 일손익 ${signedPercent(accountReturn)} · 신규진입 중단 ${signedPercent(entryLockRate)} · 개별 손절 ${signedPercent(stopRate)}`));
 }
 
 function setHealthTone(element, ok, warning = false) {
