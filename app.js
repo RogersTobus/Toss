@@ -1214,6 +1214,17 @@ function renderLearningBrain(learning = {}, entries = []) {
       : (offlineStudy.status === "running" ? "다음 종목 묶음 분석 중" : (offlineStudy.status === "error" ? "연구 오류 · 다음 주기 재시도" : "정규장 외 연구 대기"));
     offlineStatus.classList.toggle("is-live", ["running", "completed"].includes(offlineStudy.status));
   }
+  const healthStrip = document.querySelector("#researchHealthStrip");
+  if (healthStrip) {
+    const errorCount = Number((offlineStudy.errors || []).length || (offlineStudy.lastError ? 1 : 0));
+    const healthy = ["running", "completed"].includes(offlineStudy.status) && errorCount === 0;
+    healthStrip.className = `research-health-strip ${healthy ? "healthy" : (offlineStudy.status === "error" ? "error" : "waiting")}`;
+    healthStrip.textContent = healthy
+      ? `정상 작동 · 결과 저장 정상 · 오류 0건 · 5분마다 다음 묶음 · 최근 성공 ${formatJournalTime(offlineStudy.completedAt || offlineStudy.startedAt)}`
+      : (offlineStudy.status === "error"
+        ? `자동 재시도 중 · 오류 ${errorCount}건 · ${offlineStudy.lastError || "다음 주기에 다시 연결합니다."}`
+        : "정규장 일정과 연구 엔진 상태를 확인하고 있습니다.");
+  }
   if (offlineSummary) {
     const studySummary = offlineStudy.summary || {};
     const items = [
@@ -1223,6 +1234,8 @@ function renderLearningBrain(learning = {}, entries = []) {
       ["누적 후보", `${Number(candidateStrategies.candidateCount || 0).toLocaleString("ko-KR")}개`],
       ["100건 검증", `${Number(candidateStrategies.validatingCount || 0)}개`],
       ["비교 준비", `${Number(candidateStrategies.readyToCompareCount || 0)}개`],
+      ["연구 실행", `${Number(candidateStrategies.researchRunCount || 0).toLocaleString("ko-KR")}회`],
+      ["오류", `${Number((offlineStudy.errors || []).length || (offlineStudy.lastError ? 1 : 0))}건`],
     ];
     offlineSummary.replaceChildren();
     items.forEach(([label, value]) => {

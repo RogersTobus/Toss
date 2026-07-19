@@ -1397,6 +1397,10 @@ body[data-page="journal"] .journal-page {
   white-space: nowrap;
 }
 .offline-study-head > b.is-live { background: #eaf2df; color: var(--green); }
+.research-status-dashboard { padding: 13px; background: linear-gradient(145deg, rgba(255,252,242,.95), rgba(247,250,241,.82)); }
+.research-health-strip { margin-top: 9px; padding: 8px 10px; border: 1px solid #ded3bc; border-radius: 8px; color: var(--muted); background: rgba(255,255,255,.72); font-size: 9px; font-weight: 800; line-height: 1.45; }
+.research-health-strip.healthy { border-color: rgba(82,133,65,.35); color: var(--green); background: #f3f8ed; }
+.research-health-strip.error { border-color: rgba(190,74,58,.35); color: var(--red); background: #fff5f2; }
 .offline-study-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
