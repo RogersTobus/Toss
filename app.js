@@ -1301,6 +1301,91 @@ function renderLearningBrain(learning = {}, entries = []) {
   renderOfflineSymbolStudies(offlineStudy);
 }
 
+function renderPerformanceValidation(performance = {}, candidateStrategies = {}) {
+  const overall = performance.overall || {};
+  const status = document.querySelector("#performanceValidationStatus");
+  if (status) {
+    status.textContent = `${Number(overall.sampleCount || 0)}/${Number(performance.minimumSamples || 100)}건 · 비용후 ${signedWon(Number(overall.totalNetProfit || 0))}`;
+  }
+  const marketGrid = document.querySelector("#performanceMarketGrid");
+  if (marketGrid) {
+    marketGrid.replaceChildren();
+    (performance.byMarket || []).forEach((item) => {
+      const card = document.createElement("article");
+      card.className = "performance-market-card";
+      card.innerHTML = `<header><b>${item.key === "KR" ? "한국 정규장" : "미국 정규장"}</b><span>${Number(item.sampleCount || 0)}건 · ${item.status || "표본 수집"}</span></header>
+        <div class="performance-metrics">
+          <span><small>승률</small><b>${(Number(item.winRate || 0) * 100).toFixed(1)}%</b></span>
+          <span><small>비용후 평균</small><b>${signedPercent(item.averageNetReturn || 0)}</b></span>
+          <span><small>손익비</small><b>${Number(item.payoffRatio || 0).toFixed(2)}</b></span>
+          <span><small>최대낙폭</small><b>${signedPercent(item.maxDrawdown || 0)}</b></span>
+        </div>`;
+      marketGrid.append(card);
+    });
+  }
+  const scoreStrip = document.querySelector("#scoreBucketStrip");
+  if (scoreStrip) {
+    scoreStrip.replaceChildren();
+    (performance.byScoreBucket || []).forEach((item) => {
+      const box = document.createElement("div");
+      box.innerHTML = `<span>${item.key}<small> · ${Number(item.sampleCount || 0)}건</small></span><b>${signedPercent(item.averageNetReturn || 0)}</b>`;
+      scoreStrip.append(box);
+    });
+  }
+  const titleById = new Map((latestStrategyPayload.strategies || []).map((item) => [item.id, item.title]));
+  const renderRows = (selector, rows, labelFn) => {
+    const target = document.querySelector(selector);
+    if (!target) return;
+    target.replaceChildren();
+    (rows || []).slice(0, 12).forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "performance-mini-row";
+      row.innerHTML = `<span>${labelFn(item)}</span><b>${Number(item.sampleCount || 0)}건</b><strong>${signedPercent(item.averageNetReturn || 0)}</strong>`;
+      target.append(row);
+    });
+  };
+  renderRows("#strategyPerformanceList", performance.byStrategy, (item) => titleById.get(item.key) || item.key);
+  renderRows("#timePerformanceList", performance.byTimeBucket, (item) => item.key);
+
+  const candidatesTarget = document.querySelector("#promotionCandidateList");
+  if (candidatesTarget) {
+    candidatesTarget.replaceChildren();
+    const candidates = (candidateStrategies.topCandidates || []).filter((item) => item.comparisonReady || item.approved).slice(0, 6);
+    if (!candidates.length) {
+      candidatesTarget.innerHTML = `<div class="performance-mini-row"><span>승격 대기 후보 없음</span><b>${Number(candidateStrategies.readyToCompareCount || 0)}개 비교 중</b><strong>자동 반영 안 함</strong></div>`;
+    } else {
+      candidates.forEach((candidate) => {
+        const row = document.createElement("div");
+        row.className = "promotion-candidate";
+        row.innerHTML = `<span><b>${candidate.market || "-"} · ${candidate.pattern || "후보 전략"}</b><small>${Number(candidate.observationCount || 0)}건 · 주전 대비 3개 지표 통과</small></span>`;
+        const button = document.createElement("button");
+        button.type = "button";
+        button.disabled = Boolean(candidate.approved);
+        button.textContent = candidate.approved ? "승인 완료" : "승격 승인";
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          try {
+            const response = await fetch("/api/strategy/candidates/approve", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ id: candidate.id }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || "승격 승인 실패");
+            showToast("후보를 승인 대기로 기록했습니다. 주전 전략은 아직 변경하지 않았습니다.");
+            loadTradingJournal();
+          } catch (error) {
+            button.disabled = false;
+            showToast(error.message || "승격 승인에 실패했습니다.");
+          }
+        });
+        row.append(button);
+        candidatesTarget.append(row);
+      });
+    }
+  }
+}
+
 function renderTradingJournal(payload = {}) {
   const summary = payload.summary || {};
   const entries = payload.entries || [];
@@ -1308,6 +1393,7 @@ function renderTradingJournal(payload = {}) {
     ...latestStrategyPayload,
     marketSummaries: strategyMarketSummaries(entries),
   });
+  renderPerformanceValidation(payload.performance || {}, payload.learning?.candidateStrategies || {});
   const updatedText = payload.updatedAt ? `${formatJournalTime(payload.updatedAt)} 갱신` : "기록 대기";
   const updated = document.querySelector("#journalUpdatedAt");
   const pageUpdated = document.querySelector("#journalPageUpdatedAt");
@@ -1490,6 +1576,7 @@ async function saveJournalMemo() {
 
 function renderPaperSummary(state) {
   const summary = state.paperSummary || {};
+  renderOperationalReadiness(state.operationalReadiness || summary.operationalReadiness || {});
   const capital = summary.capital || {};
   const averageReturn = Number(summary.averageReturn || 0);
   const targetRate = Number(summary.targetRate || 0.01);
@@ -1712,6 +1799,18 @@ function formatUptime(seconds) {
   return `${minutes}분`;
 }
 
+function renderOperationalReadiness(readiness = {}) {
+  const bar = document.querySelector("#systemAlertBar");
+  if (!bar) return;
+  const status = readiness.status || "READY";
+  const warnings = readiness.warnings || [];
+  bar.className = `system-alert-bar ${status === "BLOCKED" ? "blocked" : (status === "CAUTION" ? "caution" : "ready")}`;
+  const title = status === "BLOCKED" ? "신규 진입 중단" : (status === "CAUTION" ? "확인 필요" : "자동운영 정상");
+  const detail = warnings[0]?.message
+    || `분석 최신 · 보호주문 ${Number(readiness.protectedPositionCount || 0)}/${Number(readiness.openPositionCount || 0)} · 신규 진입 가능`;
+  bar.innerHTML = `<b>${title}</b><span>${detail}</span>`;
+}
+
 async function loadHealthStatus() {
   try {
     const response = await fetch("/api/health", { cache: "no-store" });
@@ -1735,6 +1834,7 @@ async function loadHealthStatus() {
     }
     renderSlackConnection(health.slack || {});
     renderDeployConnection(health.deploy || {});
+    renderOperationalReadiness(health.operationalReadiness || {});
 
     const toss = document.querySelector("#healthToss");
     const kakao = document.querySelector("#healthKakao");

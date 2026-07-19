@@ -95,6 +95,7 @@ STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
 RESEARCH_MIN_VALIDATION_SAMPLES = 100
 RESEARCH_ROUND_TRIP_COST = {"KR": 0.003, "US": 0.004}
+PERFORMANCE_MIN_PROMOTION_SAMPLES = 100
 DEFAULT_STRATEGY_CONFIG = {
     "targetRate": PAPER_TARGET_RATE,
     "stopRate": PAPER_STOP_RATE,
@@ -1635,6 +1636,9 @@ def paper_trade_ledger(
             if order.get("returnRate") is not None
             else (profit / invested if invested else 0.0)
         )
+        estimated_cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market or str(entry.get("market") or "")))
+        estimated_cost = invested * estimated_cost_rate
+        net_profit = profit - estimated_cost
         trades.append(
             {
                 "entryOrderId": resolved_entry_id,
@@ -1650,6 +1654,10 @@ def paper_trade_ledger(
                 "invested": invested,
                 "profit": profit,
                 "returnRate": return_rate,
+                "estimatedCostRate": estimated_cost_rate,
+                "estimatedCost": estimated_cost,
+                "netProfit": net_profit,
+                "netReturnRate": net_profit / invested if invested else 0.0,
             }
         )
         closed_entry_ids.add(resolved_entry_id)
@@ -2703,8 +2711,14 @@ def paper_trade_locked(
         "learningAppliedAfterSizing": True,
     }
     summary["learningDecisions"] = []
+    with ANALYSIS_LOCK:
+        runtime_analysis = dict(ANALYSIS)
+    readiness = operational_readiness(runtime_analysis, orders)
+    summary["operationalReadiness"] = readiness
     gate = safety_gate(summary)
-    if summary["locked"] or gate["blocked"]:
+    if summary["locked"] or gate["blocked"] or readiness.get("entryBlocked"):
+        if readiness.get("entryBlocked"):
+            summary["entryBlockedReason"] = readiness.get("entryBlockReason")
         return orders[-50:], summary
 
     today = paper_trading_day()
@@ -3530,8 +3544,36 @@ def candidate_strategy_registry_view(raw_registry: Any) -> dict[str, Any]:
         ),
         reverse=True,
     )
+    champion_orders = load_paper_orders() if PAPER_PATH.exists() else []
+    champion_by_market = trade_performance_analytics_from_orders(champion_orders).get("championByMarket") or {}
+    approved = set(str(item) for item in registry.get("approvedCandidateIds") or [])
+
     def compact(item: dict[str, Any]) -> dict[str, Any]:
-        return {key: value for key, value in item.items() if key != "evidenceBySymbol"}
+        view = {key: value for key, value in item.items() if key != "evidenceBySymbol"}
+        champion = champion_by_market.get(str(item.get("market") or "")) or {}
+        candidate_samples = int(item.get("observationCount") or 0)
+        champion_samples = int(champion.get("sampleCount") or 0)
+        comparison_gates = {
+            "candidateSamples": candidate_samples >= PERFORMANCE_MIN_PROMOTION_SAMPLES,
+            "championSamples": champion_samples >= PERFORMANCE_MIN_PROMOTION_SAMPLES,
+            "netAverageReturn": decimal(item.get("netAverageReturn")) > decimal(champion.get("averageNetReturn")),
+            "payoffRatio": decimal(item.get("payoffRatio")) > decimal(champion.get("payoffRatio")),
+            "maxDrawdown": decimal(item.get("averageMaxDrawdown")) >= decimal(champion.get("maxDrawdown")),
+        }
+        comparison_ready = bool(item.get("promotionEligible")) and all(comparison_gates.values())
+        candidate_id = str(item.get("id") or "")
+        view.update({
+            "champion": champion,
+            "comparisonGates": comparison_gates,
+            "comparisonReady": comparison_ready,
+            "approved": candidate_id in approved,
+            "promotionStatus": (
+                "APPROVED_PENDING_ROLLOUT" if candidate_id in approved
+                else "AWAITING_APPROVAL" if comparison_ready
+                else "COMPARISON_PENDING"
+            ),
+        })
+        return view
     return {
         "updatedAt": registry.get("updatedAt"),
         "researchRunCount": int(registry.get("researchRunCount") or 0),
@@ -3539,12 +3581,38 @@ def candidate_strategy_registry_view(raw_registry: Any) -> dict[str, Any]:
         "candidateCount": len(candidates),
         "validatingCount": sum(1 for item in candidates if item.get("status") in ("DIVERSIFYING", "VALIDATING")),
         "readyToCompareCount": sum(1 for item in candidates if item.get("promotionEligible")),
+        "awaitingApprovalCount": sum(1 for item in candidates if compact(item).get("comparisonReady")),
+        "approvedCount": len(approved),
         "marketCounts": {
             market: sum(1 for item in candidates if item.get("market") == market)
             for market in ("KR", "US")
         },
         "topCandidates": [compact(item) for item in candidates[:20]],
     }
+
+
+def approve_candidate_strategy(candidate_id: str) -> dict[str, Any]:
+    """Record explicit human approval without mutating the live champion."""
+    candidate_id = clean_text(candidate_id, "", 80)
+    if not candidate_id:
+        raise TossApiError(400, "candidate-id-missing", "승인할 후보 전략 ID가 없습니다.")
+    with LEARNING_LOCK:
+        state = load_learning_state_unlocked()
+        registry = state.setdefault("candidateStrategyRegistry", {})
+        candidate = (registry.get("candidates") or {}).get(candidate_id)
+        if not candidate:
+            raise TossApiError(404, "candidate-not-found", "후보 전략을 찾지 못했습니다.")
+        view = candidate_strategy_registry_view(registry)
+        selected = next((item for item in view.get("topCandidates") or [] if item.get("id") == candidate_id), None)
+        if not selected or not selected.get("comparisonReady"):
+            raise TossApiError(409, "candidate-not-ready", "100건 검증과 주전 전략 비교를 모두 통과해야 승인할 수 있습니다.")
+        approved = list(dict.fromkeys([*(registry.get("approvedCandidateIds") or []), candidate_id]))
+        registry["approvedCandidateIds"] = approved
+        registry["lastApprovedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        registry["lastApprovedCandidateId"] = candidate_id
+        state["updatedAt"] = registry["lastApprovedAt"]
+        save_learning_state_unlocked(state)
+        return candidate_strategy_registry_view(registry)
 
 
 def study_backtest(
@@ -4214,12 +4282,62 @@ def analysis_loop() -> None:
 
 
 
+def operational_readiness(
+    analysis: dict[str, Any], orders: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    now = datetime.now().astimezone()
+    warnings: list[dict[str, Any]] = []
+
+    def add(code: str, level: str, message: str, action: str) -> None:
+        warnings.append({"code": code, "level": level, "message": message, "action": action})
+
+    last_error = clean_text(analysis.get("lastError"), "", 240)
+    if last_error:
+        add("ANALYSIS_ERROR", "critical", "시장 분석 오류가 발생했습니다.", "신규 진입 중단 · 기존 보호주문 유지")
+    last_run = parse_order_time(analysis.get("lastRunAt"))
+    age_seconds = max(0, int((now - last_run).total_seconds())) if last_run else None
+    if bool(analysis.get("enabled")) and time.time() - STARTED_AT > 120:
+        if last_run is None or (age_seconds is not None and age_seconds > 90):
+            add("ANALYSIS_STALE", "critical", "분석 데이터가 90초 이상 갱신되지 않았습니다.", "데이터 정상화 전 신규 진입 중단")
+
+    risk = analysis.get("riskMonitor") if isinstance(analysis.get("riskMonitor"), dict) else {}
+    if risk.get("lastError"):
+        add("RISK_MONITOR_ERROR", "critical", "1초 손실 감시기에 오류가 있습니다.", "신규 진입 중단 · 보호주문 상태 확인")
+    risk_last = parse_order_time(risk.get("lastRunAt"))
+    active_markets = risk.get("activeMarkets") or []
+    if active_markets and risk_last and (now - risk_last).total_seconds() > 10:
+        add("RISK_MONITOR_STALE", "critical", "정규장 손실 감시가 지연되고 있습니다.", "감시 복구 전 신규 진입 중단")
+
+    all_orders = orders if orders is not None else load_paper_orders()
+    open_positions = open_paper_positions(all_orders)
+    unprotected = [
+        str(item.get("symbol") or "-")
+        for item in open_positions.values()
+        if not isinstance(item.get("protectiveStopOrder"), dict)
+        or (item.get("protectiveStopOrder") or {}).get("status") != "WORKING"
+    ]
+    if unprotected:
+        add("UNPROTECTED_POSITION", "critical", f"보호주문 없는 포지션 {len(unprotected)}개", "신규 진입 중단 · 기존 포지션 우선 보호")
+
+    critical = [item for item in warnings if item.get("level") == "critical"]
+    return {
+        "status": "BLOCKED" if critical else ("CAUTION" if warnings else "READY"),
+        "entryBlocked": bool(critical),
+        "entryBlockReason": critical[0]["message"] if critical else "신규 진입 가능",
+        "analysisAgeSeconds": age_seconds,
+        "openPositionCount": len(open_positions),
+        "protectedPositionCount": max(0, len(open_positions) - len(unprotected)),
+        "warnings": warnings,
+    }
+
+
 def health_status() -> dict[str, Any]:
     env = load_env()
     with ANALYSIS_LOCK:
         analysis = dict(ANALYSIS)
     uptime = max(0, int(time.time() - STARTED_AT))
     release = app_release()
+    readiness = operational_readiness(analysis)
     return {
         "ok": True,
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -4247,6 +4365,7 @@ def health_status() -> dict[str, Any]:
             "lastError": analysis.get("lastError"),
         },
         "riskMonitor": dict(analysis.get("riskMonitor") or {}),
+        "operationalReadiness": readiness,
     }
 
 
@@ -5491,6 +5610,102 @@ def strategy_research_library(goal_roadmap: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def performance_metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(trades, key=lambda item: str(item.get("closedAt") or ""))
+    returns = [decimal(item.get("netReturnRate")) for item in ordered]
+    wins = [value for value in returns if value > 0]
+    losses = [value for value in returns if value < 0]
+    equity = 1.0
+    peak = 1.0
+    max_drawdown = 0.0
+    for value in returns:
+        equity *= max(0.0, 1 + value)
+        peak = max(peak, equity)
+        max_drawdown = min(max_drawdown, (equity / peak) - 1 if peak else 0.0)
+    average_win = sum(wins) / len(wins) if wins else 0.0
+    average_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+    gross_win = sum(max(0.0, decimal(item.get("netProfit"))) for item in ordered)
+    gross_loss = abs(sum(min(0.0, decimal(item.get("netProfit"))) for item in ordered))
+    invested = sum(decimal(item.get("invested")) for item in ordered)
+    net_profit = sum(decimal(item.get("netProfit")) for item in ordered)
+    return {
+        "sampleCount": len(ordered),
+        "winRate": len(wins) / len(ordered) if ordered else 0.0,
+        "averageNetReturn": sum(returns) / len(returns) if returns else 0.0,
+        "averageWin": average_win,
+        "averageLoss": average_loss,
+        "payoffRatio": average_win / average_loss if average_loss else (99.0 if average_win else 0.0),
+        "profitFactor": gross_win / gross_loss if gross_loss else (99.0 if gross_win else 0.0),
+        "maxDrawdown": max_drawdown,
+        "totalInvested": invested,
+        "totalEstimatedCost": sum(decimal(item.get("estimatedCost")) for item in ordered),
+        "totalNetProfit": net_profit,
+        "netReturnOnCapital": net_profit / invested if invested else 0.0,
+        "validationProgress": min(1.0, len(ordered) / PERFORMANCE_MIN_PROMOTION_SAMPLES),
+        "status": "검증 완료" if len(ordered) >= PERFORMANCE_MIN_PROMOTION_SAMPLES else "표본 수집",
+    }
+
+
+def score_bucket(score: Any) -> str:
+    value = decimal(score)
+    if value >= 90:
+        return "90점 이상"
+    if value >= 85:
+        return "85~89점"
+    if value >= 80:
+        return "80~84점"
+    return "80점 미만"
+
+
+def market_time_bucket(market: str, opened_at: Any) -> str:
+    moment = parse_order_time(opened_at)
+    if not moment:
+        return "시간 미상"
+    hour = moment.astimezone(KST).hour
+    if market == "KR":
+        return "개장 초반" if hour == 9 else ("마감 구간" if hour >= 14 else "장중")
+    return "개장 초반" if hour in (22, 23) else ("마감 구간" if 4 <= hour <= 6 else "장중")
+
+
+def trade_performance_analytics_from_orders(orders: list[dict[str, Any]]) -> dict[str, Any]:
+    ledger = [item for item in paper_trade_ledger(orders, {}) if item.get("status") == "CLOSED"]
+    orders_by_id = {str(item.get("id") or ""): item for item in orders if item.get("id")}
+    enriched: list[dict[str, Any]] = []
+    for trade in ledger:
+        entry = orders_by_id.get(str(trade.get("entryOrderId") or "")) or {}
+        item = dict(trade)
+        item["entryScore"] = decimal(entry.get("entryScore"))
+        item["strategyIds"] = list(entry.get("strategyIds") or [])
+        item["timeBucket"] = market_time_bucket(str(item.get("market") or ""), item.get("openedAt"))
+        enriched.append(item)
+
+    def grouped(key_fn: Any) -> list[dict[str, Any]]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for item in enriched:
+            for key in key_fn(item):
+                buckets.setdefault(str(key), []).append(item)
+        return [{"key": key, **performance_metrics(values)} for key, values in sorted(buckets.items())]
+
+    market_rows = grouped(lambda item: [item.get("market") or "-"])
+    strategy_rows = grouped(lambda item: item.get("strategyIds") or ["전략 정보 없음"])
+    score_rows = grouped(lambda item: [score_bucket(item.get("entryScore"))])
+    time_rows = grouped(lambda item: [f"{item.get('market') or '-'} · {item.get('timeBucket')}"])
+    return {
+        "minimumSamples": PERFORMANCE_MIN_PROMOTION_SAMPLES,
+        "overall": performance_metrics(enriched),
+        "byMarket": market_rows,
+        "byStrategy": strategy_rows,
+        "byScoreBucket": score_rows,
+        "byTimeBucket": time_rows,
+        "championByMarket": {item["key"]: item for item in market_rows},
+        "costModel": {
+            "KR": RESEARCH_ROUND_TRIP_COST["KR"],
+            "US": RESEARCH_ROUND_TRIP_COST["US"],
+            "description": "왕복 수수료·세금·스프레드·슬리피지를 포함한 보수적 추정치",
+        },
+    }
+
+
 def build_trading_journal() -> dict[str, Any]:
     orders = load_paper_orders()
     with ANALYSIS_LOCK:
@@ -5569,6 +5784,10 @@ def build_trading_journal() -> dict[str, Any]:
                 "invested": invested,
                 "profit": profit,
                 "returnRate": return_rate,
+                "estimatedCostRate": decimal(trade.get("estimatedCostRate")),
+                "estimatedCost": decimal(trade.get("estimatedCost")),
+                "netProfit": decimal(trade.get("netProfit")),
+                "netReturnRate": decimal(trade.get("netReturnRate")),
                 "verdict": verdict,
                 "reason": reason,
                 "exitKind": exit_order.get("exitKind"),
@@ -5597,6 +5816,7 @@ def build_trading_journal() -> dict[str, Any]:
                 "scoreFeatures": entry_order.get("scoreFeatures") if isinstance(entry_order.get("scoreFeatures"), dict) else None,
                 "scoreAudit": entry_order.get("scoreAudit") if isinstance(entry_order.get("scoreAudit"), dict) else None,
                 "allocationRate": decimal(entry_order.get("allocationRate")),
+                "strategyIds": list(entry_order.get("strategyIds") or []),
                 "learningPolicy": entry_order.get("learningPolicy") if isinstance(entry_order.get("learningPolicy"), dict) else None,
                 "memo": automatic_note["memo"] if use_automatic else user_memo or automatic_note["memo"],
                 "review": automatic_note["review"] if use_automatic else user_review or automatic_note["review"],
@@ -5679,6 +5899,8 @@ def build_trading_journal() -> dict[str, Any]:
         "winRate": wins / closed_count if closed_count else 0.0,
         "totalInvested": total_invested,
         "totalProfit": total_profit,
+        "totalEstimatedCost": sum(decimal(item.get("estimatedCost")) for item in closed_trades),
+        "totalNetProfit": sum(decimal(item.get("netProfit")) for item in closed_trades),
         "averageReturn": total_profit / total_invested if total_invested else 0.0,
         "periodReturns": period_returns,
         "best": max(entries, key=lambda item: decimal(item.get("returnRate")), default=None),
@@ -5700,6 +5922,7 @@ def build_trading_journal() -> dict[str, Any]:
         },
         "learning": learning_brain,
         "research": strategy_research_library(goal_roadmap),
+        "performance": trade_performance_analytics_from_orders(orders),
     }
 
 def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:
@@ -5728,7 +5951,9 @@ def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:
     return build_trading_journal()
 def analysis_snapshot() -> dict[str, Any]:
     with ANALYSIS_LOCK:
-        return dict(ANALYSIS)
+        snapshot = dict(ANALYSIS)
+    snapshot["operationalReadiness"] = operational_readiness(snapshot)
+    return snapshot
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -5859,6 +6084,13 @@ class Handler(BaseHTTPRequestHandler):
                 payload = strategy_payload()
                 payload["paperSummary"] = analysis_snapshot().get("paperSummary")
                 self.send_json(payload)
+            except TossApiError as exc:
+                self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
+            return
+        if path == "/api/strategy/candidates/approve":
+            try:
+                payload = self.read_json_body()
+                self.send_json({"candidateStrategies": approve_candidate_strategy(str(payload.get("id") or ""))})
             except TossApiError as exc:
                 self.send_json({"error": exc.message, "code": exc.code}, status=exc.status)
             return

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=orbit-focus1" />
+  <link rel="stylesheet" href="styles.css?v=orbit-validation1" />
 </head>
 <body data-page="overview">
   <div class="app-shell">
@@ -87,6 +87,10 @@
             <div class="connection" id="deployConnection"><span class="dot"></span><em>AWS Sync</em><b>확인 중</b></div>
           </div>
         </section>
+
+        <div class="system-alert-bar ready" id="systemAlertBar" role="status">
+          <b>운영 상태 확인 중</b><span>분석·보호주문·데이터 갱신 상태를 확인합니다.</span>
+        </div>
 
         <details class="learning-brain-card overview-research-card" open aria-label="Orbit 전체 투자 공용 학습 뇌">
           <summary class="learning-brain-head">
@@ -302,6 +306,23 @@
             <div><span>승률</span><b>+0.00%</b></div>
           </div>
 
+          <section class="performance-validation-card" aria-label="전략 검증 현황">
+            <div class="performance-validation-head">
+              <div><p class="eyebrow accent">STRATEGY VALIDATION</p><h2>전략 검증 현황</h2></div>
+              <b id="performanceValidationStatus">비용 포함 성과 계산 중</b>
+            </div>
+            <div class="performance-market-grid" id="performanceMarketGrid"></div>
+            <div class="score-bucket-strip" id="scoreBucketStrip"></div>
+            <details class="performance-detail-drawer">
+              <summary>전략·시간대·승격 후보 상세</summary>
+              <div class="performance-detail-grid">
+                <div><h3>전략별</h3><div id="strategyPerformanceList"></div></div>
+                <div><h3>시간대별</h3><div id="timePerformanceList"></div></div>
+              </div>
+              <div class="promotion-candidate-list" id="promotionCandidateList"></div>
+            </details>
+          </section>
+
           <section class="goal-roadmap-card" aria-label="단타 전략 단계별 목표">
             <div class="goal-roadmap-head">
               <div>
@@ -429,6 +450,6 @@
   </div>
 
   <div class="toast" role="status">메뉴 준비 중입니다.</div>
-  <script src="app.js"></script>
+  <script src="app.js?v=orbit-validation1"></script>
 </body>
 </html>
