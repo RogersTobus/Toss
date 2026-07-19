@@ -1565,12 +1565,14 @@ def us_day_domestic_review_mode(
 
 
 def new_paper_state() -> dict[str, Any]:
+    reset_at = now_kst().strftime("%Y-%m-%dT%H:%M:%S%z")
     return {
         "schemaVersion": PAPER_SCHEMA_VERSION,
         "startingCapitalKrw": PAPER_STARTING_CAPITAL_KRW,
         "allocationMode": "bounded-paper-capital",
         "currency": "KRW",
-        "resetAt": now_kst().strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "resetAt": reset_at,
+        "boundedRiskStartedAt": reset_at,
         "orders": [],
     }
 
@@ -1596,6 +1598,9 @@ def load_paper_state() -> dict[str, Any]:
         save_journal_state({"notes": {}, "reviews": {}})
     state.setdefault("startingCapitalKrw", PAPER_STARTING_CAPITAL_KRW)
     state["allocationMode"] = "bounded-paper-capital"
+    if not state.get("boundedRiskStartedAt"):
+        state["boundedRiskStartedAt"] = now_kst().strftime("%Y-%m-%dT%H:%M:%S%z")
+        save_paper_state(state)
     state.setdefault("currency", "KRW")
     state.setdefault("orders", [])
     return state
@@ -1797,7 +1802,18 @@ def paper_capital_summary(
     unlimited_funding = bool(policy.get("unlimitedFunding"))
     state = load_paper_state()
     starting = decimal(state.get("startingCapitalKrw") or PAPER_STARTING_CAPITAL_KRW)
-    closed = [item for item in trades if item.get("status") == "CLOSED"]
+    risk_started = parse_order_time(state.get("boundedRiskStartedAt"))
+    closed = [
+        item for item in trades
+        if item.get("status") == "CLOSED"
+        and (
+            not risk_started
+            or (
+                parse_order_time(item.get("closedAt")) is not None
+                and parse_order_time(item.get("closedAt")) >= risk_started
+            )
+        )
+    ]
     opened = [item for item in trades if item.get("status") == "OPEN"]
     realized = sum(
         decimal(item.get("netProfit") if item.get("netProfit") is not None else item.get("profit"))
@@ -2138,21 +2154,32 @@ def trade_outcome_stats(
 
 
 def daily_account_risk(
-    trades: list[dict[str, Any]], trading_day: str | None = None
+    trades: list[dict[str, Any]], trading_day: str | None = None,
+    risk_started_at: Any = None,
 ) -> dict[str, Any]:
     """Cost-adjusted, account-level PAPER risk for the shared KR/US budget."""
     day = trading_day or paper_trading_day()
-    closed = [
+    risk_started = parse_order_time(risk_started_at)
+    eligible_closed = [
         trade
         for trade in trades
         if trade.get("status") == "CLOSED"
+        and (
+            not risk_started
+            or (
+                parse_order_time(trade.get("closedAt")) is not None
+                and parse_order_time(trade.get("closedAt")) >= risk_started
+            )
+        )
+    ]
+    closed = [
+        trade for trade in eligible_closed
         if paper_trading_day(trade.get("closedAt") or trade.get("openedAt")) == day
     ]
     prior_closed = [
         trade
-        for trade in trades
-        if trade.get("status") == "CLOSED"
-        and paper_trading_day(trade.get("closedAt") or trade.get("openedAt")) < day
+        for trade in eligible_closed
+        if paper_trading_day(trade.get("closedAt") or trade.get("openedAt")) < day
     ]
     prior_net_profit = sum(decimal(trade.get("netProfit")) for trade in prior_closed)
     day_start_capital = max(1.0, PAPER_STARTING_CAPITAL_KRW + prior_net_profit)
@@ -2207,7 +2234,10 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     results_by_symbol = {str(item.get("symbol")): item for item in results}
     trade_ledger = paper_trade_ledger(orders, results_by_symbol)
     today_trade_stats = trade_outcome_stats(trade_ledger, today)
-    account_risk = daily_account_risk(trade_ledger, today)
+    paper_state = load_paper_state()
+    account_risk = daily_account_risk(
+        trade_ledger, today, paper_state.get("boundedRiskStartedAt")
+    )
     capital = paper_capital_summary(trade_ledger, execution_policy)
     position_returns = []
     for symbol, order in positions.items():
