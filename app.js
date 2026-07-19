@@ -1823,13 +1823,22 @@ function renderMacroContext(context = {}) {
   const tone = (value) => value === "우호" ? "favorable" : (value === "경계" ? "caution" : "neutral");
   const errors = Number((context.errors || []).length);
   const latest = (context.items || [])[0];
-  bar.innerHTML = `<b>시장 환경 ${context.status === "READY" ? "정상" : "확인 중"}</b>
-    <span>${latest?.title || context.policy || "공식 경제자료와 국제 뉴스 흐름을 수집합니다."}${errors ? ` · 수집 오류 ${errors}건` : ""}</span>
+  const headline = `${latest?.title || context.policy || "공식 경제자료와 국제 뉴스 흐름을 수집합니다."}${errors ? ` · 수집 오류 ${errors}건` : ""}`;
+  bar.innerHTML = `<b></b>
+    <span></span>
     <div class="macro-context-pills">
-      <em class="${tone(regimeValue("KR"))}">한국 ${regimeValue("KR")}</em>
-      <em class="${tone(regimeValue("US"))}">미국 ${regimeValue("US")}</em>
-      <em class="${tone(regimeValue("GLOBAL"))}">국제 ${regimeValue("GLOBAL")}</em>
+      <em class="${tone(regimeValue("KR"))}"></em>
+      <em class="${tone(regimeValue("US"))}"></em>
+      <em class="${tone(regimeValue("GLOBAL"))}"></em>
     </div>`;
+  bar.querySelector(":scope > b").textContent = `시장 환경 ${context.status === "READY" ? "정상" : "확인 중"}`;
+  const headlineEl = bar.querySelector(":scope > span");
+  headlineEl.textContent = headline;
+  headlineEl.title = headline;
+  const pills = bar.querySelectorAll(".macro-context-pills em");
+  pills[0].textContent = `한국 ${regimeValue("KR")}`;
+  pills[1].textContent = `미국 ${regimeValue("US")}`;
+  pills[2].textContent = `국제 ${regimeValue("GLOBAL")}`;
   bar.title = "뉴스는 시장 환경별 PAPER 성과 비교에만 사용하며 매수 점수에는 직접 반영하지 않습니다.";
 }
 

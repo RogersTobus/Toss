@@ -1919,12 +1919,18 @@ body[data-page="journal"] .macro-context-bar { display: none; }
 .macro-context-bar {
   display: flex; align-items: center; gap: 12px; padding: 10px 14px;
   border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
-  color: var(--ink); font-size: 12px;
+  color: var(--ink); font-size: 12px; min-width: 0;
 }
-.macro-context-bar > b { white-space: nowrap; }
-.macro-context-bar > span { color: var(--muted); }
-.macro-context-pills { display: flex; gap: 6px; margin-left: auto; }
-.macro-context-pills em { padding: 5px 8px; border-radius: 99px; background: var(--panel-2); color: var(--ink-soft); font-style: normal; font-size: 10px; font-weight: 700; }
+.macro-context-bar > b { flex: 0 0 auto; white-space: nowrap; }
+.macro-context-bar > span {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--muted);
+  white-space: nowrap; text-overflow: ellipsis;
+}
+.macro-context-pills { display: flex; flex: 0 0 auto; gap: 6px; margin-left: auto; }
+.macro-context-pills em {
+  flex: 0 0 auto; padding: 5px 8px; border-radius: 99px; background: var(--panel-2);
+  color: var(--ink-soft); font-style: normal; font-size: 10px; font-weight: 700; white-space: nowrap;
+}
 .macro-context-pills em.favorable { background: var(--green-tint); color: var(--green); }
 .macro-context-pills em.caution { background: var(--red-tint); color: var(--red); }
 
@@ -2037,4 +2043,13 @@ body[data-page="journal"] .macro-context-bar { display: none; }
   .performance-market-grid, .performance-detail-grid { grid-template-columns: 1fr; }
   .score-bucket-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .performance-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .macro-context-bar { flex-wrap: wrap; gap: 8px 10px; }
+  .macro-context-bar > span { order: 3; flex-basis: 100%; }
+  .macro-context-pills { margin-left: auto; }
+}
+
+@media (max-width: 430px) {
+  .macro-context-bar > b { width: 100%; }
+  .macro-context-pills { width: 100%; margin-left: 0; }
+  .macro-context-pills em { flex: 1 1 0; text-align: center; }
 }
