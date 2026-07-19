@@ -33,6 +33,15 @@ class MacroContextTests(unittest.TestCase):
         self.assertEqual(item["signal"], "중립")
         self.assertNotIn("war", item["matchedFactors"])
 
+    def test_korean_rate_hike_and_above_target_inflation_are_caution(self):
+        item = server.classify_macro_item({
+            "title": "통화정책방향",
+            "summary": "기준금리를 2.75%로 상향 조정했으며 물가상승률은 목표수준을 상회한다.",
+            "market": "KR",
+        })
+        self.assertEqual(item["signal"], "경계")
+        self.assertIn("기준금리 인상", item["matchedFactors"])
+
     def test_trade_performance_groups_captured_macro_regime(self):
         orders = [
             {

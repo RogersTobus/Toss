@@ -4179,6 +4179,12 @@ def classify_macro_item(item: dict[str, Any]) -> dict[str, Any]:
         return lowered in text
     risk_hits = [word for word in MACRO_RISK_KEYWORDS if contains(word)]
     support_hits = [word for word in MACRO_SUPPORT_KEYWORDS if contains(word)]
+    if "기준금리" in text and any(word in text for word in ("인상", "상향")):
+        risk_hits.append("기준금리 인상")
+    if "물가상승률" in text and any(word in text for word in ("상회", "높은 오름세")):
+        risk_hits.append("물가 목표 상회")
+    if "기준금리" in text and any(word in text for word in ("인하", "하향")):
+        support_hits.append("기준금리 인하")
     score = max(-2, min(2, len(support_hits) - len(risk_hits)))
     item = dict(item)
     item.update({
