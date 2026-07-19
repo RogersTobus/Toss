@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent
 PAPER_PATH = ROOT / "paper_state.json"
+SHADOW_PAPER_PATH = ROOT / "shadow_paper_state.json"
 REPORT_PATH = ROOT / "report_state.json"
 JOURNAL_PATH = ROOT / "journal_state.json"
 LEARNING_PATH = ROOT / "learning_state.json"
@@ -44,6 +45,7 @@ TOKEN_LOCK = threading.Lock()
 TOSS_RATE_LOCK = threading.Lock()
 LEARNING_LOCK = threading.Lock()
 PAPER_LOCK = threading.RLock()
+SHADOW_PAPER_LOCK = threading.RLock()
 STRATEGY_LOCK = threading.RLock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
@@ -75,6 +77,10 @@ PAPER_LEARNING_SPRINT_MODE = False
 PAPER_UNLIMITED_VIRTUAL_CAPITAL = False
 PAPER_UNLIMITED_OPEN_POSITIONS = False
 PAPER_MIN_EXPERIENCE_ENTRY_RATE = 0.10
+SHADOW_PAPER_SCHEMA_VERSION = 1
+SHADOW_PAPER_COOLDOWN_SECONDS = 600
+SHADOW_PAPER_MAX_CLOSED_SAMPLES = 5000
+SHADOW_PAPER_LEARNING_WEIGHT = 0.30
 LEARNING_SCHEMA_VERSION = 2
 LEARNING_BASE_ENTRY_SCORE = 80
 MARKET_ENTRY_SCORE = 82
@@ -1617,6 +1623,77 @@ def save_paper_orders(orders: list[dict[str, Any]]) -> None:
     save_paper_state(state)
 
 
+def new_shadow_paper_state() -> dict[str, Any]:
+    return {
+        "schemaVersion": SHADOW_PAPER_SCHEMA_VERSION,
+        "mode": "SIGNAL_ONLY_NO_CAPITAL",
+        "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
+        "samples": [],
+    }
+
+
+def load_shadow_paper_state() -> dict[str, Any]:
+    if not SHADOW_PAPER_PATH.exists():
+        return new_shadow_paper_state()
+    try:
+        state = json.loads(SHADOW_PAPER_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return new_shadow_paper_state()
+    if not isinstance(state, dict) or int(state.get("schemaVersion") or 0) != SHADOW_PAPER_SCHEMA_VERSION:
+        return new_shadow_paper_state()
+    state.setdefault("samples", [])
+    state["mode"] = "SIGNAL_ONLY_NO_CAPITAL"
+    state["learningWeight"] = SHADOW_PAPER_LEARNING_WEIGHT
+    return state
+
+
+def save_shadow_paper_state(state: dict[str, Any]) -> None:
+    temporary = SHADOW_PAPER_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(SHADOW_PAPER_PATH)
+
+
+def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
+    state = state or load_shadow_paper_state()
+    samples = [item for item in state.get("samples") or [] if isinstance(item, dict)]
+    closed = [item for item in samples if item.get("status") == "CLOSED"]
+    opened = [item for item in samples if item.get("status") == "OPEN"]
+    today = paper_trading_day()
+    today_closed = [item for item in closed if paper_trading_day(item.get("closedAt")) == today]
+    net_returns = [decimal(item.get("netReturnRate")) for item in closed]
+    wins = sum(1 for value in net_returns if value > 0)
+    by_market = {}
+    for market in ("KR", "US"):
+        market_closed = [item for item in closed if item.get("market") == market]
+        by_market[market] = {
+            "activeCount": sum(1 for item in opened if item.get("market") == market),
+            "sampleCount": len(market_closed),
+            "winRate": (
+                sum(1 for item in market_closed if decimal(item.get("netReturnRate")) > 0)
+                / len(market_closed)
+                if market_closed else 0.0
+            ),
+            "averageNetReturn": (
+                sum(decimal(item.get("netReturnRate")) for item in market_closed) / len(market_closed)
+                if market_closed else 0.0
+            ),
+        }
+    return {
+        "enabled": True,
+        "mode": "SIGNAL_ONLY_NO_CAPITAL",
+        "activeCount": len(opened),
+        "todayCompletedCount": len(today_closed),
+        "sampleCount": len(closed),
+        "winRate": wins / len(closed) if closed else 0.0,
+        "averageNetReturn": sum(net_returns) / len(net_returns) if net_returns else 0.0,
+        "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
+        "minimumPromotionSamples": RESEARCH_MIN_VALIDATION_SAMPLES,
+        "byMarket": by_market,
+        "excludedFromCapitalLedger": True,
+        "excludedFromBillionGoal": True,
+    }
+
+
 def parse_order_time(value: Any) -> datetime | None:
     raw = str(value or "")
     if not raw:
@@ -2315,6 +2392,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "periodReturns": period_profit_summary(trade_ledger),
         "dailyAccountRisk": account_risk,
         "billionGoal": billion_goal,
+        "shadowPaper": shadow_paper_summary(),
         "todayTradeStats": today_trade_stats,
         "technicalReview": tech_review,
         "timeExitFollowUp": post_exit_study_summary(orders),
@@ -2990,6 +3068,119 @@ def paper_trade(
         return paper_trade_locked(env, results, market, session)
 
 
+def update_shadow_paper(
+    results: list[dict[str, Any]], market: str, session: str
+) -> dict[str, Any]:
+    """Track every qualified regular-session signal without capital or risk effects."""
+    if session not in ("KR 정규장", "US 정규장"):
+        return shadow_paper_summary()
+    now_dt = datetime.now().astimezone()
+    now = now_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+    config = strategy_config()
+    policy = strategy_execution_policy(config)
+    runtime = policy.get("parameters") or {}
+    required_score = int(runtime.get("entryScoreFloor") or LEARNING_BASE_ENTRY_SCORE)
+    target_rate = max(PAPER_TARGET_RATE, decimal(runtime.get("targetRate") or PAPER_TARGET_RATE))
+    cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+    with SHADOW_PAPER_LOCK:
+        state = load_shadow_paper_state()
+        samples = [item for item in state.get("samples") or [] if isinstance(item, dict)]
+        prices = {
+            str(item.get("symbol") or ""): decimal(item.get("lastPrice"))
+            for item in results if item.get("symbol") and decimal(item.get("lastPrice")) > 0
+        }
+        active = {
+            (str(item.get("market") or ""), str(item.get("symbol") or "")): item
+            for item in samples if item.get("status") == "OPEN"
+        }
+        for key, item in list(active.items()):
+            if key[0] != market:
+                continue
+            last = prices.get(key[1], 0.0)
+            entry = decimal(item.get("entryPrice"))
+            if not last or not entry:
+                continue
+            observed_rate = (last - entry) / entry
+            item["highWaterPrice"] = max(decimal(item.get("highWaterPrice") or entry), last)
+            if not item.get("partialTaken") and observed_rate >= target_rate:
+                item["partialTaken"] = True
+                item["partialReturnRate"] = observed_rate
+                item["partialAt"] = now
+            exit_kind = None
+            gross_return = observed_rate
+            if observed_rate <= PAPER_STOP_RATE:
+                exit_kind = "손실선"
+                gross_return = min(PAPER_STOP_RATE, observed_rate)
+            elif item.get("partialTaken"):
+                trailing_trigger = max(entry, decimal(item.get("highWaterPrice")) * (1 + PAPER_TRAILING_RATE))
+                if last <= trailing_trigger:
+                    exit_kind = "추적손절"
+                    remainder_return = (min(trailing_trigger, last) - entry) / entry
+                    gross_return = (
+                        decimal(item.get("partialReturnRate")) * PAPER_PARTIAL_TAKE_PROFIT_RATE
+                        + remainder_return * (1 - PAPER_PARTIAL_TAKE_PROFIT_RATE)
+                    )
+            opened_at = parse_order_time(item.get("openedAt"))
+            held = max(0, int((now_dt - opened_at).total_seconds())) if opened_at else 0
+            if not exit_kind and held >= int(runtime.get("timeExitSeconds") or 180) and observed_rate < 0.001:
+                exit_kind = "시간청산"
+            minutes_to_close = market_minutes_to_close(market)
+            if not exit_kind and minutes_to_close is not None and minutes_to_close <= PAPER_MARKET_CLOSE_EXIT_MINUTES:
+                exit_kind = "마감청산"
+            if exit_kind:
+                item.update({
+                    "status": "CLOSED", "closedAt": now, "exitPrice": last,
+                    "exitKind": exit_kind, "grossReturnRate": gross_return,
+                    "estimatedCostRate": cost_rate, "netReturnRate": gross_return - cost_rate,
+                    "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
+                })
+
+        recent_closed: dict[tuple[str, str], datetime] = {}
+        for item in samples:
+            if item.get("status") != "CLOSED":
+                continue
+            closed_at = parse_order_time(item.get("closedAt"))
+            if closed_at:
+                recent_closed[(str(item.get("market") or ""), str(item.get("symbol") or ""))] = closed_at
+        active_keys = {
+            (str(item.get("market") or ""), str(item.get("symbol") or ""))
+            for item in samples if item.get("status") == "OPEN"
+        }
+        strategy_key = hashlib.sha1("|".join(sorted(policy.get("enabledIds") or [])).encode("utf-8")).hexdigest()[:12]
+        for result in results:
+            symbol = str(result.get("symbol") or "")
+            key = (market, symbol)
+            if not symbol or key in active_keys:
+                continue
+            if result.get("verdict") != "정밀 분석" or decimal(result.get("score")) < required_score:
+                continue
+            last_closed = recent_closed.get(key)
+            if last_closed and (now_dt - last_closed).total_seconds() < SHADOW_PAPER_COOLDOWN_SECONDS:
+                continue
+            price = decimal(result.get("lastPrice"))
+            if price <= 0:
+                continue
+            samples.append({
+                "id": f"SHADOW-{market}-{symbol}-{int(time.time() * 1000)}",
+                "mode": "SIGNAL_ONLY_NO_CAPITAL", "status": "OPEN",
+                "market": market, "session": session, "symbol": symbol,
+                "name": result.get("name") or symbol, "openedAt": now,
+                "entryPrice": price, "highWaterPrice": price,
+                "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
+                "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
+                "strategyKey": strategy_key, "strategyIds": list(policy.get("enabledIds") or []),
+                "strategyRevision": policy.get("revision"), "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
+                "excludedFromCapitalLedger": True, "excludedFromBillionGoal": True,
+            })
+            active_keys.add(key)
+        closed_samples = [item for item in samples if item.get("status") == "CLOSED"][-SHADOW_PAPER_MAX_CLOSED_SAMPLES:]
+        open_samples = [item for item in samples if item.get("status") == "OPEN"]
+        state["samples"] = closed_samples + open_samples
+        state["updatedAt"] = now
+        save_shadow_paper_state(state)
+        return shadow_paper_summary(state)
+
+
 def paper_trade_locked(
     env: dict[str, str], results: list[dict[str, Any]], market: str, session: str
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -3001,8 +3192,10 @@ def paper_trade_locked(
     results_by_symbol = {str(item.get("symbol") or ""): item for item in results if item.get("symbol")}
     learning_state = sync_learning_brain(orders, results_by_symbol)
     apply_global_scores(results, learning_state)
+    shadow_summary = update_shadow_paper(results, market, session)
     learning_brain = learning_brain_payload(learning_state)
     summary = paper_summary(orders, results)
+    summary["shadowPaper"] = shadow_summary
     summary["learningBrain"] = learning_brain.get("summary")
     summary["learningCoverage"] = "GLOBAL_ALL_SYMBOLS"
     summary["capitalAllocationPolicy"] = {
@@ -3257,6 +3450,7 @@ def paper_trade_locked(
         orders.append(buy_order)
         save_paper_orders(orders)
         summary = paper_summary(orders, results)
+        summary["shadowPaper"] = shadow_summary
     summary["learningBrain"] = learning_brain.get("summary")
     summary["learningCoverage"] = "GLOBAL_ALL_SYMBOLS"
     summary["capitalAllocationPolicy"] = {

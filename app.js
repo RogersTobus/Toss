@@ -1585,6 +1585,7 @@ function renderPaperSummary(state) {
   const averageReturn = Number(summary.averageReturn || 0);
   const dailyAccountRisk = summary.dailyAccountRisk || {};
   const billionGoal = summary.billionGoal || {};
+  const shadowPaper = summary.shadowPaper || {};
   const accountReturn = Number(dailyAccountRisk.returnRate ?? averageReturn);
   const targetRate = Number(summary.targetRate || 0.01);
   const stopRate = Number(summary.stopRate || -0.0045);
@@ -1597,6 +1598,14 @@ function renderPaperSummary(state) {
   const monitoredMarkets = Array.isArray(state.riskMonitor?.activeMarkets)
     ? state.riskMonitor.activeMarkets.map((item) => item?.market).filter(Boolean)
     : [];
+  const shadowActive = document.querySelector("#shadowActiveCount");
+  const shadowToday = document.querySelector("#shadowTodayCount");
+  const shadowSamples = document.querySelector("#shadowSampleCount");
+  const shadowPerformance = document.querySelector("#shadowPerformance");
+  if (shadowActive) shadowActive.textContent = `활성 ${Number(shadowPaper.activeCount || 0).toLocaleString("ko-KR")}개`;
+  if (shadowToday) shadowToday.textContent = `${Number(shadowPaper.todayCompletedCount || 0).toLocaleString("ko-KR")}건`;
+  if (shadowSamples) shadowSamples.textContent = `${Number(shadowPaper.sampleCount || 0).toLocaleString("ko-KR")}건`;
+  if (shadowPerformance) shadowPerformance.textContent = `승률 ${(Number(shadowPaper.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(shadowPaper.averageNetReturn || 0))}`;
 
   const goalProbabilityRate = Number(billionGoal.probabilityRate ?? 0.0005);
   const goalProbabilityPercent = Math.max(0, goalProbabilityRate * 100);
