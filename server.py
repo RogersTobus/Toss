@@ -7,6 +7,7 @@ portfolio data and never receives the OAuth access token or account number.
 from __future__ import annotations
 
 import json
+import html
 import hashlib
 import math
 import mimetypes
@@ -4107,7 +4108,8 @@ def fetch_public_bytes(url: str, timeout: int = 12) -> bytes:
 
 
 def clean_feed_text(value: Any, limit: int = 500) -> str:
-    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    text = html.unescape(html.unescape(str(value or "")))
+    text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
 
@@ -4170,8 +4172,13 @@ MACRO_SUPPORT_KEYWORDS = (
 
 def classify_macro_item(item: dict[str, Any]) -> dict[str, Any]:
     text = f"{item.get('title') or ''} {item.get('summary') or ''}".lower()
-    risk_hits = [word for word in MACRO_RISK_KEYWORDS if word.lower() in text]
-    support_hits = [word for word in MACRO_SUPPORT_KEYWORDS if word.lower() in text]
+    def contains(keyword: str) -> bool:
+        lowered = keyword.lower()
+        if re.fullmatch(r"[a-z][a-z ]+", lowered):
+            return bool(re.search(rf"(?<![a-z]){re.escape(lowered)}(?![a-z])", text))
+        return lowered in text
+    risk_hits = [word for word in MACRO_RISK_KEYWORDS if contains(word)]
+    support_hits = [word for word in MACRO_SUPPORT_KEYWORDS if contains(word)]
     score = max(-2, min(2, len(support_hits) - len(risk_hits)))
     item = dict(item)
     item.update({

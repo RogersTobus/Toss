@@ -28,6 +28,11 @@ class MacroContextTests(unittest.TestCase):
         self.assertEqual(regime["regime"], "경계")
         self.assertEqual(regime["officialCount"], 1)
 
+    def test_keyword_matching_does_not_treat_warned_as_war(self):
+        item = server.classify_macro_item({"title": "WHO warned of an outbreak", "summary": "", "market": "GLOBAL"})
+        self.assertEqual(item["signal"], "중립")
+        self.assertNotIn("war", item["matchedFactors"])
+
     def test_trade_performance_groups_captured_macro_regime(self):
         orders = [
             {
