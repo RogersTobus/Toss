@@ -1075,9 +1075,19 @@ def kakao_enabled(env: dict[str, str]) -> bool:
     return str(env.get("KAKAO_REPORT_ENABLED", "")).lower() in ("1", "true", "yes", "on")
 
 
+def slack_route(env: dict[str, str], channel: str) -> tuple[str, str]:
+    """Route every Slack message to the operations-log webhook when configured."""
+    log_url = str(env.get("SLACK_LOG_WEBHOOK_URL") or "").strip()
+    if log_url:
+        return "log", log_url
+    route = str(channel or "").lower()
+    return route, str(env.get(f"SLACK_{route.upper()}_WEBHOOK_URL") or "").strip()
+
+
 def slack_enabled(env: dict[str, str], channel: str) -> bool:
-    key = f"SLACK_{channel.upper()}_ENABLED"
-    if not env.get(f"SLACK_{channel.upper()}_WEBHOOK_URL"):
+    routed_channel, webhook_url = slack_route(env, channel)
+    key = f"SLACK_{routed_channel.upper()}_ENABLED"
+    if not webhook_url:
         return False
     value = str(env.get(key, "")).strip().lower()
     if not value:
@@ -1087,18 +1097,20 @@ def slack_enabled(env: dict[str, str], channel: str) -> bool:
 
 def send_slack(channel: str, text: str) -> None:
     env = load_env()
-    key = f"SLACK_{channel.upper()}_WEBHOOK_URL"
-    webhook_url = env.get(key, "")
+    routed_channel, webhook_url = slack_route(env, channel)
+    key = f"SLACK_{routed_channel.upper()}_WEBHOOK_URL"
     if not webhook_url:
         raise TossApiError(400, "slack-webhook-missing", f"{key}가 .env에 없습니다.")
     post_json(webhook_url, {"text": text[:3500]})
 
 
-def slack_status(env: dict[str, str]) -> dict[str, dict[str, bool]]:
+def slack_status(env: dict[str, str]) -> dict[str, dict[str, Any]]:
     return {
         channel: {
-            "configured": bool(env.get(f"SLACK_{channel.upper()}_WEBHOOK_URL")),
+            "configured": bool(slack_route(env, channel)[1]),
             "enabled": slack_enabled(env, channel),
+            "routedTo": slack_route(env, channel)[0],
+            "unified": slack_route(env, channel)[0] == "log",
         }
         for channel in ("alert", "report", "log")
     }

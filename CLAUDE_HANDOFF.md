@@ -6,6 +6,13 @@ AWS Lightsail 운영 주소: `http://54.180.202.165:4173/`
 현재 브랜치: `main`  
 프론트 작업 기준 HEAD: `main`의 최신 배포 커밋을 `GET /api/health`의 `version`으로 확인
 
+## 2026-07-20 Slack 운영로그 단일화
+
+- `SLACK_LOG_WEBHOOK_URL`이 설정되어 있으면 긴급 알림, 장 마감 결산, 30분 운영 리포트를 모두 해당 운영로그 채널로 전송한다.
+- 기존 `SLACK_ALERT_WEBHOOK_URL`, `SLACK_REPORT_WEBHOOK_URL`은 운영로그 웹훅이 없을 때만 호환용 fallback으로 사용한다.
+- 메시지 종류와 중복방지 키는 그대로 유지하므로 한 채널 안에서도 긴급/결산/운영 리포트를 구분할 수 있다.
+- 실제 webhook 값은 저장소에 커밋하지 않는다.
+
 ## 2026-07-20 SHADOW PAPER 병렬 학습
 
 - 실운용에 가까운 메인 PAPER는 기존대로 시작자금 100만 원, 종목당 최대 30%, 최대 3포지션, 총 미청산 위험 1%를 유지한다.
@@ -133,11 +140,11 @@ Claude Code는 프론트 레이아웃을 계속 덧씌우지 말고, `index.html
 
 ### 2.2 Slack
 
-Slack은 3개 채널 구조를 의도했습니다.
+Slack은 운영로그 채널 하나로 통합합니다.
 
-- 긴급 알림: `SLACK_ALERT_WEBHOOK_URL`
-- 결산 리포트: `SLACK_REPORT_WEBHOOK_URL`
-- 운영 로그: `SLACK_LOG_WEBHOOK_URL`
+- 통합 목적지: `SLACK_LOG_WEBHOOK_URL`
+- 긴급 알림·결산 리포트·운영 로그가 모두 이 웹훅으로 전송됩니다.
+- `SLACK_ALERT_WEBHOOK_URL`과 `SLACK_REPORT_WEBHOOK_URL`은 통합 웹훅이 없을 때만 fallback으로 사용합니다.
 
 환경변수:
 
