@@ -1303,9 +1303,12 @@ function renderLearningBrain(learning = {}, entries = []) {
 
 function renderPerformanceValidation(performance = {}, candidateStrategies = {}) {
   const overall = performance.overall || {};
+  const scoreRows = performance.byScoreBucket || [];
+  const scoreInversion = scoreRows.some((item, index) => index > 0 && Number(item.averageNetReturn || 0) < Number(scoreRows[index - 1].averageNetReturn || 0));
   const status = document.querySelector("#performanceValidationStatus");
   if (status) {
-    status.textContent = `${Number(overall.sampleCount || 0)}/${Number(performance.minimumSamples || 100)}건 · 비용후 ${signedWon(Number(overall.totalNetProfit || 0))}`;
+    status.textContent = `${Number(overall.sampleCount || 0)}건 · 기준 ${Number(performance.minimumSamples || 100)}건 · ${scoreInversion ? "점수 역전 감지" : `비용후 ${signedWon(Number(overall.totalNetProfit || 0))}`}`;
+    status.classList.toggle("warning-text", scoreInversion);
   }
   const marketGrid = document.querySelector("#performanceMarketGrid");
   if (marketGrid) {
@@ -1326,7 +1329,7 @@ function renderPerformanceValidation(performance = {}, candidateStrategies = {})
   const scoreStrip = document.querySelector("#scoreBucketStrip");
   if (scoreStrip) {
     scoreStrip.replaceChildren();
-    (performance.byScoreBucket || []).forEach((item) => {
+    scoreRows.forEach((item) => {
       const box = document.createElement("div");
       box.innerHTML = `<span>${item.key}<small> · ${Number(item.sampleCount || 0)}건</small></span><b>${signedPercent(item.averageNetReturn || 0)}</b>`;
       scoreStrip.append(box);

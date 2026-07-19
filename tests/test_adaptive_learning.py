@@ -238,6 +238,8 @@ class OffMarketResearchTests(unittest.TestCase):
         self.assertEqual(view["candidateCount"], 1)
         self.assertEqual(view["readyToCompareCount"], 1)
         self.assertEqual(view["topCandidates"][0]["observationCount"], 100)
+        self.assertFalse(view["topCandidates"][0]["comparisonGates"]["executionHorizon"])
+        self.assertFalse(view["topCandidates"][0]["comparisonReady"])
         second = server.update_candidate_strategy_registry(first, analyses, "STUDY-2", "2026-07-19T01:00:00+0900")
         second_view = server.candidate_strategy_registry_view(second)
         self.assertEqual(second_view["topCandidates"][0]["observationCount"], 100)

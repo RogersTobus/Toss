@@ -3556,6 +3556,7 @@ def candidate_strategy_registry_view(raw_registry: Any) -> dict[str, Any]:
         comparison_gates = {
             "candidateSamples": candidate_samples >= PERFORMANCE_MIN_PROMOTION_SAMPLES,
             "championSamples": champion_samples >= PERFORMANCE_MIN_PROMOTION_SAMPLES,
+            "executionHorizon": str(item.get("timeframe") or "") in ("tick", "1m", "3m", "5m"),
             "netAverageReturn": decimal(item.get("netAverageReturn")) > decimal(champion.get("averageNetReturn")),
             "payoffRatio": decimal(item.get("payoffRatio")) > decimal(champion.get("payoffRatio")),
             "maxDrawdown": decimal(item.get("averageMaxDrawdown")) >= decimal(champion.get("maxDrawdown")),
