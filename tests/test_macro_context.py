@@ -4,6 +4,9 @@ import server
 
 
 class MacroContextTests(unittest.TestCase):
+    def test_missing_market_feed_is_not_reported_as_neutral(self):
+        self.assertEqual(server.macro_regime([], "GLOBAL")["regime"], "확인 필요")
+
     def test_parses_and_classifies_official_rss(self):
         source = {"id": "FED", "market": "US", "name": "Federal Reserve"}
         xml = b"""<?xml version='1.0'?><rss><channel><item>

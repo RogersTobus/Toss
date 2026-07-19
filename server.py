@@ -41,6 +41,7 @@ KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_LOCK = threading.Lock()
+TOSS_RATE_LOCK = threading.Lock()
 LEARNING_LOCK = threading.Lock()
 PAPER_LOCK = threading.RLock()
 STRATEGY_LOCK = threading.RLock()
@@ -50,7 +51,10 @@ KST = ZoneInfo("Asia/Seoul")
 PAPER_SCHEMA_VERSION = 2
 PAPER_STARTING_CAPITAL_KRW = 1_000_000
 PAPER_TARGET_RATE = 0.01
-PAPER_STOP_RATE = -0.0045
+PAPER_STOP_RATE = -0.005
+PAPER_TRAILING_RATE = -0.005
+PAPER_PARTIAL_TAKE_PROFIT_RATE = 0.50
+PAPER_MARKET_CLOSE_EXIT_MINUTES = 5
 PAPER_STOP_MONITOR_INTERVAL_SECONDS = 1.0
 PAPER_STOP_REENTRY_COOLDOWN_SECONDS = 60
 POST_EXIT_OBSERVATION_HORIZONS = (("5m", 300), ("10m", 600), ("30m", 1800))
@@ -101,6 +105,8 @@ RESEARCH_MIN_VALIDATION_SAMPLES = 100
 RESEARCH_ROUND_TRIP_COST = {"KR": 0.003, "US": 0.004}
 PERFORMANCE_MIN_PROMOTION_SAMPLES = 100
 MACRO_CONTEXT_POLL_SECONDS = 900
+TOSS_MIN_REQUEST_INTERVAL_SECONDS = 0.30
+TOSS_LAST_REQUEST_AT = 0.0
 MACRO_OFFICIAL_FEEDS = (
     {"id": "FED", "market": "US", "name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml"},
     {"id": "BLS", "market": "US", "name": "U.S. BLS", "url": "https://www.bls.gov/feed/bls_latest.rss"},
@@ -156,8 +162,8 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "hard-stop-loss",
-        "title": "−0.45% 예약 보호매도",
-        "description": "매수 체결과 동시에 평균 체결가 대비 −0.45%에 PAPER 보호매도를 예약하고, 별도 포지션 감시기가 발동가 도달 시 전량 청산합니다.",
+        "title": "−0.5% 예약 보호매도",
+        "description": "매수 체결과 동시에 평균 체결가 대비 −0.5%에 PAPER 보호매도를 예약하고, 별도 포지션 감시기가 발동가 도달 시 전량 청산합니다.",
         "judge": "매수 즉시 보호주문 등록",
         "enabled": True,
     },
@@ -324,9 +330,9 @@ def strategy_runtime_parameters(config: dict[str, Any]) -> dict[str, Any]:
         for item in config.get("strategies") or []
         if isinstance(item, dict)
     }
-    stop_rate = decimal(config.get("stopRate") or PAPER_STOP_RATE)
+    # The user's hard risk invariant is not editable through descriptive copy.
+    stop_rate = PAPER_STOP_RATE
     target_rate = decimal(config.get("targetRate") or PAPER_TARGET_RATE)
-    hard_stop = strategies.get("hard-stop-loss") or {}
     profit = strategies.get("profit-trailing") or {}
     time_exit = strategies.get("three-minute-exit") or {}
     score_entry = strategies.get("score-entry-80") or {}
@@ -334,13 +340,6 @@ def strategy_runtime_parameters(config: dict[str, Any]) -> dict[str, Any]:
     daily_risk = strategies.get("daily-risk-kill-switch") or {}
     reentry = strategies.get("reentry-cooldown") or {}
 
-    negative_stops = [
-        value
-        for value in strategy_keyword_percent_values(
-            hard_stop, ("예약", "보호", "손절", "손실선")
-        )
-        if -0.05 <= value < 0
-    ]
     positive_targets = [
         value
         for value in strategy_keyword_percent_values(
@@ -348,8 +347,8 @@ def strategy_runtime_parameters(config: dict[str, Any]) -> dict[str, Any]:
         )
         if 0 < value <= 0.05
     ]
-    if negative_stops:
-        stop_rate = clamp(negative_stops[-1], -0.05, -0.001, stop_rate)
+    # Keep parsing legacy copy for compatibility, but never loosen/tighten the
+    # fixed -0.5% protective order from prose edits.
     if positive_targets:
         target_rate = clamp(positive_targets[-1], 0.001, 0.05, target_rate)
 
@@ -441,7 +440,7 @@ def strategy_config() -> dict[str, Any]:
                 pass
         normalized = {
             "targetRate": clamp(config.get("targetRate"), 0.001, 0.05, PAPER_TARGET_RATE),
-            "stopRate": clamp(config.get("stopRate"), -0.05, -0.001, PAPER_STOP_RATE),
+            "stopRate": PAPER_STOP_RATE,
             "maxDailyOrders": int(clamp(config.get("maxDailyOrders"), 1, 20, PAPER_MAX_DAILY_ORDERS)),
             "maxOpenPositions": int(clamp(config.get("maxOpenPositions"), 1, 20, PAPER_MAX_OPEN_POSITIONS)),
             "maxConsecutiveLosses": int(clamp(config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
@@ -449,6 +448,13 @@ def strategy_config() -> dict[str, Any]:
             "savedAt": config.get("savedAt"),
             "strategies": normalize_strategies(stored_strategies),
         }
+        for strategy in normalized["strategies"]:
+            if strategy.get("id") == "hard-stop-loss":
+                strategy["title"] = "−0.5% 예약 보호매도"
+                strategy["description"] = (
+                    "매수 체결과 동시에 평균 체결가 대비 −0.5%에 PAPER 보호매도를 "
+                    "예약하고, 별도 포지션 감시기가 발동가 도달 시 전량 청산합니다."
+                )
         normalized["paperLearningSprint"] = strategy_execution_policy(normalized)["learningSprint"]
         return normalized
 
@@ -458,8 +464,7 @@ def save_strategy_config(payload: dict[str, Any]) -> dict[str, Any]:
         current = strategy_config()
         if "targetRate" in payload:
             current["targetRate"] = clamp(payload.get("targetRate"), 0.001, 0.05, current["targetRate"])
-        if "stopRate" in payload:
-            current["stopRate"] = clamp(payload.get("stopRate"), -0.05, -0.001, current["stopRate"])
+        current["stopRate"] = PAPER_STOP_RATE
         if "maxDailyOrders" in payload:
             current["maxDailyOrders"] = int(clamp(payload.get("maxDailyOrders"), 1, 20, current["maxDailyOrders"]))
         if "maxOpenPositions" in payload:
@@ -1340,6 +1345,12 @@ def get_token(env: dict[str, str], force_refresh: bool = False) -> str:
 
 
 def toss_get(path: str, env: dict[str, str], account_seq: int | None = None) -> dict[str, Any]:
+    global TOSS_LAST_REQUEST_AT
+    with TOSS_RATE_LOCK:
+        wait = TOSS_MIN_REQUEST_INTERVAL_SECONDS - (time.monotonic() - TOSS_LAST_REQUEST_AT)
+        if wait > 0:
+            time.sleep(wait)
+        TOSS_LAST_REQUEST_AT = time.monotonic()
     token = get_token(env)
     headers = {"Authorization": f"Bearer {token}"}
     if account_seq is not None:
@@ -1619,6 +1630,7 @@ def paper_trade_ledger(
     buys_by_id: dict[str, dict[str, Any]] = {}
     open_by_symbol: dict[tuple[str, str], dict[str, Any]] = {}
     closed_entry_ids: set[str] = set()
+    partial_exits: dict[str, list[dict[str, Any]]] = {}
     trades: list[dict[str, Any]] = []
 
     for order in sorted(orders, key=lambda item: str(item.get("createdAt") or "")):
@@ -1642,22 +1654,25 @@ def paper_trade_ledger(
         if not entry:
             continue
         resolved_entry_id = str(entry.get("id") or entry_id)
+        if order.get("partial"):
+            partial_exits.setdefault(resolved_entry_id, []).append(order)
+            continue
         if resolved_entry_id in closed_entry_ids:
             continue
-        quantity = decimal(order.get("quantity") or entry.get("quantity") or 1)
+        component_exits = [*partial_exits.get(resolved_entry_id, []), order]
+        quantity = sum(decimal(item.get("quantity")) for item in component_exits)
+        quantity = quantity or decimal(entry.get("quantity") or 1)
         entry_price = decimal(order.get("entryPrice") or entry.get("price"))
-        exit_price = decimal(order.get("price"))
+        proceeds = sum(decimal(item.get("price")) * decimal(item.get("quantity")) for item in component_exits)
+        exit_price = proceeds / quantity if quantity else decimal(order.get("price"))
         invested = entry_price * quantity
-        profit = (
-            decimal(order.get("profit"))
-            if order.get("profit") is not None
-            else (exit_price - entry_price) * quantity
+        profit = sum(
+            decimal(item.get("profit"))
+            if item.get("profit") is not None
+            else (decimal(item.get("price")) - entry_price) * decimal(item.get("quantity"))
+            for item in component_exits
         )
-        return_rate = (
-            decimal(order.get("returnRate"))
-            if order.get("returnRate") is not None
-            else (profit / invested if invested else 0.0)
-        )
+        return_rate = profit / invested if invested else 0.0
         estimated_cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market or str(entry.get("market") or "")))
         estimated_cost = invested * estimated_cost_rate
         net_profit = profit - estimated_cost
@@ -1680,6 +1695,7 @@ def paper_trade_ledger(
                 "estimatedCost": estimated_cost,
                 "netProfit": net_profit,
                 "netReturnRate": net_profit / invested if invested else 0.0,
+                "partialExitCount": len(component_exits) - 1,
             }
         )
         closed_entry_ids.add(resolved_entry_id)
@@ -1691,7 +1707,7 @@ def paper_trade_ledger(
         if entry_id in closed_entry_ids:
             continue
         current = results_by_symbol.get(symbol) or {}
-        quantity = decimal(entry.get("quantity") or 1)
+        quantity = decimal(entry.get("remainingQuantity") or entry.get("quantity") or 1)
         entry_price = decimal(entry.get("price"))
         last_price = decimal(current.get("lastPrice") or entry.get("lastPrice") or entry_price)
         invested = entry_price * quantity
@@ -2102,16 +2118,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         if str(item.get("side") or "").upper() == "BUY"
         and paper_trading_day(item.get("createdAt")) == today
     ]
-    positions: dict[str, dict[str, Any]] = {}
-    for order in orders:
-        symbol = str(order.get("symbol") or "")
-        if not symbol:
-            continue
-        side = str(order.get("side") or "").upper()
-        if side == "BUY":
-            positions[symbol] = order
-        elif side == "SELL":
-            positions.pop(symbol, None)
+    positions = open_paper_positions(orders)
 
     working_protective_stops = sum(
         1
@@ -2208,7 +2215,8 @@ def open_paper_positions(orders: list[dict[str, Any]], market: str | None = None
         if side == "BUY":
             positions[symbol] = order
         elif side == "SELL":
-            positions.pop(symbol, None)
+            if not order.get("partial"):
+                positions.pop(symbol, None)
     return positions
 
 
@@ -2229,7 +2237,7 @@ def build_protective_stop_order(
         "status": "WORKING",
         "stopRate": normalized_rate,
         "triggerPrice": trigger_price,
-        "quantity": decimal(entry_order.get("quantity") or 1),
+        "quantity": decimal(entry_order.get("remainingQuantity") or entry_order.get("quantity") or 1),
         "createdAt": created_at,
         "fillPolicy": "TRIGGER_PRICE",
     }
@@ -2242,11 +2250,16 @@ def ensure_protective_stop_order(
     if isinstance(existing, dict) and existing.get("status") == "WORKING":
         normalized_rate = clamp(stop_rate, -0.05, -0.001, PAPER_STOP_RATE)
         entry_price = decimal(entry_order.get("price"))
-        if abs(decimal(existing.get("stopRate")) - normalized_rate) > 0.0000001:
+        remaining_quantity = decimal(entry_order.get("remainingQuantity") or entry_order.get("quantity") or 1)
+        if (
+            abs(decimal(existing.get("stopRate")) - normalized_rate) > 0.0000001
+            or abs(decimal(existing.get("quantity")) - remaining_quantity) > 0.0000001
+        ):
             existing.update(
                 {
                     "stopRate": normalized_rate,
                     "triggerPrice": entry_price * (1 + normalized_rate) if entry_price else 0.0,
+                    "quantity": remaining_quantity,
                     "replacedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 }
             )
@@ -2257,6 +2270,23 @@ def ensure_protective_stop_order(
     protective = build_protective_stop_order(entry_order, stop_rate)
     entry_order["protectiveStopOrder"] = protective
     return protective, True
+
+
+def market_minutes_to_close(market: str, now: datetime | None = None) -> float | None:
+    """Return remaining minutes in the regular session from cached official calendar data."""
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KST)
+    try:
+        if market == "KR":
+            session = (((CALENDAR_CACHE.get("KR") or {}).get("today") or {}).get("integrated") or {}).get("regularMarket") or {}
+        else:
+            session = ((CALENDAR_CACHE.get("US") or {}).get("today") or {}).get("regularMarket") or {}
+        end = datetime.fromisoformat(str(session.get("endTime") or ""))
+        remaining = (end - current).total_seconds() / 60
+        return remaining if remaining >= 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 def stop_reentry_cooldown_symbols(
@@ -2580,6 +2610,7 @@ def close_paper_positions_if_needed(
     prices = refresh_position_prices(env, positions, results)
     changed = False
     now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    minutes_to_close = market_minutes_to_close(market)
     for symbol, order in list(positions.items()):
         entry = decimal(order.get("price"))
         if not entry:
@@ -2596,7 +2627,8 @@ def close_paper_positions_if_needed(
             entry_ids = set(entry_policy.get("enabledIds") or fallback_ids)
         entry_parameters = entry_policy.get("parameters") if isinstance(entry_policy.get("parameters"), dict) else current_parameters
         target_rate = decimal(entry_parameters.get("targetRate") or config.get("targetRate"))
-        stop_rate = decimal(entry_parameters.get("stopRate") or config.get("stopRate"))
+        # The exact -0.5% protective order also applies to legacy open positions.
+        stop_rate = PAPER_STOP_RATE
         hard_stop_enabled = "hard-stop-loss" in entry_ids or isinstance(order.get("protectiveStopOrder"), dict)
         profit_target_enabled = "profit-trailing" in entry_ids
         time_exit_enabled = "three-minute-exit" in entry_ids
@@ -2605,6 +2637,26 @@ def close_paper_positions_if_needed(
         if hard_stop_enabled:
             protective, created = ensure_protective_stop_order(order, stop_rate)
             changed = changed or created
+        partial_taken = bool(order.get("partialTakeProfit"))
+        if partial_taken and protective.get("status") == "WORKING":
+            high_water = max(
+                decimal(order.get("highWaterPrice") or entry),
+                decimal(prices.get(symbol) or 0),
+            )
+            order["highWaterPrice"] = high_water
+            trailing_trigger = max(entry, high_water * (1 + PAPER_TRAILING_RATE))
+            if trailing_trigger > decimal(protective.get("triggerPrice")):
+                protective.update(
+                    {
+                        "orderType": "PAPER_TRAILING_STOP",
+                        "mode": "TRAILING",
+                        "triggerPrice": trailing_trigger,
+                        "highWaterPrice": high_water,
+                        "stopRate": PAPER_TRAILING_RATE,
+                        "replacedAt": now,
+                    }
+                )
+                changed = True
         trigger_price = decimal(protective.get("triggerPrice"))
         protective_rate = decimal(protective.get("stopRate") or stop_rate)
         last = prices.get(symbol, 0.0)
@@ -2616,11 +2668,12 @@ def close_paper_positions_if_needed(
         exit_kind = None
         reason = None
         if hard_stop_enabled and protective.get("status") == "WORKING" and trigger_price and last <= trigger_price:
-            exit_kind = "손실선"
+            trailing_exit = protective.get("mode") == "TRAILING"
+            exit_kind = "추적손절" if trailing_exit else "손실선"
             fill_price = trigger_price
             rate = (fill_price - entry) / entry
             reason = (
-                f"예약 보호매도 {percent(protective_rate)} 체결"
+                f"{'고점 추적매도' if trailing_exit else '예약 보호매도'} {percent(protective_rate)} 체결"
                 f" · 감시 관측가 {percent(observed_rate)}"
             )
             protective.update(
@@ -2633,17 +2686,68 @@ def close_paper_positions_if_needed(
                     "slippageFromTriggerRate": observed_rate - protective_rate,
                 }
             )
-        elif not stop_only and profit_target_enabled and observed_rate >= target_rate:
-            exit_kind = "목표"
-            reason = f"목표 {percent(target_rate)} 도달 · 즉시 모의청산"
+        elif not stop_only and profit_target_enabled and not partial_taken and observed_rate >= target_rate:
+            original_quantity = decimal(order.get("quantity") or 1)
+            remaining_quantity = decimal(order.get("remainingQuantity") or original_quantity)
+            partial_quantity = min(remaining_quantity, original_quantity * PAPER_PARTIAL_TAKE_PROFIT_RATE)
+            order["remainingQuantity"] = max(0.0, remaining_quantity - partial_quantity)
+            order["partialTakeProfit"] = {
+                "status": "FILLED",
+                "quantity": partial_quantity,
+                "price": last,
+                "returnRate": observed_rate,
+                "filledAt": now,
+            }
+            order["highWaterPrice"] = last
             if protective.get("status") == "WORKING":
                 protective.update(
                     {
-                        "status": "CANCELLED",
-                        "cancelledAt": now,
-                        "cancelReason": "목표 청산 완료",
+                        "orderType": "PAPER_TRAILING_STOP",
+                        "mode": "TRAILING",
+                        "quantity": order["remainingQuantity"],
+                        "triggerPrice": max(entry, last * (1 + PAPER_TRAILING_RATE)),
+                        "highWaterPrice": last,
+                        "stopRate": PAPER_TRAILING_RATE,
+                        "replacedAt": now,
                     }
                 )
+            orders.append(
+                {
+                    "id": f"PAPER-PARTIAL-{int(time.time())}-{symbol}",
+                    "market": order.get("market"),
+                    "session": session,
+                    "symbol": symbol,
+                    "name": order.get("name"),
+                    "side": "SELL",
+                    "partial": True,
+                    "quantity": partial_quantity,
+                    "price": last,
+                    "entryPrice": entry,
+                    "entryOrderId": order.get("id"),
+                    "currency": order.get("currency"),
+                    "sourceCurrency": order.get("sourceCurrency"),
+                    "fxRate": order.get("fxRate") or 1,
+                    "status": "FILLED",
+                    "createdAt": now,
+                    "reason": f"목표 {percent(target_rate)} 도달 · 50% 부분익절",
+                    "exitKind": "부분익절",
+                    "targetRate": target_rate,
+                    "returnRate": observed_rate,
+                    "profit": (last - entry) * partial_quantity,
+                }
+            )
+            changed = True
+            continue
+        elif (
+            not stop_only
+            and not current_policy.get("extendedSession")
+            and minutes_to_close is not None
+            and minutes_to_close <= PAPER_MARKET_CLOSE_EXIT_MINUTES
+        ):
+            exit_kind = "마감청산"
+            reason = f"정규장 마감 {PAPER_MARKET_CLOSE_EXIT_MINUTES}분 전 · 익일 보유 비활성"
+            if protective.get("status") == "WORKING":
+                protective.update({"status": "CANCELLED", "cancelledAt": now, "cancelReason": "마감청산 완료"})
         elif not stop_only and time_exit_enabled:
             opened_at = parse_order_time(order.get("createdAt"))
             hold_seconds = max(0, int((datetime.now().astimezone() - opened_at).total_seconds())) if opened_at else 0
@@ -2669,7 +2773,7 @@ def close_paper_positions_if_needed(
                 "symbol": symbol,
                 "name": order.get("name"),
                 "side": "SELL",
-                "quantity": decimal(order.get("quantity") or 1),
+                "quantity": decimal(order.get("remainingQuantity") or order.get("quantity") or 1),
                 "price": fill_price,
                 "observedPrice": last,
                 "entryPrice": entry,
@@ -2687,7 +2791,7 @@ def close_paper_positions_if_needed(
                 "targetRate": target_rate,
                 "returnRate": rate,
                 "observedReturnRate": observed_rate,
-                "profit": (fill_price - entry) * decimal(order.get("quantity") or 1),
+                "profit": (fill_price - entry) * decimal(order.get("remainingQuantity") or order.get("quantity") or 1),
                 "fillPolicy": protective.get("fillPolicy") or "LAST_OBSERVED_PRICE",
                 "strategyRevision": entry_policy.get("revision") or order.get("strategyRevision"),
             }
@@ -4219,6 +4323,8 @@ def fetch_gdelt_risk_items() -> list[dict[str, Any]]:
 
 def macro_regime(items: list[dict[str, Any]], market: str) -> dict[str, Any]:
     relevant = [item for item in items if item.get("market") == market]
+    if not relevant:
+        return {"regime": "확인 필요", "score": 0, "itemCount": 0, "officialCount": 0}
     official = [item for item in relevant if item.get("sourceTier") == "OFFICIAL"]
     scored = official if market in ("KR", "US") else relevant
     score = sum(int(item.get("signalScore") or 0) for item in scored[:20])
@@ -5439,8 +5545,10 @@ def sync_learning_brain(
                 continue
             name = str(entry_order.get("name") or exit_order.get("name") or symbol)
             market = str(trade.get("market") or entry_order.get("market") or "")
-            return_rate = decimal(trade.get("returnRate"))
-            profit = decimal(trade.get("profit"))
+            gross_return_rate = decimal(trade.get("returnRate"))
+            gross_profit = decimal(trade.get("profit"))
+            return_rate = decimal(trade.get("netReturnRate"))
+            profit = decimal(trade.get("netProfit"))
             invested = decimal(trade.get("invested"))
             entry_score = decimal(entry_order.get("entryScore"))
             opened = parse_order_time(trade.get("openedAt"))
@@ -5457,8 +5565,8 @@ def sync_learning_brain(
                     "name": name,
                     "status": "청산",
                     "exitKind": exit_order.get("exitKind"),
-                    "returnRate": return_rate,
-                    "profit": profit,
+                    "returnRate": gross_return_rate,
+                    "profit": gross_profit,
                     "stopRateAtExit": limit_rate,
                 },
                 stop_rate,
@@ -5611,8 +5719,14 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
     global_model = normalize_global_score_model(state.get("globalScoreModel"))
     global_view = json.loads(json.dumps(global_model, ensure_ascii=False))
     global_view["revisions"] = list(reversed(global_model.get("revisions") or []))[:40]
-    domestic_review = state.get("domesticDayReview") if isinstance(state.get("domesticDayReview"), dict) else {}
-    offline_study = state.get("offlineStudy") if isinstance(state.get("offlineStudy"), dict) else {}
+    def compact_study(raw: Any) -> dict[str, Any]:
+        study = json.loads(json.dumps(raw, ensure_ascii=False)) if isinstance(raw, dict) else {}
+        study.pop("analyses", None)
+        study["symbolStudies"] = list(study.get("symbolStudies") or [])[:20]
+        return study
+
+    domestic_review = compact_study(state.get("domesticDayReview"))
+    offline_study = compact_study(state.get("offlineStudy"))
     candidate_strategies = candidate_strategy_registry_view(state.get("candidateStrategyRegistry"))
     return {
         "updatedAt": state.get("updatedAt"),
@@ -5634,7 +5748,7 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
         "offlineStudy": offline_study,
         "offlineStudyHistory": list(reversed(state.get("offlineStudyHistory") or []))[:30],
         "candidateStrategies": candidate_strategies,
-        "symbols": symbols,
+        "symbols": symbols[:100],
         "memories": memories[:40],
     }
 
@@ -6139,7 +6253,7 @@ def build_trading_journal() -> dict[str, Any]:
     return {
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "summary": summary,
-        "entries": entries,
+        "entries": entries[:200],
         "coaching": {
             "active": active_mistake_note,
             "days": mistake_notes,
@@ -6177,6 +6291,16 @@ def save_journal_note(payload: dict[str, Any]) -> dict[str, Any]:
 def analysis_snapshot() -> dict[str, Any]:
     with ANALYSIS_LOCK:
         snapshot = dict(ANALYSIS)
+    with PAPER_LOCK:
+        orders = load_paper_orders()
+    open_orders = list(open_paper_positions(orders).values())
+    compact_orders: dict[str, dict[str, Any]] = {
+        str(item.get("id") or f"open-{index}"): item
+        for index, item in enumerate([*orders[-100:], *open_orders])
+    }
+    snapshot["paperOrders"] = sorted(
+        compact_orders.values(), key=lambda item: str(item.get("createdAt") or "")
+    )
     snapshot["operationalReadiness"] = operational_readiness(snapshot)
     return snapshot
 
@@ -6191,6 +6315,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -6200,6 +6328,8 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or 0)
         if length <= 0:
             return {}
+        if length > 64 * 1024:
+            raise TossApiError(413, "payload-too-large", "요청 데이터가 허용 크기를 초과했습니다.")
         raw = self.rfile.read(length).decode("utf-8")
         try:
             data = json.loads(raw)
@@ -6263,6 +6393,9 @@ class Handler(BaseHTTPRequestHandler):
                     content = kakao_callback_page("카카오 연결 실패", exc.message, ok=False)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", str(len(content)))
             self.end_headers()
             self.wfile.write(content)
@@ -6281,6 +6414,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
         self.send_header("Content-Length", str(len(content)))
         self.end_headers()
         self.wfile.write(content)

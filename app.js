@@ -1820,7 +1820,7 @@ function renderMacroContext(context = {}) {
   if (!bar) return;
   const regimes = context.regimes || {};
   const regimeValue = (key) => regimes[key]?.regime || "중립";
-  const tone = (value) => value === "우호" ? "favorable" : (value === "경계" ? "caution" : "neutral");
+  const tone = (value) => value === "우호" ? "favorable" : (["경계", "확인 필요"].includes(value) ? "caution" : "neutral");
   const errors = Number((context.errors || []).length);
   const latest = (context.items || [])[0];
   const headline = `${latest?.title || context.policy || "공식 경제자료와 국제 뉴스 흐름을 수집합니다."}${errors ? ` · 수집 오류 ${errors}건` : ""}`;
@@ -2009,7 +2009,6 @@ async function loadAnalysisStatus() {
       renderPaperOrders(state.paperOrders, state.activeMarket);
       renderPaperSummary(state);
       renderMarketReports(state);
-      loadTradingJournal();
       if (document.body.dataset.page === "quant" && !document.activeElement?.closest?.("#strategyTower")) {
         loadStrategyConfig();
       }

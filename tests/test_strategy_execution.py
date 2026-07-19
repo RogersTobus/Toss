@@ -58,7 +58,7 @@ class StrategyExecutionTests(unittest.TestCase):
         params = first_policy["parameters"]
         self.assertEqual(first["revision"], 1)
         self.assertEqual(first_policy["effectiveFrom"], "NEXT_ENTRY")
-        self.assertAlmostEqual(params["stopRate"], -0.006)
+        self.assertAlmostEqual(params["stopRate"], -0.005)
         self.assertAlmostEqual(params["targetRate"], 0.012)
         self.assertEqual(params["entryScoreFloor"], 83)
         self.assertEqual(params["timeExitSeconds"], 300)
@@ -246,6 +246,28 @@ class StrategyExecutionTests(unittest.TestCase):
         self.assertFalse(
             server.us_day_domestic_review_mode("US", "US 데이마켓", config)
         )
+
+    def test_regular_market_close_window_uses_official_cached_calendar(self):
+        original_cache = dict(server.CALENDAR_CACHE)
+        server.CALENDAR_CACHE.update(
+            {
+                "US": {
+                    "today": {
+                        "regularMarket": {
+                            "endTime": "2026-07-20T20:00:00+00:00",
+                        }
+                    }
+                }
+            }
+        )
+        try:
+            remaining = server.market_minutes_to_close(
+                "US", datetime(2026, 7, 20, 19, 56, tzinfo=timezone.utc)
+            )
+            self.assertAlmostEqual(remaining, 4)
+        finally:
+            server.CALENDAR_CACHE.clear()
+            server.CALENDAR_CACHE.update(original_cache)
 
     @patch("server.run_multi_timeframe_study", return_value={"status": "completed"})
     def test_domestic_review_analyzes_only_kr_daily_weekly_monthly(self, study):
