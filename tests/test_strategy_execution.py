@@ -9,6 +9,25 @@ import server
 
 
 class StrategyExecutionTests(unittest.TestCase):
+    def test_research_runs_outside_both_regular_markets(self):
+        self.assertFalse(server.regular_market_is_active([]))
+        self.assertFalse(server.regular_market_is_active([("US", "US 데이마켓")]))
+        self.assertTrue(server.regular_market_is_active([("KR", "KR 정규장")]))
+        self.assertTrue(server.regular_market_is_active([("US", "US 정규장")]))
+        self.assertEqual(server.markets_available_for_research([]), ("KR", "US"))
+        self.assertEqual(
+            server.markets_available_for_research([("KR", "KR 정규장")]),
+            ("US",),
+        )
+        self.assertEqual(
+            server.markets_available_for_research([("US", "US 정규장")]),
+            ("KR",),
+        )
+
+    def test_research_catalog_covers_both_complete_listed_markets(self):
+        self.assertGreater(len(server.listed_stock_universe("KR")), 2000)
+        self.assertGreater(len(server.listed_stock_universe("US")), 10000)
+
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.original_strategy_path = server.STRATEGY_CONFIG_PATH

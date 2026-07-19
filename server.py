@@ -87,10 +87,12 @@ GLOBAL_SCORE_WEIGHT_MIN = 0.70
 GLOBAL_SCORE_WEIGHT_MAX = 1.30
 GLOBAL_SCORE_MAX_TRADE_STEP = 0.04
 GLOBAL_SCORE_LEARNING_RATE = 0.06
-OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 10
+OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 50
+OFF_MARKET_STUDY_BATCH_PER_MARKET = 8
 OFF_MARKET_STUDY_CANDLE_PAGES = 3
 OFF_MARKET_STUDY_POLL_SECONDS = 300
-STUDY_AGGREGATION_VERSION = 2
+STUDY_AGGREGATION_VERSION = 3
+RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
 DEFAULT_STRATEGY_CONFIG = {
     "targetRate": PAPER_TARGET_RATE,
     "stopRate": PAPER_STOP_RATE,
@@ -1480,6 +1482,20 @@ def market_schedule(env: dict[str, str]) -> tuple[Any, str]:
     if active:
         return active[0]
     return None, "시장 휴장"
+
+
+def regular_market_is_active(sessions: list[tuple[str, str]]) -> bool:
+    """Research pauses only for KR/US regular trading, never for day/extended sessions."""
+    return any(session in ("KR 정규장", "US 정규장") for _, session in sessions)
+
+
+def markets_available_for_research(sessions: list[tuple[str, str]]) -> tuple[str, ...]:
+    regular_open = {
+        market
+        for market, session in sessions
+        if session in ("KR 정규장", "US 정규장")
+    }
+    return tuple(market for market in ("KR", "US") if market not in regular_open)
 
 
 def us_day_domestic_review_mode(
@@ -2999,8 +3015,32 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
     return results
 
 
+def listed_stock_universe(market: str) -> dict[str, dict[str, Any]]:
+    try:
+        payload = json.loads(RESEARCH_UNIVERSE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    items = payload.get("items") if isinstance(payload, dict) else []
+    return {
+        str(item.get("symbol")): {
+            "symbol": str(item.get("symbol")),
+            "name": item.get("name") or item.get("symbol"),
+            "market": market,
+            "exchange": item.get("exchange"),
+            "sourceHorizons": ["ALL_LISTED"],
+        }
+        for item in items or []
+        if isinstance(item, dict)
+        and str(item.get("market") or "").upper() == market
+        and item.get("symbol")
+    }
+
+
 def study_universe(env: dict[str, str], market: str) -> list[dict[str, Any]]:
-    universe: dict[str, dict[str, Any]] = {}
+    # The complete listed catalog is the base. Rankings only enrich it with
+    # new listings/ETFs discovered between catalog refreshes.
+    universe = listed_stock_universe(market)
+    discovered_symbols: set[str] = set()
     for duration in ("1d", "1w", "1mo"):
         query = urllib.parse.urlencode(
             {
@@ -3016,20 +3056,26 @@ def study_universe(env: dict[str, str], market: str) -> list[dict[str, Any]]:
             symbol = str(row.get("symbol") or "")
             if not symbol:
                 continue
+            if symbol not in universe:
+                discovered_symbols.add(symbol)
             item = universe.setdefault(
                 symbol,
                 {"symbol": symbol, "name": symbol, "market": market, "sourceHorizons": []},
             )
-            item["sourceHorizons"].append(duration)
+            if duration not in item["sourceHorizons"]:
+                item["sourceHorizons"].append(duration)
         time.sleep(0.22)
-    symbols = list(universe)
-    if symbols:
-        stocks = toss_get(
-            f"/api/v1/stocks?{urllib.parse.urlencode({'symbols': ','.join(symbols)})}", env
-        ).get("result") or []
-        names = {str(item.get("symbol") or ""): item.get("name") for item in stocks}
-        for symbol, item in universe.items():
-            item["name"] = names.get(symbol) or symbol
+    if discovered_symbols:
+        symbols = sorted(discovered_symbols)
+        for offset in range(0, len(symbols), 200):
+            chunk = symbols[offset : offset + 200]
+            stocks = toss_get(
+                f"/api/v1/stocks?{urllib.parse.urlencode({'symbols': ','.join(chunk)})}", env
+            ).get("result") or []
+            for stock in stocks:
+                symbol = str(stock.get("symbol") or "")
+                if symbol in universe:
+                    universe[symbol]["name"] = stock.get("name") or symbol
     return list(universe.values())
 
 
@@ -3622,9 +3668,10 @@ def run_multi_timeframe_study(
     history_key: str,
     study_type: str,
     next_run: str,
+    continuous_rotation: bool = False,
 ) -> dict[str, Any]:
     started = now_kst()
-    study_id = f"{study_prefix}-{started.strftime('%Y-%m-%d')}"
+    study_id = f"{study_prefix}-{started.strftime('%Y-%m-%d-%H%M%S')}" if continuous_rotation else f"{study_prefix}-{started.strftime('%Y-%m-%d')}"
     research_pass = started.toordinal() % 3
     research_pass_name = ("보수형", "균형형", "공격형")[research_pass]
     analyses: list[dict[str, Any]] = []
@@ -3632,6 +3679,8 @@ def run_multi_timeframe_study(
     universe_count = 0
     with LEARNING_LOCK:
         state = load_learning_state_unlocked()
+        previous_study = state.get(state_key) if isinstance(state.get(state_key), dict) else {}
+        universe_cursors = dict(previous_study.get("universeCursors") or {})
         state[state_key] = {
             "id": study_id,
             "studyType": study_type,
@@ -3642,6 +3691,8 @@ def run_multi_timeframe_study(
             "markets": list(markets),
             "timeframes": ["1d", "1w", "1mo"],
             "nextRun": next_run,
+            "continuousRotation": continuous_rotation,
+            "universeCursors": universe_cursors,
         }
         save_learning_state_unlocked(state)
     for market in markets:
@@ -3651,7 +3702,13 @@ def run_multi_timeframe_study(
             errors.append(f"{market} 유니버스: {str(exc)[:180]}")
             continue
         universe_count += len(universe)
-        for stock in universe:
+        selected_universe = universe
+        if continuous_rotation and universe:
+            start_index = int(universe_cursors.get(market) or 0) % len(universe)
+            batch_size = min(OFF_MARKET_STUDY_BATCH_PER_MARKET, len(universe))
+            selected_universe = [universe[(start_index + offset) % len(universe)] for offset in range(batch_size)]
+            universe_cursors[market] = (start_index + batch_size) % len(universe)
+        for stock in selected_universe:
             try:
                 daily = study_daily_candles(env, str(stock.get("symbol") or ""))
                 for timeframe in ("1d", "1w", "1mo"):
@@ -3708,6 +3765,9 @@ def run_multi_timeframe_study(
             "timeframes": ["1d", "1w", "1mo"],
             "researchPass": research_pass_name,
             "universeCount": universe_count,
+            "analyzedSymbolCount": len(symbol_studies),
+            "continuousRotation": continuous_rotation,
+            "universeCursors": universe_cursors,
             "summary": summary,
             "patternResearch": pattern_summary,
             "journal": pattern_summary.get("journal") or [],
@@ -3717,7 +3777,6 @@ def run_multi_timeframe_study(
             "errors": errors[-12:],
             "nextRun": next_run,
         }
-        state["globalScoreModel"] = model
         state[state_key] = study
         history = list(state.get(history_key) or [])
         history.append(
@@ -3738,15 +3797,16 @@ def run_multi_timeframe_study(
     return study
 
 
-def run_off_market_study(env: dict[str, str]) -> dict[str, Any]:
+def run_off_market_study(env: dict[str, str], markets: tuple[str, ...] = ("KR", "US")) -> dict[str, Any]:
     return run_multi_timeframe_study(
         env,
-        markets=("KR", "US"),
+        markets=markets,
         study_prefix="OFFLINE",
         state_key="offlineStudy",
         history_key="offlineStudyHistory",
         study_type="OFF_MARKET_RESEARCH",
-        next_run="다음 한국·미국 동시 휴장 구간의 새 거래일",
+        next_run="한국·미국 정규장 외 시간에 다음 종목 묶음 계속 순환",
+        continuous_rotation=True,
     )
 
 
@@ -3767,18 +3827,10 @@ def off_market_study_loop() -> None:
     while True:
         try:
             env = load_env()
-            active_market, _ = market_schedule(env)
-            today = now_kst().strftime("%Y-%m-%d")
-            with LEARNING_LOCK:
-                state = load_learning_state_unlocked()
-                previous = state.get("offlineStudy") or {}
-                last_run_date = str(previous.get("lastRunDate") or "")
-                aggregation_version = int(previous.get("aggregationVersion") or 0)
-            if active_market is None and (
-                last_run_date != today
-                or aggregation_version < STUDY_AGGREGATION_VERSION
-            ):
-                run_off_market_study(env)
+            sessions = active_market_sessions(env)
+            research_markets = markets_available_for_research(sessions)
+            if research_markets:
+                run_off_market_study(env, research_markets)
         except Exception as exc:
             try:
                 with LEARNING_LOCK:

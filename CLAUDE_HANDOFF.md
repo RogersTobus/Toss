@@ -73,6 +73,14 @@ Claude Code는 프론트 레이아웃을 계속 덧씌우지 말고, `index.html
 - 시장 캘린더: `/api/v1/market-calendar/KR`, `/api/v1/market-calendar/US`
 - 랭킹/종목 분석: `/api/v1/rankings`, `/api/v1/stocks`
 
+장외 연구 운영 원칙:
+
+- 한국 정규장 중에는 미국 전체 종목 연구를 계속한다.
+- 미국 정규장 중에는 한국 전체 종목 연구를 계속한다.
+- 두 정규장이 모두 닫히면 한국·미국 전체 종목을 함께 연구한다.
+- `research_universe.json`의 전체 상장 종목을 5분 주기 묶음으로 순환하며 일·주·월봉을 분석한다.
+- 연구 결과는 후보 전략 근거로만 저장하고 현재 주전 전략에 즉시 반영하지 않는다.
+
 대시보드 API:
 
 - `GET /api/dashboard`
