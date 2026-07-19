@@ -18,7 +18,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -32,6 +34,7 @@ JOURNAL_PATH = ROOT / "journal_state.json"
 LEARNING_PATH = ROOT / "learning_state.json"
 STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
 DEPLOY_STATE_PATH = ROOT / ".deploy" / "last_sync.json"
+MACRO_CONTEXT_PATH = ROOT / "macro_context.json"
 BASE_URL = "https://openapi.tossinvest.com"
 KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
@@ -96,6 +99,15 @@ RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
 RESEARCH_MIN_VALIDATION_SAMPLES = 100
 RESEARCH_ROUND_TRIP_COST = {"KR": 0.003, "US": 0.004}
 PERFORMANCE_MIN_PROMOTION_SAMPLES = 100
+MACRO_CONTEXT_POLL_SECONDS = 900
+MACRO_OFFICIAL_FEEDS = (
+    {"id": "FED", "market": "US", "name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml"},
+    {"id": "BLS", "market": "US", "name": "U.S. BLS", "url": "https://www.bls.gov/feed/bls_latest.rss"},
+    {"id": "BOK_POLICY", "market": "KR", "name": "한국은행 통화정책", "url": "https://www.bok.or.kr/portal/bbs/P0000559/news.rss?menuNo=200690"},
+    {"id": "BOK_STATS", "market": "KR", "name": "한국은행 경제통계", "url": "https://www.bok.or.kr/portal/bbs/B0000501/news.rss?menuNo=201264"},
+    {"id": "UN_NEWS", "market": "GLOBAL", "name": "UN News", "url": "https://news.un.org/feed/subscribe/en/news/all/rss.xml"},
+)
+GDELT_RISK_URL = "https://api.gdeltproject.org/api/v2/doc/doc?query=(war%20OR%20conflict%20OR%20sanctions%20OR%20tariff%20OR%20oil%20OR%20shipping)&mode=ArtList&maxrecords=25&format=json&timespan=24h"
 DEFAULT_STRATEGY_CONFIG = {
     "targetRate": PAPER_TARGET_RATE,
     "stopRate": PAPER_STOP_RATE,
@@ -192,6 +204,15 @@ DEFAULT_STRATEGIES = [
     },
 ]
 ANALYSIS_LOCK = threading.Lock()
+MACRO_CONTEXT_LOCK = threading.Lock()
+MACRO_CONTEXT: dict[str, Any] = {
+    "status": "WAITING",
+    "updatedAt": None,
+    "regimes": {"KR": "중립", "US": "중립", "GLOBAL": "중립"},
+    "items": [],
+    "errors": [],
+    "directTradingImpact": False,
+}
 ANALYSIS: dict[str, Any] = {
     "enabled": True,
     "cycle": 0,
@@ -2919,6 +2940,12 @@ def paper_trade_locked(
                 "strategyRevision": execution_policy.get("revision"),
                 "strategySavedAt": execution_policy.get("savedAt"),
                 "strategyExecution": execution_policy,
+                "macroContext": {
+                    "capturedAt": macro_context_snapshot().get("updatedAt"),
+                    "market": (macro_context_snapshot().get("regimes") or {}).get(market) or {"regime": "중립"},
+                    "global": (macro_context_snapshot().get("regimes") or {}).get("GLOBAL") or {"regime": "중립"},
+                    "directTradingImpact": False,
+                },
             }
         if execution_policy.get("hardStop"):
             buy_order["protectiveStopOrder"] = build_protective_stop_order(
@@ -4069,6 +4096,180 @@ def run_domestic_day_review(env: dict[str, str]) -> dict[str, Any]:
     )
 
 
+def fetch_public_bytes(url: str, timeout: int = 12) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/rss+xml, application/xml, application/json", "User-Agent": "OrbitResearch/1.0"},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def clean_feed_text(value: Any, limit: int = 500) -> str:
+    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def parse_feed_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return parsedate_to_datetime(raw).astimezone(KST).strftime("%Y-%m-%dT%H:%M:%S%z")
+    except (TypeError, ValueError, OverflowError):
+        return raw[:40]
+
+
+def parse_rss_items(source: dict[str, str], payload: bytes) -> list[dict[str, Any]]:
+    root = ET.fromstring(payload)
+    rows: list[dict[str, Any]] = []
+    nodes = root.findall(".//item")
+    if not nodes:
+        nodes = root.findall(".//{http://www.w3.org/2005/Atom}entry")
+    for node in nodes[:20]:
+        def value(*names: str) -> str:
+            for name in names:
+                element = node.find(name)
+                if element is not None and element.text:
+                    return element.text.strip()
+            return ""
+
+        link = value("link", "{http://www.w3.org/2005/Atom}link")
+        if not link:
+            atom_link = node.find("{http://www.w3.org/2005/Atom}link")
+            link = str(atom_link.get("href") or "") if atom_link is not None else ""
+        title = clean_feed_text(value("title", "{http://www.w3.org/2005/Atom}title"), 220)
+        if not title:
+            continue
+        rows.append({
+            "id": hashlib.sha1(f"{source['id']}:{title}:{link}".encode("utf-8")).hexdigest()[:16],
+            "source": source["name"],
+            "sourceId": source["id"],
+            "sourceTier": "OFFICIAL",
+            "market": source["market"],
+            "title": title,
+            "summary": clean_feed_text(value("description", "summary", "{http://www.w3.org/2005/Atom}summary"), 400),
+            "url": link,
+            "publishedAt": parse_feed_date(value("pubDate", "published", "updated", "{http://www.w3.org/2005/Atom}published", "{http://www.w3.org/2005/Atom}updated")),
+        })
+    return rows
+
+
+MACRO_RISK_KEYWORDS = (
+    "rate hike", "higher inflation", "inflation increased", "recession", "contraction", "unemployment increased",
+    "war", "conflict", "attack", "sanctions", "tariff", "supply disruption", "oil surge",
+    "금리 인상", "물가 상승", "경기 침체", "경제 감소", "실업 증가", "전쟁", "충돌", "공격", "제재", "관세", "공급 차질",
+)
+MACRO_SUPPORT_KEYWORDS = (
+    "rate cut", "inflation eased", "disinflation", "growth accelerated", "employment increased", "recovery",
+    "금리 인하", "물가 둔화", "성장 확대", "고용 증가", "경기 개선", "회복",
+)
+
+
+def classify_macro_item(item: dict[str, Any]) -> dict[str, Any]:
+    text = f"{item.get('title') or ''} {item.get('summary') or ''}".lower()
+    risk_hits = [word for word in MACRO_RISK_KEYWORDS if word.lower() in text]
+    support_hits = [word for word in MACRO_SUPPORT_KEYWORDS if word.lower() in text]
+    score = max(-2, min(2, len(support_hits) - len(risk_hits)))
+    item = dict(item)
+    item.update({
+        "signal": "우호" if score > 0 else ("경계" if score < 0 else "중립"),
+        "signalScore": score,
+        "matchedFactors": (support_hits + risk_hits)[:6],
+        "directTradingImpact": False,
+    })
+    return item
+
+
+def fetch_gdelt_risk_items() -> list[dict[str, Any]]:
+    raw = json.loads(fetch_public_bytes(GDELT_RISK_URL, 15).decode("utf-8"))
+    rows = []
+    for article in (raw.get("articles") or [])[:25]:
+        title = clean_feed_text(article.get("title"), 220)
+        if not title:
+            continue
+        rows.append({
+            "id": hashlib.sha1(f"GDELT:{title}:{article.get('url') or ''}".encode("utf-8")).hexdigest()[:16],
+            "source": clean_feed_text(article.get("domain") or "GDELT global news", 80),
+            "sourceId": "GDELT",
+            "sourceTier": "AGGREGATED",
+            "market": "GLOBAL",
+            "title": title,
+            "summary": "",
+            "url": str(article.get("url") or "")[:500],
+            "publishedAt": str(article.get("seendate") or "")[:40],
+        })
+    return rows
+
+
+def macro_regime(items: list[dict[str, Any]], market: str) -> dict[str, Any]:
+    relevant = [item for item in items if item.get("market") == market]
+    official = [item for item in relevant if item.get("sourceTier") == "OFFICIAL"]
+    scored = official if market in ("KR", "US") else relevant
+    score = sum(int(item.get("signalScore") or 0) for item in scored[:20])
+    regime = "우호" if score >= 2 else ("경계" if score <= -2 else "중립")
+    return {"regime": regime, "score": score, "itemCount": len(relevant), "officialCount": len(official)}
+
+
+def refresh_macro_context() -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    optional_errors: list[dict[str, str]] = []
+    for source in MACRO_OFFICIAL_FEEDS:
+        try:
+            items.extend(parse_rss_items(source, fetch_public_bytes(source["url"])))
+        except Exception as exc:
+            errors.append({"source": source["name"], "error": clean_text(exc, "수집 실패", 160)})
+    try:
+        items.extend(fetch_gdelt_risk_items())
+    except Exception as exc:
+        optional_errors.append({"source": "GDELT", "error": clean_text(exc, "보조 수집 제한", 160)})
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in items:
+        classified = classify_macro_item(item)
+        deduped[classified["id"]] = classified
+    classified_items = list(deduped.values())
+    classified_items.sort(key=lambda item: str(item.get("publishedAt") or ""), reverse=True)
+    regimes = {market: macro_regime(classified_items, market) for market in ("KR", "US", "GLOBAL")}
+    payload = {
+        "status": "READY" if classified_items else "ERROR",
+        "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "nextRefreshSeconds": MACRO_CONTEXT_POLL_SECONDS,
+        "regimes": regimes,
+        "items": classified_items[:60],
+        "errors": errors,
+        "optionalErrors": optional_errors,
+        "officialSourceCount": len(MACRO_OFFICIAL_FEEDS),
+        "directTradingImpact": False,
+        "policy": "시장 환경별 PAPER 성과만 비교하며 매수 점수에는 직접 반영하지 않음",
+    }
+    temporary = MACRO_CONTEXT_PATH.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(MACRO_CONTEXT_PATH)
+    with MACRO_CONTEXT_LOCK:
+        MACRO_CONTEXT.clear()
+        MACRO_CONTEXT.update(payload)
+    return payload
+
+
+def macro_context_snapshot() -> dict[str, Any]:
+    with MACRO_CONTEXT_LOCK:
+        return json.loads(json.dumps(MACRO_CONTEXT, ensure_ascii=False))
+
+
+def macro_context_loop() -> None:
+    while True:
+        try:
+            refresh_macro_context()
+        except Exception as exc:
+            with MACRO_CONTEXT_LOCK:
+                MACRO_CONTEXT["status"] = "ERROR"
+                MACRO_CONTEXT["errors"] = [{"source": "macro-loop", "error": clean_text(exc, "수집 실패", 160)}]
+        time.sleep(MACRO_CONTEXT_POLL_SECONDS)
+
+
 def off_market_study_loop() -> None:
     time.sleep(15)
     while True:
@@ -4339,6 +4540,7 @@ def health_status() -> dict[str, Any]:
     uptime = max(0, int(time.time() - STARTED_AT))
     release = app_release()
     readiness = operational_readiness(analysis)
+    macro = macro_context_snapshot()
     return {
         "ok": True,
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -4367,6 +4569,10 @@ def health_status() -> dict[str, Any]:
         },
         "riskMonitor": dict(analysis.get("riskMonitor") or {}),
         "operationalReadiness": readiness,
+        "macroContext": {
+            **{key: value for key, value in macro.items() if key != "items"},
+            "items": (macro.get("items") or [])[:8],
+        },
     }
 
 
@@ -5678,6 +5884,9 @@ def trade_performance_analytics_from_orders(orders: list[dict[str, Any]]) -> dic
         item["entryScore"] = decimal(entry.get("entryScore"))
         item["strategyIds"] = list(entry.get("strategyIds") or [])
         item["timeBucket"] = market_time_bucket(str(item.get("market") or ""), item.get("openedAt"))
+        macro = entry.get("macroContext") if isinstance(entry.get("macroContext"), dict) else {}
+        market_macro = macro.get("market") if isinstance(macro.get("market"), dict) else {}
+        item["macroRegime"] = str(market_macro.get("regime") or "기록 없음")
         enriched.append(item)
 
     def grouped(key_fn: Any) -> list[dict[str, Any]]:
@@ -5691,6 +5900,7 @@ def trade_performance_analytics_from_orders(orders: list[dict[str, Any]]) -> dic
     strategy_rows = grouped(lambda item: item.get("strategyIds") or ["전략 정보 없음"])
     score_rows = grouped(lambda item: [score_bucket(item.get("entryScore"))])
     time_rows = grouped(lambda item: [f"{item.get('market') or '-'} · {item.get('timeBucket')}"])
+    macro_rows = grouped(lambda item: [f"{item.get('market') or '-'} · {item.get('macroRegime')}"])
     return {
         "minimumSamples": PERFORMANCE_MIN_PROMOTION_SAMPLES,
         "overall": performance_metrics(enriched),
@@ -5698,6 +5908,7 @@ def trade_performance_analytics_from_orders(orders: list[dict[str, Any]]) -> dic
         "byStrategy": strategy_rows,
         "byScoreBucket": score_rows,
         "byTimeBucket": time_rows,
+        "byMacroRegime": macro_rows,
         "championByMarket": {item["key"]: item for item in market_rows},
         "costModel": {
             "KR": RESEARCH_ROUND_TRIP_COST["KR"],
@@ -6006,6 +6217,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/health":
             self.send_json(health_status())
             return
+        if path == "/api/macro-context":
+            self.send_json(macro_context_snapshot())
+            return
         if path == "/api/strategy/config":
             self.send_json(strategy_payload())
             return
@@ -6110,5 +6324,6 @@ if __name__ == "__main__":
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
     threading.Thread(target=domestic_day_review_loop, daemon=True, name="domestic-day-review-loop").start()
     threading.Thread(target=off_market_study_loop, daemon=True, name="off-market-study-loop").start()
+    threading.Thread(target=macro_context_loop, daemon=True, name="macro-context-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()

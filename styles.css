@@ -1882,7 +1882,7 @@ body[data-page="journal"] .journal-page {
 }
 
 /* ---------- 20. Focus mode: preserve every engine, reduce the dashboard ---------- */
-.content { grid-template-rows: auto auto auto minmax(0, 1fr); }
+.content { grid-template-rows: auto auto auto auto minmax(0, 1fr); }
 .sidebar { justify-content: flex-start; }
 .primary-nav { margin-top: 24px; }
 .topbar { justify-content: flex-start; }
@@ -1903,7 +1903,9 @@ body[data-page="journal"] .journal-page {
 body[data-page="quant"] .overview-research-card,
 body[data-page="journal"] .overview-research-card,
 body[data-page="quant"] .system-alert-bar,
-body[data-page="journal"] .system-alert-bar { display: none; }
+body[data-page="journal"] .system-alert-bar,
+body[data-page="quant"] .macro-context-bar,
+body[data-page="journal"] .macro-context-bar { display: none; }
 
 .system-alert-bar {
   display: flex; align-items: center; gap: 12px; padding: 10px 14px;
@@ -1914,6 +1916,17 @@ body[data-page="journal"] .system-alert-bar { display: none; }
 .system-alert-bar span { color: var(--ink-soft); }
 .system-alert-bar.caution { border-color: var(--gold-soft); background: var(--gold-tint); color: var(--gold-deep); }
 .system-alert-bar.blocked { border-color: #e8c6bb; background: var(--red-tint); color: var(--red); }
+.macro-context-bar {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+  color: var(--ink); font-size: 12px;
+}
+.macro-context-bar > b { white-space: nowrap; }
+.macro-context-bar > span { color: var(--muted); }
+.macro-context-pills { display: flex; gap: 6px; margin-left: auto; }
+.macro-context-pills em { padding: 5px 8px; border-radius: 99px; background: var(--panel-2); color: var(--ink-soft); font-style: normal; font-size: 10px; font-weight: 700; }
+.macro-context-pills em.favorable { background: var(--green-tint); color: var(--green); }
+.macro-context-pills em.caution { background: var(--red-tint); color: var(--red); }
 
 .overview-research-card { padding: 16px; }
 .overview-research-card .learning-brain-summary { display: none; }
@@ -1993,7 +2006,7 @@ body[data-page="journal"] .system-alert-bar { display: none; }
 .score-bucket-strip b { font-size: 11px; }
 .performance-detail-drawer { border-top: 1px solid var(--line); padding-top: 10px; }
 .performance-detail-drawer summary { cursor: pointer; color: var(--ink-soft); font-size: 11px; font-weight: 700; }
-.performance-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.performance-detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .performance-detail-grid h3 { margin-bottom: 6px; font-size: 12px; }
 .performance-mini-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line-soft); font-size: 10px; }
 .promotion-candidate-list { display: grid; gap: 7px; margin-top: 12px; }

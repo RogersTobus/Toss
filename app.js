@@ -1349,6 +1349,7 @@ function renderPerformanceValidation(performance = {}, candidateStrategies = {})
   };
   renderRows("#strategyPerformanceList", performance.byStrategy, (item) => titleById.get(item.key) || item.key);
   renderRows("#timePerformanceList", performance.byTimeBucket, (item) => item.key);
+  renderRows("#macroPerformanceList", performance.byMacroRegime, (item) => item.key);
 
   const candidatesTarget = document.querySelector("#promotionCandidateList");
   if (candidatesTarget) {
@@ -1814,6 +1815,24 @@ function renderOperationalReadiness(readiness = {}) {
   bar.innerHTML = `<b>${title}</b><span>${detail}</span>`;
 }
 
+function renderMacroContext(context = {}) {
+  const bar = document.querySelector("#macroContextBar");
+  if (!bar) return;
+  const regimes = context.regimes || {};
+  const regimeValue = (key) => regimes[key]?.regime || "중립";
+  const tone = (value) => value === "우호" ? "favorable" : (value === "경계" ? "caution" : "neutral");
+  const errors = Number((context.errors || []).length);
+  const latest = (context.items || [])[0];
+  bar.innerHTML = `<b>시장 환경 ${context.status === "READY" ? "정상" : "확인 중"}</b>
+    <span>${latest?.title || context.policy || "공식 경제자료와 국제 뉴스 흐름을 수집합니다."}${errors ? ` · 수집 오류 ${errors}건` : ""}</span>
+    <div class="macro-context-pills">
+      <em class="${tone(regimeValue("KR"))}">한국 ${regimeValue("KR")}</em>
+      <em class="${tone(regimeValue("US"))}">미국 ${regimeValue("US")}</em>
+      <em class="${tone(regimeValue("GLOBAL"))}">국제 ${regimeValue("GLOBAL")}</em>
+    </div>`;
+  bar.title = "뉴스는 시장 환경별 PAPER 성과 비교에만 사용하며 매수 점수에는 직접 반영하지 않습니다.";
+}
+
 async function loadHealthStatus() {
   try {
     const response = await fetch("/api/health", { cache: "no-store" });
@@ -1838,6 +1857,7 @@ async function loadHealthStatus() {
     renderSlackConnection(health.slack || {});
     renderDeployConnection(health.deploy || {});
     renderOperationalReadiness(health.operationalReadiness || {});
+    renderMacroContext(health.macroContext || {});
 
     const toss = document.querySelector("#healthToss");
     const kakao = document.querySelector("#healthKakao");

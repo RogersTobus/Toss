@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=orbit-validation1" />
+  <link rel="stylesheet" href="styles.css?v=orbit-macro1" />
 </head>
 <body data-page="overview">
   <div class="app-shell">
@@ -90,6 +90,9 @@
 
         <div class="system-alert-bar ready" id="systemAlertBar" role="status">
           <b>운영 상태 확인 중</b><span>분석·보호주문·데이터 갱신 상태를 확인합니다.</span>
+        </div>
+        <div class="macro-context-bar" id="macroContextBar" role="status">
+          <b>시장 환경 확인 중</b><span>한국은행·연준·고용지표·국제 뉴스 흐름을 불러옵니다.</span>
         </div>
 
         <details class="learning-brain-card overview-research-card" open aria-label="Orbit 전체 투자 공용 학습 뇌">
@@ -318,6 +321,7 @@
               <div class="performance-detail-grid">
                 <div><h3>전략별</h3><div id="strategyPerformanceList"></div></div>
                 <div><h3>시간대별</h3><div id="timePerformanceList"></div></div>
+                <div><h3>시장 환경별</h3><div id="macroPerformanceList"></div></div>
               </div>
               <div class="promotion-candidate-list" id="promotionCandidateList"></div>
             </details>
@@ -450,6 +454,6 @@
   </div>
 
   <div class="toast" role="status">메뉴 준비 중입니다.</div>
-  <script src="app.js?v=orbit-validation1"></script>
+  <script src="app.js?v=orbit-macro1"></script>
 </body>
 </html>
