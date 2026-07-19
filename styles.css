@@ -312,6 +312,19 @@ main {
 .risk-track i.danger { background: linear-gradient(90deg, #c25948, #dd8a6f); }
 /* cycle copy hidden to give the position list more room; bar + label convey status */
 .risk-row p { display: none; }
+.billion-goal-card { display: grid; gap: 7px; padding: 11px 12px; border: 1px solid #ddcfad; border-radius: 11px; background: linear-gradient(135deg, #fffdf7, #fbf2dc); }
+.billion-goal-head, .billion-goal-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; }
+.billion-goal-head span small, .billion-goal-head span strong { display: block; }
+.billion-goal-head span small { color: var(--muted); font-size: 9px; font-weight: 800; }
+.billion-goal-head span strong { margin-top: 1px; color: var(--gold-deep); font-size: 20px; line-height: 1; }
+.billion-goal-head > b { padding: 4px 7px; border-radius: 999px; background: rgba(255,255,255,.72); color: var(--muted); font-size: 8px; white-space: nowrap; }
+.billion-goal-track { height: 5px; overflow: hidden; border-radius: 99px; background: #eadfca; }
+.billion-goal-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--gold), var(--green)); transition: width .45s ease; }
+.billion-goal-meta span { min-width: 0; color: var(--muted); font-size: 8px; }
+.billion-goal-meta b { color: var(--ink); font-size: 9px; white-space: nowrap; }
+.billion-goal-trend { width: 100%; height: 34px; overflow: visible; }
+.billion-goal-trend polyline { fill: none; stroke: var(--gold-deep); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.billion-goal-card > p { color: var(--faint); font-size: 7.5px; line-height: 1.4; }
 
 .decision-card {
   display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px;

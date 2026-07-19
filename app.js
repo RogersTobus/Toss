@@ -1584,6 +1584,7 @@ function renderPaperSummary(state) {
   const capital = summary.capital || {};
   const averageReturn = Number(summary.averageReturn || 0);
   const dailyAccountRisk = summary.dailyAccountRisk || {};
+  const billionGoal = summary.billionGoal || {};
   const accountReturn = Number(dailyAccountRisk.returnRate ?? averageReturn);
   const targetRate = Number(summary.targetRate || 0.01);
   const stopRate = Number(summary.stopRate || -0.0045);
@@ -1596,6 +1597,38 @@ function renderPaperSummary(state) {
   const monitoredMarkets = Array.isArray(state.riskMonitor?.activeMarkets)
     ? state.riskMonitor.activeMarkets.map((item) => item?.market).filter(Boolean)
     : [];
+
+  const goalProbabilityRate = Number(billionGoal.probabilityRate ?? 0.0005);
+  const goalProbabilityPercent = Math.max(0, goalProbabilityRate * 100);
+  const goalSampleCount = Number(billionGoal.sampleCount || 0);
+  const billionProbability = document.querySelector("#billionGoalProbability");
+  const billionStatus = document.querySelector("#billionGoalStatus");
+  const billionProgress = document.querySelector("#billionGoalProgress");
+  const billionBalance = document.querySelector("#billionGoalBalance");
+  const billionDays = document.querySelector("#billionGoalDays");
+  const billionDisclaimer = document.querySelector("#billionGoalDisclaimer");
+  const billionTrend = document.querySelector("#billionGoalTrend");
+  if (billionProbability) billionProbability.textContent = `${goalProbabilityPercent < 0.1 ? goalProbabilityPercent.toFixed(2) : goalProbabilityPercent.toFixed(1)}%`;
+  if (billionStatus) billionStatus.textContent = `${billionGoal.status || "검증 전"} · ${goalSampleCount.toLocaleString("ko-KR")}/${Number(billionGoal.minimumValidationSamples || 100).toLocaleString("ko-KR")}건`;
+  if (billionProgress) billionProgress.style.width = `${Math.max(0.5, Math.min(100, goalProbabilityPercent))}%`;
+  if (billionBalance) billionBalance.textContent = plainWon(Number(billionGoal.balanceKrw || 1_000_000));
+  if (billionDays) billionDays.textContent = `${Number(billionGoal.idealTradingDaysRemaining ?? 695).toLocaleString("ko-KR")}거래일`;
+  if (billionDisclaimer) billionDisclaimer.textContent = billionGoal.disclaimer || "비용 후 새 전략 실적을 반영한 보수적 추정치이며 수익을 보장하지 않습니다.";
+  if (billionTrend) {
+    const points = Array.isArray(billionGoal.trend) ? billionGoal.trend : [];
+    if (points.length < 2) {
+      billionTrend.setAttribute("points", "0,32 240,32");
+    } else {
+      const rates = points.map((point) => Math.max(0, Number(point.probabilityRate || 0) * 100));
+      const ceiling = Math.max(0.1, ...rates);
+      const coordinates = rates.map((rate, index) => {
+        const x = (index / (rates.length - 1)) * 240;
+        const y = 32 - (rate / ceiling) * 29;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      billionTrend.setAttribute("points", coordinates.join(" "));
+    }
+  }
 
   const decision = summary.decision || {};
   const decisionCard = document.querySelector("#decisionCard");

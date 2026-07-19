@@ -2257,6 +2257,9 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
     account_risk = daily_account_risk(
         trade_ledger, today, paper_state.get("boundedRiskStartedAt")
     )
+    billion_goal = billion_goal_projection(
+        trade_ledger, paper_state.get("boundedRiskStartedAt")
+    )
     capital = paper_capital_summary(trade_ledger, execution_policy)
     position_returns = []
     for symbol, order in positions.items():
@@ -2311,6 +2314,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "averageReturn": average_return,
         "periodReturns": period_profit_summary(trade_ledger),
         "dailyAccountRisk": account_risk,
+        "billionGoal": billion_goal,
         "todayTradeStats": today_trade_stats,
         "technicalReview": tech_review,
         "timeExitFollowUp": post_exit_study_summary(orders),
@@ -6187,6 +6191,103 @@ def performance_metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "netReturnOnCapital": net_profit / invested if invested else 0.0,
         "validationProgress": min(1.0, len(ordered) / PERFORMANCE_MIN_PROMOTION_SAMPLES),
         "status": "검증 완료" if len(ordered) >= PERFORMANCE_MIN_PROMOTION_SAMPLES else "표본 수집",
+    }
+
+
+def billion_goal_projection(
+    trades: list[dict[str, Any]], risk_started_at: Any = None
+) -> dict[str, Any]:
+    """Conservative evidence score, not a statistical promise of reaching ₩1B."""
+    target = 1_000_000_000.0
+    start = float(PAPER_STARTING_CAPITAL_KRW)
+    risk_started = parse_order_time(risk_started_at)
+    eligible = sorted(
+        [
+            trade for trade in trades
+            if trade.get("status") == "CLOSED"
+            and (
+                not risk_started
+                or (
+                    parse_order_time(trade.get("openedAt")) is not None
+                    and parse_order_time(trade.get("openedAt")) >= risk_started
+                )
+            )
+        ],
+        key=lambda item: str(item.get("closedAt") or ""),
+    )
+
+    def estimate(sample: list[dict[str, Any]]) -> dict[str, Any]:
+        metrics = performance_metrics(sample)
+        count = int(metrics.get("sampleCount") or 0)
+        balance = max(1.0, start + decimal(metrics.get("totalNetProfit")))
+        sample_confidence = min(1.0, count / 500)
+        expectancy = decimal(metrics.get("averageNetReturn"))
+        profit_factor = decimal(metrics.get("profitFactor"))
+        drawdown = decimal(metrics.get("maxDrawdown"))
+        expectancy_score = clamp((expectancy + 0.001) / 0.004, 0, 1, 0)
+        profit_factor_score = clamp((profit_factor - 0.8) / 0.7, 0, 1, 0)
+        drawdown_score = clamp((drawdown + 0.15) / 0.15, 0, 1, 0)
+        quality = (
+            expectancy_score * 0.45
+            + profit_factor_score * 0.35
+            + drawdown_score * 0.20
+        )
+        capital_progress = clamp(
+            math.log(balance / start) / math.log(target / start) if balance > start else 0,
+            0,
+            1,
+            0,
+        )
+        probability_percent = 0.05 + 19.95 * (
+            0.8 * sample_confidence * (quality ** 2) + 0.2 * capital_progress
+        )
+        if expectancy <= 0 or profit_factor < 1:
+            probability_percent = min(probability_percent, 0.05 + sample_confidence * 0.15)
+        if count < 100:
+            probability_percent = min(probability_percent, 1.0)
+        if balance >= target:
+            probability_percent = 100.0
+        return {
+            "sampleCount": count,
+            "balanceKrw": balance,
+            "probabilityRate": probability_percent / 100,
+            "capitalProgressRate": capital_progress,
+            "sampleConfidenceRate": sample_confidence,
+            "qualityScore": quality,
+            "averageNetReturn": expectancy,
+            "profitFactor": profit_factor,
+            "maxDrawdown": drawdown,
+        }
+
+    current = estimate(eligible)
+    trend = []
+    for index in range(1, len(eligible) + 1):
+        if index != len(eligible) and index % 10:
+            continue
+        point = estimate(eligible[:index])
+        trend.append(
+            {
+                "sampleCount": index,
+                "probabilityRate": point["probabilityRate"],
+                "balanceKrw": point["balanceKrw"],
+                "closedAt": eligible[index - 1].get("closedAt"),
+            }
+        )
+    remaining_ratio = target / max(1.0, current["balanceKrw"])
+    ideal_days_remaining = (
+        max(0, math.ceil(math.log(remaining_ratio) / math.log(1.01)))
+        if remaining_ratio > 1 else 0
+    )
+    return {
+        **current,
+        "targetKrw": target,
+        "remainingKrw": max(0.0, target - current["balanceKrw"]),
+        "idealTradingDaysRemaining": ideal_days_remaining,
+        "minimumValidationSamples": 100,
+        "trend": trend[-30:],
+        "model": "EVIDENCE_HEURISTIC_V1",
+        "status": "검증 전" if current["sampleCount"] < 100 else "검증 중",
+        "disclaimer": "비용 후 실적 기반 보수적 추정치이며 실제 달성 확률이나 수익을 보장하지 않습니다.",
     }
 
 

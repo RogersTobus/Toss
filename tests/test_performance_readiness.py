@@ -134,6 +134,33 @@ class PerformanceAnalyticsTests(unittest.TestCase):
         self.assertEqual(risk["netProfitKrw"], 0)
         self.assertEqual(risk["openRiskKrw"], 0)
 
+    def test_billion_goal_probability_requires_new_cost_adjusted_evidence(self):
+        legacy = {
+            "status": "CLOSED", "openedAt": "2026-07-18T09:00:00+0900",
+            "closedAt": "2026-07-18T09:03:00+0900", "netProfit": 999999,
+            "netReturnRate": 0.5, "invested": 100,
+        }
+        goal = server.billion_goal_projection(
+            [legacy], "2026-07-19T19:00:00+0900"
+        )
+        self.assertEqual(goal["sampleCount"], 0)
+        self.assertAlmostEqual(goal["probabilityRate"], 0.0005)
+        self.assertEqual(goal["idealTradingDaysRemaining"], 695)
+
+        winners = [
+            {
+                "status": "CLOSED", "openedAt": f"2026-07-20T09:{index:02d}:00+0900",
+                "closedAt": f"2026-07-20T09:{index:02d}:30+0900", "netProfit": 1000,
+                "netReturnRate": 0.003, "invested": 300000,
+            }
+            for index in range(20)
+        ]
+        improved = server.billion_goal_projection(
+            winners, "2026-07-19T19:00:00+0900"
+        )
+        self.assertGreater(improved["probabilityRate"], goal["probabilityRate"])
+        self.assertEqual(len(improved["trend"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
