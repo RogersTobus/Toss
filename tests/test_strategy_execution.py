@@ -151,8 +151,17 @@ class StrategyExecutionTests(unittest.TestCase):
             {**server.DEFAULT_STRATEGY_CONFIG, "strategies": strategies}
         )
         self.assertFalse(policy["learningSprint"])
+        self.assertTrue(policy["unlimitedDailyEntries"])
         self.assertFalse(policy["unlimitedFunding"])
         self.assertFalse(policy["unlimitedPositions"])
+
+        rules = server.safety_rules(0.0, 0, 99, [], False, None, {
+            **server.DEFAULT_STRATEGY_CONFIG,
+            "strategies": strategies,
+        })
+        daily_entry_rule = next(rule for rule in rules if rule["key"] == "dailyOrders")
+        self.assertEqual(daily_entry_rule["status"], "무제한")
+        self.assertEqual(daily_entry_rule["tone"], "safe")
 
     def test_two_consecutive_market_losses_start_ten_minute_cooldown(self):
         now = datetime(2026, 7, 17, 1, 0, tzinfo=timezone.utc)

@@ -66,6 +66,7 @@ POST_EXIT_OBSERVATION_TOLERANCE_SECONDS = 120
 POST_EXIT_OBSERVATION_RETRY_SECONDS = 10
 POST_EXIT_MEANINGFUL_MOVE_RATE = 0.001
 PAPER_MAX_DAILY_ORDERS = 3
+PAPER_UNLIMITED_DAILY_ENTRIES = True
 PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
 PAPER_DAILY_ENTRY_LOCK_RATE = -0.008
@@ -427,6 +428,7 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
         "scoreFilter": "score-entry-80" in enabled,
         "adaptiveAllocation": "adaptive-capital-utilization" in enabled,
         "learningSprint": sprint,
+        "unlimitedDailyEntries": PAPER_UNLIMITED_DAILY_ENTRIES,
         "unlimitedFunding": sprint and unlimited,
         "unlimitedPositions": sprint and unlimited,
         "hardStop": "hard-stop-loss" in enabled,
@@ -481,6 +483,7 @@ def strategy_config() -> dict[str, Any]:
                 )
                 strategy.update({key: replacement[key] for key in ("title", "description", "judge")})
         normalized["paperLearningSprint"] = strategy_execution_policy(normalized)["learningSprint"]
+        normalized["unlimitedDailyEntries"] = PAPER_UNLIMITED_DAILY_ENTRIES
         return normalized
 
 
@@ -2243,6 +2246,7 @@ def safety_rules(
         else:
             break
     learning_sprint = bool(policy.get("learningSprint"))
+    unlimited_daily_entries = bool(policy.get("unlimitedDailyEntries"))
     unlimited_positions = bool(policy.get("unlimitedPositions"))
     rules = [
         {
@@ -2259,11 +2263,11 @@ def safety_rules(
         {
             "key": "dailyOrders",
             "label": "일 진입 횟수",
-            "status": "무제한" if learning_sprint else ("상한" if today_order_count >= max_daily_orders else "여유"),
-            "tone": "safe" if learning_sprint else ("danger" if today_order_count >= max_daily_orders else "safe"),
+            "status": "무제한" if unlimited_daily_entries else ("상한" if today_order_count >= max_daily_orders else "여유"),
+            "tone": "safe" if unlimited_daily_entries else ("danger" if today_order_count >= max_daily_orders else "safe"),
             "detail": (
-                f"오늘 {today_order_count}건 · PAPER 오답 표본 축적"
-                if learning_sprint
+                f"오늘 {today_order_count}건 · 조건 충족 시 재진입"
+                if unlimited_daily_entries
                 else f"{today_order_count}/{max_daily_orders}건 사용"
             ),
         },
@@ -2480,7 +2484,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         },
         "paperLearningSprint": {
             "enabled": bool(execution_policy.get("learningSprint")),
-            "entryLimit": "UNLIMITED" if execution_policy.get("learningSprint") else int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS),
+            "entryLimit": "UNLIMITED" if execution_policy.get("unlimitedDailyEntries") else int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS),
             "dailyProfitLock": not execution_policy.get("learningSprint"),
             "lossStreakLock": not execution_policy.get("learningSprint"),
             "scoreFilter": bool(execution_policy.get("scoreFilter")),
@@ -3336,7 +3340,7 @@ def paper_trade_locked(
         and paper_trading_day(item.get("createdAt")) == today
     ]
     if (
-        not execution_policy.get("learningSprint")
+        not execution_policy.get("unlimitedDailyEntries")
         and len(todays_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
     ):
         return orders[-50:], summary
