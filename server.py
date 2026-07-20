@@ -37,6 +37,7 @@ LEARNING_PATH = ROOT / "learning_state.json"
 STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
 DEPLOY_STATE_PATH = ROOT / ".deploy" / "last_sync.json"
 MACRO_CONTEXT_PATH = ROOT / "macro_context.json"
+PAPER_RESET_ARCHIVE_DIR = ROOT / "paper_reset_archives"
 BASE_URL = "https://openapi.tossinvest.com"
 KAKAO_TOKEN_URL = "https://kauth.kakao.com/oauth/token"
 KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
@@ -51,6 +52,7 @@ TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
 PAPER_SCHEMA_VERSION = 2
+OPEN_POSITION_RESET_GENERATION = "2026-07-20-clear-legacy-open-positions"
 PAPER_STARTING_CAPITAL_KRW = 1_000_000
 PAPER_TARGET_RATE = 0.01
 PAPER_STOP_RATE = -0.005
@@ -1599,6 +1601,94 @@ def save_paper_state(state: dict[str, Any]) -> None:
     temporary = PAPER_PATH.with_suffix(".tmp")
     temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(PAPER_PATH)
+
+
+def retire_open_paper_positions_once() -> dict[str, Any]:
+    """Archive and remove legacy open PAPER positions exactly once.
+
+    Closed trades and the global learning brain are intentionally preserved.  The
+    reset starts a fresh bounded-capital period without throwing away the evidence
+    collected by completed trades.
+    """
+    with PAPER_LOCK:
+        state = load_paper_state()
+        if state.get("openPositionResetGeneration") == OPEN_POSITION_RESET_GENERATION:
+            return {
+                "applied": False,
+                "generation": OPEN_POSITION_RESET_GENERATION,
+                "retiredPositionCount": int(state.get("retiredPositionCount") or 0),
+                "resetAt": state.get("openPositionResetAt"),
+            }
+
+        orders = [item for item in state.get("orders") or [] if isinstance(item, dict)]
+        positions = list(open_paper_positions(orders).values())
+        entry_ids = {str(item.get("id") or "") for item in positions if item.get("id")}
+        entry_keys = {
+            (
+                str(item.get("market") or ""),
+                str(item.get("symbol") or ""),
+                str(item.get("createdAt") or ""),
+            )
+            for item in positions
+        }
+
+        def belongs_to_retired_position(order: dict[str, Any]) -> bool:
+            order_id = str(order.get("id") or "")
+            entry_id = str(order.get("entryOrderId") or "")
+            order_key = (
+                str(order.get("market") or ""),
+                str(order.get("symbol") or ""),
+                str(order.get("createdAt") or ""),
+            )
+            return bool(
+                (order_id and order_id in entry_ids)
+                or (entry_id and entry_id in entry_ids)
+                or (str(order.get("side") or "").upper() == "BUY" and order_key in entry_keys)
+            )
+
+        retired_orders = [item for item in orders if belongs_to_retired_position(item)]
+        retained_orders = [item for item in orders if not belongs_to_retired_position(item)]
+        reset_at = now_kst().strftime("%Y-%m-%dT%H:%M:%S%z")
+
+        if retired_orders:
+            PAPER_RESET_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            archive_name = f"open-positions-{now_kst().strftime('%Y%m%d-%H%M%S')}.json"
+            archive_path = PAPER_RESET_ARCHIVE_DIR / archive_name
+            archive_payload = {
+                "generation": OPEN_POSITION_RESET_GENERATION,
+                "archivedAt": reset_at,
+                "reason": "기존 보유 포지션 한도 초과 해소 및 신규 모의매매 재개",
+                "positionCount": len(positions),
+                "orders": retired_orders,
+            }
+            temporary = archive_path.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(archive_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary.replace(archive_path)
+
+        state["orders"] = retained_orders
+        state["resetAt"] = reset_at
+        state["boundedRiskStartedAt"] = reset_at
+        state["openPositionResetAt"] = reset_at
+        state["openPositionResetGeneration"] = OPEN_POSITION_RESET_GENERATION
+        state["retiredPositionCount"] = len(positions)
+        save_paper_state(state)
+
+        journal_state = load_journal_state()
+        notes = dict(journal_state.get("notes") or {})
+        for entry_id in entry_ids:
+            notes.pop(entry_id, None)
+        journal_state["notes"] = notes
+        save_journal_state(journal_state)
+
+        return {
+            "applied": True,
+            "generation": OPEN_POSITION_RESET_GENERATION,
+            "retiredPositionCount": len(positions),
+            "resetAt": reset_at,
+        }
 
 
 def load_paper_state() -> dict[str, Any]:
@@ -5072,6 +5162,7 @@ def health_status() -> dict[str, Any]:
     release = app_release()
     readiness = operational_readiness(analysis)
     macro = macro_context_snapshot()
+    paper_state = load_paper_state()
     return {
         "ok": True,
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -5100,6 +5191,12 @@ def health_status() -> dict[str, Any]:
         },
         "riskMonitor": dict(analysis.get("riskMonitor") or {}),
         "operationalReadiness": readiness,
+        "paperExperiment": {
+            "resetAt": paper_state.get("openPositionResetAt"),
+            "resetGeneration": paper_state.get("openPositionResetGeneration"),
+            "retiredPositionCount": int(paper_state.get("retiredPositionCount") or 0),
+            "historyPreserved": True,
+        },
         "macroContext": {
             **{key: value for key, value in macro.items() if key != "items"},
             "items": (macro.get("items") or [])[:8],
@@ -7003,6 +7100,13 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", "4173"))
     host = os.environ.get("HOST", "0.0.0.0")
     display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    reset_result = retire_open_paper_positions_once()
+    if reset_result.get("applied"):
+        print(
+            "PAPER position reset: "
+            f"{reset_result.get('retiredPositionCount', 0)} archived · "
+            f"{reset_result.get('generation')}"
+        )
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
     threading.Thread(target=domestic_day_review_loop, daemon=True, name="domestic-day-review-loop").start()

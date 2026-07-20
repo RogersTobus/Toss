@@ -4,6 +4,8 @@
 # Protect the accidentally-created non-dot env file as well.
 env
 paper_state.json
+shadow_paper_state.json
+paper_reset_archives/
 __pycache__/
 *.py[cod]
 .venv/
