@@ -71,6 +71,8 @@ PAPER_MAX_OPEN_POSITIONS = 3
 PAPER_MAX_CONSECUTIVE_LOSSES = 2
 PAPER_DAILY_ENTRY_LOCK_RATE = -0.008
 PAPER_DAILY_LIQUIDATION_RATE = -0.01
+PAPER_DAILY_LOSS_LOCK_ENABLED = False
+PAPER_DAILY_LIQUIDATION_ENABLED = False
 PAPER_TOTAL_OPEN_RISK_RATE = 0.01
 PAPER_LOSS_STREAK_COOLDOWN_SECONDS = 600
 PAPER_CAPITAL_TARGET_RATE = 0.90
@@ -196,10 +198,10 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "daily-risk-kill-switch",
-        "title": "일일 통합 리스크 차단",
-        "description": "통합계좌 손실 −0.8%에서 신규 진입을 멈추고, −1.0% 도달 시 미체결 취소 및 포지션 정리를 우선합니다.",
-        "judge": "한국·미국 손실 예산 통합",
-        "enabled": True,
+        "title": "일일 손익 관찰 · 거래잠금 없음",
+        "description": "통합계좌 일 손익은 계속 기록하지만 누적손실만으로 PAPER 신규 진입을 멈추지 않습니다. 개별 −0.5% 보호매도와 동시 포지션 위험은 유지합니다.",
+        "judge": "손익 기록만 · 신규 진입 차단 없음",
+        "enabled": False,
     },
     {
         "id": "reentry-cooldown",
@@ -434,7 +436,9 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
         "hardStop": "hard-stop-loss" in enabled,
         "profitTarget": "profit-trailing" in enabled,
         "timeExit": "three-minute-exit" in enabled,
-        "dailyRisk": "daily-risk-kill-switch" in enabled,
+        "dailyRisk": PAPER_DAILY_LOSS_LOCK_ENABLED and "daily-risk-kill-switch" in enabled,
+        "dailyLossLockEnabled": PAPER_DAILY_LOSS_LOCK_ENABLED,
+        "dailyLiquidationEnabled": PAPER_DAILY_LIQUIDATION_ENABLED,
         "reentryCooldown": "reentry-cooldown" in enabled,
         "usDayDomesticReview": "us-day-domestic-review" in enabled,
         "extendedSession": "overnight-extended-session" in enabled,
@@ -472,6 +476,12 @@ def strategy_config() -> dict[str, Any]:
                     "예약하고, 별도 포지션 감시기가 발동가 도달 시 전량 청산합니다."
                 )
             elif strategy.get("id") in ("paper-learning-sprint", "unlimited-paper-experience"):
+                replacement = next(
+                    item for item in DEFAULT_STRATEGIES if item.get("id") == strategy.get("id")
+                )
+                strategy.update(replacement)
+                strategy["enabled"] = False
+            elif strategy.get("id") == "daily-risk-kill-switch":
                 replacement = next(
                     item for item in DEFAULT_STRATEGIES if item.get("id") == strategy.get("id")
                 )
@@ -2232,6 +2242,7 @@ def safety_rules(
     locked: bool,
     lock_reason: str | None,
     config: dict[str, Any],
+    daily_return: Any | None = None,
 ) -> list[dict[str, Any]]:
     policy = strategy_execution_policy(config)
     runtime = policy.get("parameters") or {}
@@ -2246,18 +2257,20 @@ def safety_rules(
         else:
             break
     learning_sprint = bool(policy.get("learningSprint"))
+    daily_loss_lock_enabled = bool(policy.get("dailyLossLockEnabled"))
     unlimited_daily_entries = bool(policy.get("unlimitedDailyEntries"))
     unlimited_positions = bool(policy.get("unlimitedPositions"))
+    observed_daily_return = average_return if daily_return is None else decimal(daily_return)
     rules = [
         {
             "key": "dailyLoss",
-            "label": "일 손익 관찰" if learning_sprint else "일 손실 한도",
-            "status": "기록" if learning_sprint else ("잠금" if average_return <= stop_rate else "정상"),
-            "tone": "safe" if learning_sprint else ("danger" if average_return <= stop_rate else "safe"),
+            "label": "일 손실 한도" if daily_loss_lock_enabled else "일 손익 관찰",
+            "status": "잠금" if daily_loss_lock_enabled and observed_daily_return <= stop_rate else ("정상" if daily_loss_lock_enabled else "기록"),
+            "tone": "danger" if daily_loss_lock_enabled and observed_daily_return <= stop_rate else "safe",
             "detail": (
-                f"현재 {percent(average_return)} · 신규 진입 잠금 없음"
-                if learning_sprint
-                else f"현재 {percent(average_return)} / 기준 {percent(stop_rate)}"
+                f"누적 {percent(observed_daily_return)} · 거래 잠금 없음"
+                if not daily_loss_lock_enabled
+                else f"현재 {percent(observed_daily_return)} / 기준 {percent(stop_rate)}"
             ),
         },
         {
@@ -2301,7 +2314,7 @@ def safety_rules(
             "detail": "실제 주문 전송 없음",
         },
     ]
-    if locked and not learning_sprint:
+    if locked and daily_loss_lock_enabled:
         rules.insert(0, {"key": "lock", "label": "오늘 거래 잠금", "status": "ON", "tone": "danger", "detail": lock_reason or "운용 잠금"})
     return rules
 
@@ -2407,8 +2420,12 @@ def daily_account_risk(
         "openRiskKrw": open_risk_krw,
         "openRiskRate": open_risk_krw / day_start_capital,
         "maxOpenRiskRate": PAPER_TOTAL_OPEN_RISK_RATE,
-        "entryLocked": risk_rate <= PAPER_DAILY_ENTRY_LOCK_RATE,
-        "liquidationRequired": risk_rate <= PAPER_DAILY_LIQUIDATION_RATE,
+        "entryLockEnabled": PAPER_DAILY_LOSS_LOCK_ENABLED,
+        "entryLockThresholdBreached": risk_rate <= PAPER_DAILY_ENTRY_LOCK_RATE,
+        "entryLocked": PAPER_DAILY_LOSS_LOCK_ENABLED and risk_rate <= PAPER_DAILY_ENTRY_LOCK_RATE,
+        "liquidationEnabled": PAPER_DAILY_LIQUIDATION_ENABLED,
+        "liquidationThresholdBreached": risk_rate <= PAPER_DAILY_LIQUIDATION_RATE,
+        "liquidationRequired": PAPER_DAILY_LIQUIDATION_ENABLED and risk_rate <= PAPER_DAILY_LIQUIDATION_RATE,
     }
 
 
@@ -2485,7 +2502,7 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "paperLearningSprint": {
             "enabled": bool(execution_policy.get("learningSprint")),
             "entryLimit": "UNLIMITED" if execution_policy.get("unlimitedDailyEntries") else int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS),
-            "dailyProfitLock": not execution_policy.get("learningSprint"),
+            "dailyProfitLock": bool(execution_policy.get("dailyRisk")),
             "lossStreakLock": not execution_policy.get("learningSprint"),
             "scoreFilter": bool(execution_policy.get("scoreFilter")),
             "symbolLearning": False,
@@ -2502,7 +2519,16 @@ def paper_summary(orders: list[dict[str, Any]], results: list[dict[str, Any]]) -
         "todayTradeStats": today_trade_stats,
         "technicalReview": tech_review,
         "timeExitFollowUp": post_exit_study_summary(orders),
-        "safetyRules": safety_rules(average_return, len(positions), len(today_orders), position_returns, locked, lock_reason, config),
+        "safetyRules": safety_rules(
+            average_return,
+            len(positions),
+            len(today_orders),
+            position_returns,
+            locked,
+            lock_reason,
+            config,
+            daily_return=account_risk.get("returnRate"),
+        ),
         "todayOrderCount": len(today_orders),
         "openPositionCount": len(positions),
         "protectiveStops": {

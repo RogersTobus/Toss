@@ -90,7 +90,8 @@ class PerformanceAnalyticsTests(unittest.TestCase):
         ]
         risk = server.daily_account_risk(trades, "2026-07-17")
         self.assertAlmostEqual(risk["returnRate"], -0.0085)
-        self.assertTrue(risk["entryLocked"])
+        self.assertTrue(risk["entryLockThresholdBreached"])
+        self.assertFalse(risk["entryLocked"])
         self.assertFalse(risk["liquidationRequired"])
         self.assertAlmostEqual(risk["openRiskRate"], 0.0015)
 
