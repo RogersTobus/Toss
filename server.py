@@ -61,6 +61,7 @@ PAPER_PARTIAL_TAKE_PROFIT_RATE = 0.50
 PAPER_MARKET_CLOSE_EXIT_MINUTES = 5
 PAPER_STOP_MONITOR_INTERVAL_SECONDS = 1.0
 PAPER_STOP_REENTRY_COOLDOWN_SECONDS = 60
+PAPER_REPEATED_SYMBOL_LOSS_COOLDOWN_SECONDS = 3600
 POST_EXIT_OBSERVATION_HORIZONS = (("5m", 300), ("10m", 600), ("30m", 1800))
 POST_EXIT_OBSERVATION_TOLERANCE_SECONDS = 120
 POST_EXIT_OBSERVATION_RETRY_SECONDS = 10
@@ -87,6 +88,7 @@ SHADOW_PAPER_COOLDOWN_SECONDS = 600
 SHADOW_PAPER_MAX_CLOSED_SAMPLES = 5000
 SHADOW_PAPER_LEARNING_WEIGHT = 0.30
 LEARNING_SCHEMA_VERSION = 2
+GLOBAL_SCORE_MODEL_VERSION = 2
 LEARNING_BASE_ENTRY_SCORE = 80
 MARKET_ENTRY_SCORE = 82
 GLOBAL_SCORE_FEATURES = {
@@ -110,6 +112,10 @@ GLOBAL_SCORE_WEIGHT_MIN = 0.70
 GLOBAL_SCORE_WEIGHT_MAX = 1.30
 GLOBAL_SCORE_MAX_TRADE_STEP = 0.04
 GLOBAL_SCORE_LEARNING_RATE = 0.06
+PAPER_COST_EVIDENCE_MIN_SAMPLES = 20
+PAPER_COST_EVIDENCE_RECENT_SAMPLES = 10
+PAPER_LEVERAGED_SCORE_PENALTY = 4
+PAPER_LEVERAGED_ALLOCATION_SCALE = 0.50
 OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 50
 OFF_MARKET_STUDY_BATCH_PER_MARKET = 8
 OFF_MARKET_STUDY_CANDLE_PAGES = 3
@@ -150,15 +156,15 @@ DEFAULT_STRATEGIES = [
     {
         "id": "score-entry-80",
         "title": "전역 학습형 100점 평가",
-        "description": "모든 PAPER 청산 결과로 거래대금 순위, 당일 추세, 급등락 안정성의 가중치와 진입 기준을 함께 재평가하고 다음 모든 종목에 즉시 적용합니다.",
-        "judge": "전체 거래가 다음 점수 기준을 수정",
+        "description": "모든 PAPER 청산의 비용 후 결과로 거래대금 순위, 당일 추세, 급등락 안정성의 가중치와 진입 기준을 재평가합니다. 손실 기대값이 누적된 점수 구간은 회복 확인 전 그림자 PAPER로만 검증합니다.",
+        "judge": "전체 거래 즉시 학습 · 비용 후 기대값 검증",
         "enabled": True,
     },
     {
         "id": "adaptive-capital-utilization",
         "title": "100만 원 한도·점수 비중 자동배분",
-        "description": "총 PAPER 자금 100만 원 안에서 종목당 최대 30%를 배정하고, 전체 미청산 위험을 계좌의 1% 이내로 제한합니다.",
-        "judge": "종목당 30% · 총위험 1% 이내",
+        "description": "총 PAPER 자금 100만 원 안에서 종목당 최대 30%를 배정하고, 전체 미청산 위험을 계좌의 1% 이내로 제한합니다. 레버리지·인버스는 점수 4점과 계산 비중의 절반 위험조정을 적용합니다.",
+        "judge": "종목당 30% · 총위험 1% · 레버리지 위험조정",
         "enabled": True,
     },
     {
@@ -206,8 +212,8 @@ DEFAULT_STRATEGIES = [
     {
         "id": "reentry-cooldown",
         "title": "표본 균형 회전·재진입 대기",
-        "description": "모든 청산 후 동일 종목은 10분간 재진입을 대기하고, 점수 기준을 통과한 후보 중 오늘 표본이 적은 종목을 우선해 학습 편중을 줄입니다.",
-        "judge": "적은 표본 우선 · 동일 종목 10분 대기",
+        "description": "모든 청산 후 동일 종목은 10분간 재진입을 대기하고, 같은 종목에서 비용 후 2연패가 발생하면 1시간 동안 재검증합니다. 점수 기준을 통과한 후보 중 오늘 표본이 적은 종목을 우선합니다.",
+        "judge": "적은 표본 우선 · 2연패 시 동일 종목 1시간 재검증",
         "enabled": True,
     },
     {
@@ -2748,6 +2754,95 @@ def rank_candidates_for_sample_diversity(
     )
 
 
+def instrument_risk_policy(item: dict[str, Any]) -> dict[str, Any]:
+    """Apply a conservative PAPER overlay to leveraged and inverse products."""
+    name = str(item.get("name") or "").upper()
+    symbol = str(item.get("symbol") or "").upper()
+    leveraged_tokens = (
+        "레버리지", "인버스", "2X", "3X", "ULTRA", "BULL 2", "BULL 3",
+        "BEAR 2", "BEAR 3", "DAILY LONG", "DAILY SHORT",
+    )
+    leveraged = any(token in name for token in leveraged_tokens) or bool(
+        re.search(r"(?:2X|3X|2L|3L|2S|3S)$", symbol)
+    )
+    return {
+        "class": "LEVERAGED_OR_INVERSE" if leveraged else "STANDARD",
+        "leveraged": leveraged,
+        "scorePenalty": PAPER_LEVERAGED_SCORE_PENALTY if leveraged else 0,
+        "allocationScale": PAPER_LEVERAGED_ALLOCATION_SCALE if leveraged else 1.0,
+        "reason": (
+            "레버리지·인버스 변동성과 보호매도 슬리피지 반영"
+            if leveraged else "일반 종목 위험 기준"
+        ),
+    }
+
+
+def market_score_bucket_evidence(
+    orders: list[dict[str, Any]], market: str
+) -> dict[str, dict[str, Any]]:
+    """Summarize cost-adjusted evidence once per entry cycle."""
+    ledger = [
+        item for item in paper_trade_ledger(orders, {})
+        if item.get("status") == "CLOSED" and item.get("market") == market
+    ]
+    orders_by_id = {str(item.get("id") or ""): item for item in orders if item.get("id")}
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for trade in ledger:
+        entry = orders_by_id.get(str(trade.get("entryOrderId") or "")) or {}
+        bucket = score_bucket(entry.get("entryScore"))
+        buckets.setdefault(bucket, []).append(trade)
+    evidence: dict[str, dict[str, Any]] = {}
+    for key, trades in buckets.items():
+        ordered = sorted(trades, key=lambda item: str(item.get("closedAt") or ""))
+        evidence[key] = {
+            **performance_metrics(ordered),
+            "recent": performance_metrics(ordered[-PAPER_COST_EVIDENCE_RECENT_SAMPLES:]),
+        }
+    return evidence
+
+
+def cost_aware_entry_policy(
+    evidence: dict[str, dict[str, Any]], market: str, score: Any
+) -> dict[str, Any]:
+    """Route persistently negative score buckets to shadow PAPER, not main PAPER."""
+    bucket = score_bucket(score)
+    metrics = evidence.get(bucket) or {}
+    sample_count = int(metrics.get("sampleCount") or 0)
+    average = decimal(metrics.get("averageNetReturn"))
+    recent = metrics.get("recent") or {}
+    recent_count = int(recent.get("sampleCount") or 0)
+    recent_average = decimal(recent.get("averageNetReturn"))
+    cost = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+    persistently_negative = (
+        sample_count >= PAPER_COST_EVIDENCE_MIN_SAMPLES
+        and average <= -(cost / 2)
+        and recent_count >= PAPER_COST_EVIDENCE_RECENT_SAMPLES
+        and recent_average <= 0
+    )
+    probation = sample_count < PAPER_COST_EVIDENCE_MIN_SAMPLES
+    if persistently_negative:
+        reason = (
+            f"{market} {bucket} 비용 후 기대값 {average * 100:+.3f}% · "
+            "회복 확인 전 그림자 PAPER 전용"
+        )
+    elif probation:
+        reason = f"{market} {bucket} 비용 검증 {sample_count}/{PAPER_COST_EVIDENCE_MIN_SAMPLES}건"
+    else:
+        reason = f"{market} {bucket} 비용 후 기대값 {average * 100:+.3f}%"
+    return {
+        "allowed": not persistently_negative,
+        "bucket": bucket,
+        "sampleCount": sample_count,
+        "averageNetReturn": average,
+        "recentSampleCount": recent_count,
+        "recentAverageNetReturn": recent_average,
+        "roundTripCost": cost,
+        "allocationScale": 0.75 if probation else (0.50 if average <= 0 else 1.0),
+        "shadowOnly": persistently_negative,
+        "reason": reason,
+    }
+
+
 def sample_diversity_summary(
     orders: list[dict[str, Any]], market: str, cooldown_seconds: int
 ) -> dict[str, Any]:
@@ -3380,6 +3475,7 @@ def paper_trade_locked(
         runtime.get("reentryCooldownSeconds") or PAPER_STOP_REENTRY_COOLDOWN_SECONDS
     )
     sample_counts = market_entry_sample_counts(orders, market, today)
+    score_bucket_evidence = market_score_bucket_evidence(orders, market)
     summary["sampleDiversity"] = sample_diversity_summary(
         orders, market, cooldown_seconds
     )
@@ -3428,13 +3524,32 @@ def paper_trade_locked(
                 }
             )
             continue
-        policy = learning_entry_policy(symbol, item.get("score"), learning_state, market)
+        instrument_risk = instrument_risk_policy(item)
+        raw_score = decimal(item.get("score"))
+        evaluated_score = max(0.0, raw_score - int(instrument_risk.get("scorePenalty") or 0))
+        policy = learning_entry_policy(symbol, evaluated_score, learning_state, market)
+        policy["rawCandidateScore"] = raw_score
+        policy["instrumentRisk"] = instrument_risk
+        policy["allocationScale"] = min(
+            decimal(policy.get("allocationScale") or 1.0),
+            decimal(instrument_risk.get("allocationScale") or 1.0),
+        )
+        cost_policy = cost_aware_entry_policy(score_bucket_evidence, market, evaluated_score)
+        policy["costEvidence"] = cost_policy
+        policy["allocationScale"] = min(
+            decimal(policy.get("allocationScale") or 1.0),
+            decimal(cost_policy.get("allocationScale") or 1.0),
+        )
+        if not cost_policy.get("allowed"):
+            policy["allowed"] = False
+            policy["reason"] = str(cost_policy.get("reason") or "비용 후 기대값 미달")
         if execution_policy.get("scoreFilter"):
             required_floor = int(runtime.get("entryScoreFloor") or LEARNING_BASE_ENTRY_SCORE)
             policy["requiredScore"] = max(int(policy.get("requiredScore") or 0), required_floor)
-            policy["allowed"] = decimal(item.get("score")) >= policy["requiredScore"]
-            if not policy["allowed"]:
-                policy["reason"] = f"실행 전략 기준 · {policy['requiredScore']}점 필요 (현재 {decimal(item.get('score')):.1f}점)"
+            score_allowed = evaluated_score >= policy["requiredScore"]
+            policy["allowed"] = bool(policy.get("allowed")) and score_allowed
+            if not score_allowed:
+                policy["reason"] = f"실행 전략 기준 · {policy['requiredScore']}점 필요 (위험조정 {evaluated_score:.1f}점)"
         else:
             policy["allowed"] = True
             policy["requiredScore"] = 0
@@ -3548,7 +3663,9 @@ def paper_trade_locked(
                 "status": "FILLED",
                 "createdAt": created_at,
                 "reason": candidate.get("reason"),
-                "entryScore": candidate.get("score"),
+                "entryScore": candidate_policy.get("candidateScore") if candidate_policy else candidate.get("score"),
+                "rawEntryScore": candidate.get("score"),
+                "riskAdjustedEntryScore": candidate_policy.get("candidateScore") if candidate_policy else candidate.get("score"),
                 "baseEntryScore": candidate.get("baseScore"),
                 "scoreFeatures": candidate.get("scoreFeatures"),
                 "scoreAudit": candidate.get("scoreAudit"),
@@ -3563,6 +3680,8 @@ def paper_trade_locked(
                     "globalSampleCount": candidate_policy.get("globalSampleCount") if candidate_policy else 0,
                     "appliedImmediately": True,
                     "appliedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "costEvidence": candidate_policy.get("costEvidence") if candidate_policy else None,
+                    "instrumentRisk": candidate_policy.get("instrumentRisk") if candidate_policy else None,
                 },
                 "strategyIds": list(execution_policy.get("enabledIds") or []),
                 "strategyRevision": execution_policy.get("revision"),
@@ -5542,7 +5661,7 @@ def build_daily_mistake_note(
 
 def default_global_score_model() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": GLOBAL_SCORE_MODEL_VERSION,
         "scope": "GLOBAL_ALL_SYMBOLS",
         "sampleCount": 0,
         "winCount": 0,
@@ -5694,13 +5813,10 @@ def global_score_audit(
     market_key = str(market or "").upper()
     market_profile = MARKET_SCORE_FEATURES.get(market_key)
     feature_config = market_profile or GLOBAL_SCORE_FEATURES
-    # Production market strategies are frozen champions. Legacy global learning
-    # weights must not leak from one market into the other.
-    effective = (
-        {key: 1.0 for key in feature_config}
-        if market_profile
-        else (refreshed.get("effectiveWeights") or {})
-    )
+    # Every cost-adjusted PAPER result updates the same cross-market brain.
+    # Market profiles keep their own point scales, while learned feature weights
+    # and the entry threshold generalize to every symbol.
+    effective = refreshed.get("effectiveWeights") or {}
     numerator = 0.0
     denominator = 0.0
     feature_values: dict[str, float] = {}
@@ -5716,11 +5832,14 @@ def global_score_audit(
     base_score = round(sum(component_points.values()), 1)
     adaptive_score = round(100 * numerator / denominator, 1) if denominator else base_score
     return {
-        "scope": f"MARKET_{market_key}" if market_profile else "GLOBAL_ALL_SYMBOLS",
+        "scope": "GLOBAL_ALL_SYMBOLS",
         "baseScore": base_score,
         "adaptiveScore": adaptive_score,
         "delta": round(adaptive_score - base_score, 1),
-        "entryThreshold": MARKET_ENTRY_SCORE if market_profile else int(refreshed.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE),
+        "entryThreshold": max(
+            MARKET_ENTRY_SCORE if market_profile else LEARNING_BASE_ENTRY_SCORE,
+            int(refreshed.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE),
+        ),
         "sampleCount": int(refreshed.get("sampleCount") or 0),
         "confidence": decimal(refreshed.get("confidence")),
         "components": component_points,
@@ -6067,6 +6186,14 @@ def sync_learning_brain(
         score_processed = set(str(item) for item in state.get("scoreModelProcessedTrades") or [])
         global_model = state.setdefault("globalScoreModel", default_global_score_model())
         changed = False
+        if int(global_model.get("version") or 1) < GLOBAL_SCORE_MODEL_VERSION:
+            # Rebuild once from the full cost-adjusted ledger. The previous
+            # version marked trades as processed without updating the model.
+            global_model = default_global_score_model()
+            state["globalScoreModel"] = global_model
+            state["scoreModelProcessedTrades"] = []
+            score_processed = set()
+            changed = True
         closed_trades = sorted(
             (item for item in ledger if item.get("status") == "CLOSED"),
             key=lambda item: str(item.get("closedAt") or ""),
@@ -6111,6 +6238,13 @@ def sync_learning_brain(
                 stop_rate,
             )
             if trade_key not in score_processed:
+                update_global_score_model(
+                    global_model,
+                    entry_order,
+                    return_rate,
+                    violation,
+                    trade_key,
+                )
                 state.setdefault("scoreModelProcessedTrades", []).append(trade_key)
                 score_processed.add(trade_key)
                 changed = True
@@ -6166,7 +6300,10 @@ def sync_learning_brain(
                 profile["lastViolationAt"] = str(trade.get("closedAt") or "")
                 cooldown_minutes = learning_cooldown_minutes(severity)
             if int(profile.get("consecutiveLosses") or 0) >= 2:
-                cooldown_minutes = max(cooldown_minutes, 20)
+                cooldown_minutes = max(
+                    cooldown_minutes,
+                    PAPER_REPEATED_SYMBOL_LOSS_COOLDOWN_SECONDS // 60,
+                )
             if cooldown_minutes and closed:
                 cooldown_until = closed.astimezone(KST) + timedelta(minutes=cooldown_minutes)
                 profile["cooldownUntil"] = cooldown_until.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -6184,11 +6321,11 @@ def sync_learning_brain(
                 "returnRate": return_rate,
                 "profit": profit,
                 "observation": learning_observation(name, return_rate, violation, profile),
-                "appliedRule": "해당 시장 주전 전략의 근거 사례로만 보관",
-                "scope": "CASE_ARCHIVE",
+                "appliedRule": "비용 후 결과를 전역 점수 모델과 종목 재진입 판단에 즉시 반영",
+                "scope": "GLOBAL_ALL_SYMBOLS",
                 "requiredScore": profile.get("requiredScore"),
                 "allocationScale": profile.get("allocationScale"),
-                "appliedImmediately": False,
+                "appliedImmediately": True,
             }
             state.setdefault("memories", []).append(memory)
             state.setdefault("processedTrades", []).append(trade_key)
@@ -6210,15 +6347,22 @@ def sync_learning_brain(
 def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any], market: str | None = None) -> dict[str, Any]:
     model = normalize_global_score_model(state.get("globalScoreModel"))
     market_key = str(market or "").upper()
-    required_score = MARKET_ENTRY_SCORE if market_key in MARKET_SCORE_FEATURES else int(model.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE)
-    allocation_scale = 1.0
-    cooldown_remaining = 0
+    required_score = max(
+        MARKET_ENTRY_SCORE if market_key in MARKET_SCORE_FEATURES else LEARNING_BASE_ENTRY_SCORE,
+        int(model.get("entryThreshold") or LEARNING_BASE_ENTRY_SCORE),
+    )
+    profile = (state.get("symbols") or {}).get(symbol) or {}
+    required_score = max(required_score, int(profile.get("requiredScore") or 0))
+    allocation_scale = min(1.0, decimal(profile.get("allocationScale") or 1.0))
+    cooldown_remaining = learning_time_remaining(profile.get("cooldownUntil"))
     candidate_score = decimal(score)
-    allowed = candidate_score >= required_score
-    if candidate_score < required_score:
+    allowed = candidate_score >= required_score and cooldown_remaining <= 0
+    if cooldown_remaining > 0:
+        reason = f"동일 종목 연속손실 재검증 · {max(1, (cooldown_remaining + 59) // 60)}분 대기"
+    elif candidate_score < required_score:
         reason = f"{market_key or '전역'} 전략 기준 · {required_score}점 필요 (현재 {candidate_score:.1f}점)"
     else:
-        reason = f"{market_key or '전역'} 고정 전략 통과 · {required_score}점 기준"
+        reason = f"전역 학습 전략 통과 · {required_score}점 기준"
     strongest = model.get("strongestFeature") or {}
     weakest = model.get("weakestFeature") or {}
     traits = [
@@ -6235,7 +6379,7 @@ def learning_entry_policy(symbol: str, score: Any, state: dict[str, Any], market
         "cooldownRemainingSec": cooldown_remaining,
         "status": model.get("phase") or "초기 관찰",
         "traits": traits,
-        "scope": f"MARKET_{market_key}" if market_key in MARKET_SCORE_FEATURES else "GLOBAL_ALL_SYMBOLS",
+        "scope": "GLOBAL_ALL_SYMBOLS",
         "globalSampleCount": int(model.get("sampleCount") or 0),
         "appliedImmediately": True,
     }

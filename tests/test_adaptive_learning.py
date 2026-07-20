@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,8 +29,9 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
         self.assertEqual(audit["adaptiveScore"], 79.0)
         self.assertEqual(audit["delta"], 0.0)
 
-    def test_market_champions_use_separate_frozen_profiles(self):
+    def test_market_profiles_share_the_learned_global_weights(self):
         model = server.default_global_score_model()
+        model["sampleCount"] = 8
         model["weights"]["liquidity"] = 1.3
         kr = server.global_score_audit(
             {"liquidity": 40, "momentum": 20, "stability": 25}, model, "KR"
@@ -37,12 +39,12 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
         us = server.global_score_audit(
             {"liquidity": 35, "momentum": 20, "stability": 25}, model, "US"
         )
-        self.assertEqual(kr["scope"], "MARKET_KR")
-        self.assertEqual(us["scope"], "MARKET_US")
-        self.assertEqual(kr["entryThreshold"], 82)
-        self.assertEqual(us["entryThreshold"], 82)
-        self.assertEqual(kr["weights"]["liquidity"], 1.0)
-        self.assertEqual(us["weights"]["liquidity"], 1.0)
+        self.assertEqual(kr["scope"], "GLOBAL_ALL_SYMBOLS")
+        self.assertEqual(us["scope"], "GLOBAL_ALL_SYMBOLS")
+        self.assertEqual(kr["entryThreshold"], 83)
+        self.assertEqual(us["entryThreshold"], 83)
+        self.assertEqual(kr["weights"]["liquidity"], 1.3)
+        self.assertEqual(us["weights"]["liquidity"], 1.3)
 
     def test_minimum_price_is_a_gate_not_a_score_component(self):
         candidate = {
@@ -133,12 +135,114 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
                 server.LEARNING_PATH = Path(directory) / "learning_state.json"
                 first = server.sync_learning_brain(orders, {})
                 second = server.sync_learning_brain(orders, {})
-                self.assertEqual(first["globalScoreModel"]["sampleCount"], 0)
-                self.assertEqual(second["globalScoreModel"]["sampleCount"], 0)
+                self.assertEqual(first["globalScoreModel"]["sampleCount"], 1)
+                self.assertEqual(second["globalScoreModel"]["sampleCount"], 1)
                 self.assertEqual(len(second["scoreModelProcessedTrades"]), 1)
-                self.assertEqual(len(second["globalScoreModel"].get("revisions") or []), 0)
+                self.assertEqual(len(second["globalScoreModel"].get("revisions") or []), 1)
+                self.assertEqual(second["memories"][0]["scope"], "GLOBAL_ALL_SYMBOLS")
+                self.assertTrue(second["memories"][0]["appliedImmediately"])
         finally:
             server.LEARNING_PATH = original_path
+
+    def test_frozen_v1_score_state_is_rebuilt_from_processed_trades(self):
+        orders = [
+            {
+                "id": "BUY-V1",
+                "market": "US",
+                "symbol": "TEST",
+                "name": "Test",
+                "side": "BUY",
+                "quantity": 1,
+                "price": 100,
+                "createdAt": "2026-07-20T10:00:00+0900",
+                "entryScore": 95,
+                "scoreFeatures": {"liquidity": 1.0, "momentum": 1.0, "stability": 1.0},
+            },
+            {
+                "id": "SELL-V1",
+                "entryOrderId": "BUY-V1",
+                "market": "US",
+                "symbol": "TEST",
+                "side": "SELL",
+                "quantity": 1,
+                "entryPrice": 100,
+                "price": 99.5,
+                "returnRate": -0.005,
+                "profit": -0.5,
+                "stopRate": -0.005,
+                "createdAt": "2026-07-20T10:04:00+0900",
+            },
+        ]
+        original_path = server.LEARNING_PATH
+        try:
+            with TemporaryDirectory() as directory:
+                server.LEARNING_PATH = Path(directory) / "learning_state.json"
+                frozen = server.default_learning_state()
+                frozen["processedTrades"] = ["BUY-V1:SELL-V1"]
+                frozen["scoreModelProcessedTrades"] = ["BUY-V1:SELL-V1"]
+                frozen["globalScoreModel"]["version"] = 1
+                frozen["globalScoreModel"]["sampleCount"] = 0
+                server.LEARNING_PATH.write_text(
+                    json.dumps(frozen, ensure_ascii=False), encoding="utf-8"
+                )
+                rebuilt = server.sync_learning_brain(orders, {})
+                self.assertEqual(
+                    rebuilt["globalScoreModel"]["version"],
+                    server.GLOBAL_SCORE_MODEL_VERSION,
+                )
+                self.assertEqual(rebuilt["globalScoreModel"]["sampleCount"], 1)
+                self.assertEqual(len(rebuilt["scoreModelProcessedTrades"]), 1)
+        finally:
+            server.LEARNING_PATH = original_path
+
+    def test_symbol_loss_cooldown_is_used_by_next_entry(self):
+        future = (datetime.now().astimezone() + timedelta(minutes=30)).strftime(
+            "%Y-%m-%dT%H:%M:%S%z"
+        )
+        state = {
+            "globalScoreModel": server.default_global_score_model(),
+            "symbols": {
+                "LOSS": {
+                    "requiredScore": 88,
+                    "allocationScale": 0.5,
+                    "cooldownUntil": future,
+                }
+            },
+        }
+        policy = server.learning_entry_policy("LOSS", 99, state, "US")
+        self.assertFalse(policy["allowed"])
+        self.assertGreater(policy["cooldownRemainingSec"], 0)
+        self.assertEqual(policy["requiredScore"], 88)
+        self.assertEqual(policy["allocationScale"], 0.5)
+
+    def test_leveraged_product_gets_score_and_size_penalty(self):
+        policy = server.instrument_risk_policy(
+            {"symbol": "TQQQ", "name": "ProShares UltraPro QQQ 3X"}
+        )
+        self.assertTrue(policy["leveraged"])
+        self.assertEqual(policy["scorePenalty"], server.PAPER_LEVERAGED_SCORE_PENALTY)
+        self.assertEqual(policy["allocationScale"], server.PAPER_LEVERAGED_ALLOCATION_SCALE)
+
+    def test_persistently_negative_cost_bucket_is_shadow_only(self):
+        losing = {
+            "90점 이상": {
+                "sampleCount": 25,
+                "averageNetReturn": -0.004,
+                "recent": {"sampleCount": 10, "averageNetReturn": -0.002},
+            }
+        }
+        policy = server.cost_aware_entry_policy(losing, "US", 95)
+        self.assertFalse(policy["allowed"])
+        self.assertTrue(policy["shadowOnly"])
+
+        recovering = {
+            "90점 이상": {
+                "sampleCount": 25,
+                "averageNetReturn": -0.004,
+                "recent": {"sampleCount": 10, "averageNetReturn": 0.001},
+            }
+        }
+        self.assertTrue(server.cost_aware_entry_policy(recovering, "US", 95)["allowed"])
 
 
 class OffMarketResearchTests(unittest.TestCase):

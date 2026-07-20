@@ -35,6 +35,15 @@ class StrategyExecutionTests(unittest.TestCase):
         server.STRATEGY_CONFIG_PATH = Path(self.directory.name) / "strategy_config.json"
         server.PAPER_PATH = Path(self.directory.name) / "paper_state.json"
 
+    def test_default_copy_keeps_base_cooldown_and_position_cap(self):
+        config = {
+            **server.DEFAULT_STRATEGY_CONFIG,
+            "strategies": server.normalize_strategies(),
+        }
+        parameters = server.strategy_runtime_parameters(config)
+        self.assertEqual(parameters["reentryCooldownSeconds"], 600)
+        self.assertEqual(parameters["maxAllocationRate"], 0.30)
+
     def tearDown(self):
         server.STRATEGY_CONFIG_PATH = self.original_strategy_path
         server.PAPER_PATH = self.original_paper_path
