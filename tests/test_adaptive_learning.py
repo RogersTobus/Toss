@@ -217,7 +217,7 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
 
     def test_leveraged_product_gets_score_and_size_penalty(self):
         policy = server.instrument_risk_policy(
-            {"symbol": "TQQQ", "name": "ProShares UltraPro QQQ 3X"}
+            {"symbol": "TQQQ", "name": "TQQQ"}
         )
         self.assertTrue(policy["leveraged"])
         self.assertEqual(policy["scorePenalty"], server.PAPER_LEVERAGED_SCORE_PENALTY)
@@ -226,9 +226,9 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
     def test_persistently_negative_cost_bucket_is_shadow_only(self):
         losing = {
             "90점 이상": {
-                "sampleCount": 25,
+                "sampleCount": 8,
                 "averageNetReturn": -0.004,
-                "recent": {"sampleCount": 10, "averageNetReturn": -0.002},
+                "recent": {"sampleCount": 5, "averageNetReturn": -0.002},
             }
         }
         policy = server.cost_aware_entry_policy(losing, "US", 95)
@@ -237,12 +237,55 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
 
         recovering = {
             "90점 이상": {
-                "sampleCount": 25,
+                "sampleCount": 8,
                 "averageNetReturn": -0.004,
-                "recent": {"sampleCount": 10, "averageNetReturn": 0.001},
+                "recent": {"sampleCount": 5, "averageNetReturn": 0.001},
             }
         }
         self.assertTrue(server.cost_aware_entry_policy(recovering, "US", 95)["allowed"])
+
+    def test_negative_market_time_bucket_is_shadow_only(self):
+        evidence = {
+            "개장 초반": {
+                "sampleCount": 35,
+                "averageNetReturn": -0.0045,
+                "recent": {"sampleCount": 5, "averageNetReturn": -0.006},
+            }
+        }
+        now = datetime(2026, 7, 21, 9, 30, tzinfo=server.KST)
+        policy = server.time_context_entry_policy(evidence, "KR", now)
+        self.assertFalse(policy["allowed"])
+        self.assertTrue(policy["shadowOnly"])
+        self.assertEqual(policy["bucket"], "개장 초반")
+
+    def test_leveraged_main_requires_positive_shadow_evidence(self):
+        samples = [
+            {
+                "status": "CLOSED",
+                "market": "US",
+                "symbol": "TQQQ",
+                "name": "TQQQ",
+                "closedAt": f"2026-07-20T14:{index:02d}:00+0000",
+                "netReturnRate": 0.002,
+            }
+            for index in range(8)
+        ]
+        promoted = server.leveraged_shadow_entry_policy(
+            {"symbol": "TQQQ", "name": "TQQQ"},
+            "US",
+            {"samples": samples},
+        )
+        self.assertTrue(promoted["allowed"])
+        self.assertEqual(promoted["sampleCount"], 8)
+
+        samples[-1]["netReturnRate"] = -0.02
+        rejected = server.leveraged_shadow_entry_policy(
+            {"symbol": "TQQQ", "name": "TQQQ"},
+            "US",
+            {"samples": samples},
+        )
+        self.assertFalse(rejected["allowed"])
+        self.assertTrue(rejected["shadowOnly"])
 
 
 class OffMarketResearchTests(unittest.TestCase):
