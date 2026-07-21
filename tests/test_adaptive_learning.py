@@ -265,10 +265,11 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
                 "market": "US",
                 "symbol": "TQQQ",
                 "name": "TQQQ",
+                "engineVersion": server.PAPER_STRATEGY_ENGINE_VERSION,
                 "closedAt": f"2026-07-20T14:{index:02d}:00+0000",
                 "netReturnRate": 0.002,
             }
-            for index in range(8)
+            for index in range(server.PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES)
         ]
         promoted = server.leveraged_shadow_entry_policy(
             {"symbol": "TQQQ", "name": "TQQQ"},
@@ -276,7 +277,9 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
             {"samples": samples},
         )
         self.assertTrue(promoted["allowed"])
-        self.assertEqual(promoted["sampleCount"], 8)
+        self.assertEqual(
+            promoted["sampleCount"], server.PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES
+        )
 
         samples[-1]["netReturnRate"] = -0.02
         rejected = server.leveraged_shadow_entry_policy(
@@ -286,6 +289,70 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
         )
         self.assertFalse(rejected["allowed"])
         self.assertTrue(rejected["shadowOnly"])
+
+    def test_context_gate_requires_positive_current_strategy_cohort(self):
+        now = datetime(2026, 7, 21, 10, 30, tzinfo=server.KST)
+        item = {
+            "symbol": "005930", "name": "삼성전자", "dailyRate": 0.03,
+            "score": 92,
+        }
+        context = server.candidate_evidence_context(item, "KR", now)
+        samples = []
+        for index in range(server.PAPER_CONTEXT_MIN_SAMPLES):
+            samples.append({
+                "status": "CLOSED", "market": "KR", "symbol": f"S{index}",
+                "name": "일반 종목", "engineVersion": server.PAPER_STRATEGY_ENGINE_VERSION,
+                "entryContext": context,
+                "closedAt": f"2026-07-21T0{index // 10}:{index % 10}0:00+0000",
+                "netReturnRate": 0.006 if index % 2 == 0 else -0.003,
+            })
+        policy = server.contextual_shadow_entry_policy(
+            item, "KR", {"samples": samples}, now
+        )
+        self.assertTrue(policy["allowed"])
+        self.assertGreaterEqual(policy["winRate"], server.PAPER_CONTEXT_MIN_WIN_RATE)
+        self.assertGreaterEqual(
+            policy["profitFactor"], server.PAPER_CONTEXT_MIN_PROFIT_FACTOR
+        )
+
+    def test_context_gate_ignores_legacy_strategy_samples(self):
+        now = datetime(2026, 7, 21, 10, 30, tzinfo=server.KST)
+        item = {
+            "symbol": "005930", "name": "삼성전자", "dailyRate": 0.03,
+            "score": 92,
+        }
+        context = server.candidate_evidence_context(item, "KR", now)
+        legacy = [{
+            "status": "CLOSED", "market": "KR", "symbol": f"OLD{index}",
+            "name": "일반 종목", "entryContext": context,
+            "closedAt": f"2026-07-20T00:{index:02d}:00+0000",
+            "netReturnRate": 0.01,
+        } for index in range(server.PAPER_CONTEXT_MIN_SAMPLES)]
+        policy = server.contextual_shadow_entry_policy(
+            item, "KR", {"samples": legacy}, now
+        )
+        self.assertFalse(policy["allowed"])
+        self.assertEqual(policy["sampleCount"], 0)
+
+    def test_context_gate_rejects_recent_deterioration(self):
+        now = datetime(2026, 7, 21, 10, 30, tzinfo=server.KST)
+        item = {
+            "symbol": "005930", "name": "삼성전자", "dailyRate": 0.03,
+            "score": 92,
+        }
+        context = server.candidate_evidence_context(item, "KR", now)
+        samples = [{
+            "status": "CLOSED", "market": "KR", "symbol": f"R{index}",
+            "name": "일반 종목", "engineVersion": server.PAPER_STRATEGY_ENGINE_VERSION,
+            "entryContext": context,
+            "closedAt": f"2026-07-21T00:{index:02d}:00+0000",
+            "netReturnRate": 0.005 if index < 8 else -0.01,
+        } for index in range(server.PAPER_CONTEXT_MIN_SAMPLES)]
+        policy = server.contextual_shadow_entry_policy(
+            item, "KR", {"samples": samples}, now
+        )
+        self.assertFalse(policy["allowed"])
+        self.assertLessEqual(policy["recentAverageNetReturn"], 0)
 
     def test_evidence_gate_explains_shadow_only_mode(self):
         summary = server.evidence_gate_summary(

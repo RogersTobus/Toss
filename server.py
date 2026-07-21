@@ -116,7 +116,15 @@ PAPER_COST_EVIDENCE_MIN_SAMPLES = 8
 PAPER_COST_EVIDENCE_RECENT_SAMPLES = 5
 PAPER_LEVERAGED_SCORE_PENALTY = 4
 PAPER_LEVERAGED_ALLOCATION_SCALE = 0.50
-PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 8
+PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 20
+PAPER_STRATEGY_ENGINE_VERSION = "context-edge-v3"
+PAPER_CONTEXT_MIN_SAMPLES = 12
+PAPER_CONTEXT_RECENT_SAMPLES = 8
+PAPER_CONTEXT_HISTORY_LIMIT = 40
+PAPER_CONTEXT_MIN_WIN_RATE = 0.40
+PAPER_CONTEXT_MIN_PROFIT_FACTOR = 1.15
+PAPER_LEVERAGED_MIN_WIN_RATE = 0.45
+PAPER_LEVERAGED_MIN_PROFIT_FACTOR = 1.30
 KNOWN_LEVERAGED_OR_INVERSE_SYMBOLS = {
     "TQQQ", "SQQQ", "SOXL", "SOXS", "SPXL", "SPXS", "UPRO", "QLD", "QID",
     "TECL", "TECS", "UDOW", "SDOW", "NVDL", "NVDQ", "TSLL", "TSLQ",
@@ -161,9 +169,9 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "score-entry-80",
-        "title": "전역 학습형 100점 평가",
-        "description": "표시 점수는 후보 순위에만 사용합니다. 실제 진입은 시장·점수구간·시간대의 비용 후 결과를 따로 확인하고, 전체 8건과 최근 5건이 함께 음수인 조건은 그림자 PAPER로 전환합니다.",
-        "judge": "점수는 순위 · 진입은 비용 후 기대값",
+        "title": "상황별 검증형 100점 평가",
+        "description": "표시 점수는 후보 순위에만 사용합니다. 실제 진입은 같은 시장·시간대·상품군·당일 등락 구간에서 새 청산 규칙으로 수집한 그림자 PAPER 12건의 비용 후 승률·기대값·손익비가 모두 양수일 때만 허용합니다.",
+        "judge": "점수는 순위 · 동일 상황의 검증 결과로 진입",
         "enabled": True,
     },
     {
@@ -203,9 +211,9 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "three-minute-exit",
-        "title": "3분 시간청산",
-        "description": "진입 후 3분 안에 의미 있는 상승이 없거나 돌파·VWAP·거래량 논리가 무너지면 청산합니다.",
-        "judge": "기회비용 관리",
+        "title": "고정 3분 청산 폐기",
+        "description": "비용 후 8전 8패였던 고정 3분 청산은 새 전략에서 사용하지 않습니다. 진입 후에는 −0.5% 보호매도, +1% 부분익절·추적손절, 정규장 마감 청산만 적용합니다.",
+        "judge": "시간만으로 손실 확정 금지",
         "enabled": True,
     },
     {
@@ -447,7 +455,15 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
         "unlimitedPositions": sprint and unlimited,
         "hardStop": "hard-stop-loss" in enabled,
         "profitTarget": "profit-trailing" in enabled,
-        "timeExit": "three-minute-exit" in enabled,
+        "timeExit": False,
+        "legacyTimeExitConfigured": "three-minute-exit" in enabled,
+        "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+        "contextValidation": {
+            "minimumSamples": PAPER_CONTEXT_MIN_SAMPLES,
+            "recentSamples": PAPER_CONTEXT_RECENT_SAMPLES,
+            "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
+            "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
+        },
         "dailyRisk": PAPER_DAILY_LOSS_LOCK_ENABLED and "daily-risk-kill-switch" in enabled,
         "dailyLossLockEnabled": PAPER_DAILY_LOSS_LOCK_ENABLED,
         "dailyLiquidationEnabled": PAPER_DAILY_LIQUIDATION_ENABLED,
@@ -499,7 +515,10 @@ def strategy_config() -> dict[str, Any]:
                 )
                 strategy.update(replacement)
                 strategy["enabled"] = False
-            elif strategy.get("id") in ("liquidity-momentum-filter", "adaptive-capital-utilization"):
+            elif strategy.get("id") in (
+                "liquidity-momentum-filter", "score-entry-80",
+                "adaptive-capital-utilization", "three-minute-exit",
+            ):
                 replacement = next(
                     item for item in DEFAULT_STRATEGIES if item.get("id") == strategy.get("id")
                 )
@@ -1789,6 +1808,13 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
     today_closed = [item for item in closed if paper_trading_day(item.get("closedAt")) == today]
     net_returns = [decimal(item.get("netReturnRate")) for item in closed]
     wins = sum(1 for value in net_returns if value > 0)
+    current_strategy_closed = [
+        item for item in closed
+        if item.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
+    ]
+    current_strategy_evidence = return_evidence(
+        current_strategy_closed[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES
+    )
     by_market = {}
     for market in ("KR", "US"):
         market_closed = [item for item in closed if item.get("market") == market]
@@ -1815,6 +1841,13 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
         "averageNetReturn": sum(net_returns) / len(net_returns) if net_returns else 0.0,
         "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
         "minimumPromotionSamples": RESEARCH_MIN_VALIDATION_SAMPLES,
+        "currentStrategy": {
+            "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+            **current_strategy_evidence,
+            "requiredContextSamples": PAPER_CONTEXT_MIN_SAMPLES,
+            "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
+            "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
+        },
         "byMarket": by_market,
         "excludedFromCapitalLedger": True,
         "excludedFromBillionGoal": True,
@@ -2783,14 +2816,19 @@ def instrument_risk_policy(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def return_evidence(records: list[dict[str, Any]]) -> dict[str, Any]:
+def return_evidence(
+    records: list[dict[str, Any]], recent_samples: int = PAPER_COST_EVIDENCE_RECENT_SAMPLES
+) -> dict[str, Any]:
     ordered = sorted(records, key=lambda item: str(item.get("closedAt") or ""))
     returns = [decimal(item.get("netReturnRate")) for item in ordered]
-    recent_returns = returns[-PAPER_COST_EVIDENCE_RECENT_SAMPLES:]
+    recent_returns = returns[-max(1, int(recent_samples)):]
+    gains = sum(value for value in returns if value > 0)
+    losses = -sum(value for value in returns if value < 0)
     return {
         "sampleCount": len(returns),
         "averageNetReturn": sum(returns) / len(returns) if returns else 0.0,
         "winRate": sum(1 for value in returns if value > 0) / len(returns) if returns else 0.0,
+        "profitFactor": gains / losses if losses else (999.0 if gains else 0.0),
         "recent": {
             "sampleCount": len(recent_returns),
             "averageNetReturn": (
@@ -2801,6 +2839,119 @@ def return_evidence(records: list[dict[str, Any]]) -> dict[str, Any]:
                 if recent_returns else 0.0
             ),
         },
+    }
+
+
+def daily_rate_bucket(value: Any) -> str:
+    rate = decimal(value)
+    if rate < 0:
+        return "하락"
+    if rate < 0.02:
+        return "0~2%"
+    if rate < 0.05:
+        return "2~5%"
+    if rate < 0.08:
+        return "5~8%"
+    return "8% 이상"
+
+
+def candidate_evidence_context(
+    item: dict[str, Any], market: str, now: datetime | None = None
+) -> dict[str, Any]:
+    risk = instrument_risk_policy(item)
+    return {
+        "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+        "market": market,
+        "timeBucket": market_time_bucket(market, now or datetime.now().astimezone()),
+        "instrumentClass": risk.get("class"),
+        "dailyRateBucket": daily_rate_bucket(item.get("dailyRate")),
+        "scoreBucket": score_bucket(item.get("score")),
+    }
+
+
+def shadow_context_records(
+    state: dict[str, Any], item: dict[str, Any], market: str,
+    now: datetime | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    context = candidate_evidence_context(item, market, now)
+    matched = []
+    for sample in state.get("samples") or []:
+        if not isinstance(sample, dict) or sample.get("status") != "CLOSED":
+            continue
+        if sample.get("engineVersion") != PAPER_STRATEGY_ENGINE_VERSION:
+            continue
+        sample_context = sample.get("entryContext") if isinstance(sample.get("entryContext"), dict) else {}
+        sample_time = sample_context.get("timeBucket") or market_time_bucket(
+            str(sample.get("market") or market), sample.get("openedAt")
+        )
+        sample_class = sample_context.get("instrumentClass") or instrument_risk_policy(sample).get("class")
+        sample_rate_bucket = sample_context.get("dailyRateBucket") or daily_rate_bucket(sample.get("dailyRate"))
+        if (
+            sample.get("market") == market
+            and sample_time == context["timeBucket"]
+            and sample_class == context["instrumentClass"]
+            and sample_rate_bucket == context["dailyRateBucket"]
+        ):
+            matched.append(sample)
+    matched.sort(key=lambda sample: str(sample.get("closedAt") or ""))
+    return context, matched[-PAPER_CONTEXT_HISTORY_LIMIT:]
+
+
+def contextual_shadow_entry_policy(
+    item: dict[str, Any], market: str, state: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    shadow_state = state or load_shadow_paper_state()
+    context, records = shadow_context_records(shadow_state, item, market, now)
+    evidence = return_evidence(records, PAPER_CONTEXT_RECENT_SAMPLES)
+    recent = evidence.get("recent") or {}
+    sample_count = int(evidence.get("sampleCount") or 0)
+    recent_count = int(recent.get("sampleCount") or 0)
+    average = decimal(evidence.get("averageNetReturn"))
+    recent_average = decimal(recent.get("averageNetReturn"))
+    win_rate = decimal(evidence.get("winRate"))
+    recent_win_rate = decimal(recent.get("winRate"))
+    profit_factor = decimal(evidence.get("profitFactor"))
+    promoted = (
+        sample_count >= PAPER_CONTEXT_MIN_SAMPLES
+        and recent_count >= PAPER_CONTEXT_RECENT_SAMPLES
+        and average > 0
+        and recent_average > 0
+        and win_rate >= PAPER_CONTEXT_MIN_WIN_RATE
+        and recent_win_rate >= PAPER_CONTEXT_MIN_WIN_RATE
+        and profit_factor >= PAPER_CONTEXT_MIN_PROFIT_FACTOR
+    )
+    if promoted:
+        allocation_scale = 1.0 if sample_count >= 40 else (0.65 if sample_count >= 20 else 0.35)
+        reason = (
+            f"상황별 그림자 검증 통과 · {sample_count}건 · 승률 {win_rate * 100:.1f}% · "
+            f"비용 후 {average * 100:+.3f}% · PF {profit_factor:.2f}"
+        )
+    elif sample_count < PAPER_CONTEXT_MIN_SAMPLES:
+        allocation_scale = 0.0
+        reason = (
+            f"새 전략 상황별 검증 {sample_count}/{PAPER_CONTEXT_MIN_SAMPLES}건 · "
+            f"{context['timeBucket']}·{context['instrumentClass']}·{context['dailyRateBucket']} 그림자 PAPER"
+        )
+    else:
+        allocation_scale = 0.0
+        reason = (
+            f"상황별 기대값 미달 · 승률 {win_rate * 100:.1f}% · 비용 후 {average * 100:+.3f}% · "
+            f"최근 {recent_average * 100:+.3f}% · PF {profit_factor:.2f}"
+        )
+    return {
+        "allowed": promoted,
+        "shadowOnly": not promoted,
+        "context": context,
+        "sampleCount": sample_count,
+        "averageNetReturn": average,
+        "winRate": win_rate,
+        "profitFactor": profit_factor,
+        "recentSampleCount": recent_count,
+        "recentAverageNetReturn": recent_average,
+        "recentWinRate": recent_win_rate,
+        "allocationScale": allocation_scale,
+        "reason": reason,
     }
 
 
@@ -2932,32 +3083,44 @@ def leveraged_shadow_entry_policy(
         if isinstance(sample, dict)
         and sample.get("status") == "CLOSED"
         and sample.get("market") == market
+        and sample.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
         and instrument_risk_policy(sample).get("leveraged")
     ]
-    evidence = return_evidence(samples)
+    evidence = return_evidence(samples[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES)
     recent = evidence.get("recent") or {}
     sample_count = int(evidence.get("sampleCount") or 0)
     average = decimal(evidence.get("averageNetReturn"))
+    win_rate = decimal(evidence.get("winRate"))
+    profit_factor = decimal(evidence.get("profitFactor"))
     recent_count = int(recent.get("sampleCount") or 0)
     recent_average = decimal(recent.get("averageNetReturn"))
+    recent_win_rate = decimal(recent.get("winRate"))
     promoted = (
         sample_count >= PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES
         and average > 0
-        and recent_count >= PAPER_COST_EVIDENCE_RECENT_SAMPLES
+        and win_rate >= PAPER_LEVERAGED_MIN_WIN_RATE
+        and profit_factor >= PAPER_LEVERAGED_MIN_PROFIT_FACTOR
+        and recent_count >= PAPER_CONTEXT_RECENT_SAMPLES
         and recent_average > 0
+        and recent_win_rate >= PAPER_LEVERAGED_MIN_WIN_RATE
     )
     return {
         "allowed": promoted,
         "shadowOnly": not promoted,
         "sampleCount": sample_count,
         "averageNetReturn": average,
+        "winRate": win_rate,
+        "profitFactor": profit_factor,
         "recentSampleCount": recent_count,
         "recentAverageNetReturn": recent_average,
+        "recentWinRate": recent_win_rate,
         "allocationScale": PAPER_LEVERAGED_ALLOCATION_SCALE,
         "reason": (
-            f"레버리지 그림자 검증 통과 · 전체 {average * 100:+.3f}% · 최근 {recent_average * 100:+.3f}%"
+            f"레버리지 그림자 검증 통과 · 승률 {win_rate * 100:.1f}% · "
+            f"전체 {average * 100:+.3f}% · PF {profit_factor:.2f}"
             if promoted else
-            f"레버리지 그림자 검증 {sample_count}/{PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES}건 · 양수 확인 전 메인 제외"
+            f"레버리지 새 전략 검증 {sample_count}/{PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES}건 · "
+            "승률 45%·PF 1.30 확인 전 메인 제외"
         ),
     }
 
@@ -2983,7 +3146,7 @@ def evidence_gate_summary(decisions: list[dict[str, Any]]) -> dict[str, Any]:
         if not item.get("allowed")
         and any(
             isinstance(item.get(key), dict) and item.get(key, {}).get("shadowOnly")
-            for key in ("costEvidence", "timeContext", "leveragedEvidence")
+            for key in ("contextEvidence", "leveragedEvidence", "costEvidence", "timeContext")
         )
     ]
     allowed = [item for item in decisions if item.get("allowed")]
@@ -2994,7 +3157,7 @@ def evidence_gate_summary(decisions: list[dict[str, Any]]) -> dict[str, Any]:
         "shadowOnlyCount": len(shadow_only),
         "mainEntryPaused": bool(decisions) and not allowed and bool(shadow_only),
         "primaryReason": primary.get("reason") if primary else None,
-        "mode": "NET_EXPECTANCY_GATE",
+        "mode": "CONTEXT_VALIDATION_GATE",
     }
 
 
@@ -3251,7 +3414,10 @@ def close_paper_positions_if_needed(
         stop_rate = PAPER_STOP_RATE
         hard_stop_enabled = "hard-stop-loss" in entry_ids or isinstance(order.get("protectiveStopOrder"), dict)
         profit_target_enabled = "profit-trailing" in entry_ids
-        time_exit_enabled = "three-minute-exit" in entry_ids
+        time_exit_enabled = (
+            "three-minute-exit" in entry_ids
+            and order.get("engineVersion") != PAPER_STRATEGY_ENGINE_VERSION
+        )
         protective: dict[str, Any] = {}
         created = False
         if hard_stop_enabled:
@@ -3489,7 +3655,12 @@ def update_shadow_paper(
                     )
             opened_at = parse_order_time(item.get("openedAt"))
             held = max(0, int((now_dt - opened_at).total_seconds())) if opened_at else 0
-            if not exit_kind and held >= int(runtime.get("timeExitSeconds") or 180) and observed_rate < 0.001:
+            if (
+                not exit_kind
+                and item.get("engineVersion") != PAPER_STRATEGY_ENGINE_VERSION
+                and held >= int(runtime.get("timeExitSeconds") or 180)
+                and observed_rate < 0.001
+            ):
                 exit_kind = "시간청산"
             minutes_to_close = market_minutes_to_close(market)
             if not exit_kind and minutes_to_close is not None and minutes_to_close <= PAPER_MARKET_CLOSE_EXIT_MINUTES:
@@ -3513,7 +3684,10 @@ def update_shadow_paper(
             (str(item.get("market") or ""), str(item.get("symbol") or ""))
             for item in samples if item.get("status") == "OPEN"
         }
-        strategy_key = hashlib.sha1("|".join(sorted(policy.get("enabledIds") or [])).encode("utf-8")).hexdigest()[:12]
+        strategy_key_source = "|".join(
+            [PAPER_STRATEGY_ENGINE_VERSION, *sorted(policy.get("enabledIds") or [])]
+        )
+        strategy_key = hashlib.sha1(strategy_key_source.encode("utf-8")).hexdigest()[:12]
         for result in results:
             symbol = str(result.get("symbol") or "")
             key = (market, symbol)
@@ -3527,15 +3701,20 @@ def update_shadow_paper(
             price = decimal(result.get("lastPrice"))
             if price <= 0:
                 continue
+            entry_context = candidate_evidence_context(result, market, now_dt)
             samples.append({
                 "id": f"SHADOW-{market}-{symbol}-{int(time.time() * 1000)}",
                 "mode": "SIGNAL_ONLY_NO_CAPITAL", "status": "OPEN",
                 "market": market, "session": session, "symbol": symbol,
                 "name": result.get("name") or symbol, "openedAt": now,
                 "entryPrice": price, "highWaterPrice": price,
+                "dailyRate": result.get("dailyRate"),
                 "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
                 "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
                 "instrumentRisk": instrument_risk_policy(result),
+                "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                "entryContext": entry_context,
+                "exitPolicy": "STOP_-0.5_TARGET_+1_TRAILING_CLOSE_NO_FIXED_TIME_EXIT",
                 "strategyKey": strategy_key, "strategyIds": list(policy.get("enabledIds") or []),
                 "strategyRevision": policy.get("revision"), "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
                 "excludedFromCapitalLedger": True, "excludedFromBillionGoal": True,
@@ -3677,24 +3856,26 @@ def paper_trade_locked(
             decimal(policy.get("allocationScale") or 1.0),
             decimal(instrument_risk.get("allocationScale") or 1.0),
         )
-        cost_policy = cost_aware_entry_policy(score_bucket_evidence, market, evaluated_score)
-        policy["costEvidence"] = cost_policy
+        policy["legacyDiagnostics"] = {
+            "scoreBucket": cost_aware_entry_policy(
+                score_bucket_evidence, market, evaluated_score
+            ),
+            "timeBucket": time_context_entry_policy(time_bucket_evidence, market),
+            "usedForEntry": False,
+        }
+        context_policy = contextual_shadow_entry_policy(
+            item, market, shadow_state
+        )
+        policy["contextEvidence"] = context_policy
         policy["allocationScale"] = min(
             decimal(policy.get("allocationScale") or 1.0),
-            decimal(cost_policy.get("allocationScale") or 1.0),
+            decimal(context_policy.get("allocationScale") or 0.0),
         )
-        if not cost_policy.get("allowed"):
+        if not context_policy.get("allowed"):
             policy["allowed"] = False
-            policy["reason"] = str(cost_policy.get("reason") or "비용 후 기대값 미달")
-        time_policy = time_context_entry_policy(time_bucket_evidence, market)
-        policy["timeContext"] = time_policy
-        policy["allocationScale"] = min(
-            decimal(policy.get("allocationScale") or 1.0),
-            decimal(time_policy.get("allocationScale") or 1.0),
-        )
-        if not time_policy.get("allowed"):
-            policy["allowed"] = False
-            policy["reason"] = str(time_policy.get("reason") or "시간대 비용 후 기대값 미달")
+            policy["reason"] = str(
+                context_policy.get("reason") or "상황별 그림자 검증 미달"
+            )
         leveraged_policy = leveraged_shadow_entry_policy(item, market, shadow_state)
         policy["leveragedEvidence"] = leveraged_policy
         policy["allocationScale"] = min(
@@ -3714,9 +3895,9 @@ def paper_trade_locked(
             if not score_allowed:
                 policy["reason"] = f"실행 전략 기준 · {policy['requiredScore']}점 필요 (위험조정 {evaluated_score:.1f}점)"
         else:
-            policy["allowed"] = True
             policy["requiredScore"] = 0
-            policy["reason"] = "점수 진입 전략 비활성 · 후보 필터만 적용"
+            if policy.get("allowed"):
+                policy["reason"] = "점수 진입 전략 비활성 · 상황별 검증 통과"
         decision = dict(policy)
         decision["name"] = item.get("name") or symbol
         decision["todaySymbolSamples"] = symbol_sample_count
@@ -3836,6 +4017,11 @@ def paper_trade_locked(
                 },
                 "status": "FILLED",
                 "createdAt": created_at,
+                "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                "entryContext": (
+                    candidate_policy.get("contextEvidence", {}).get("context")
+                    if candidate_policy else None
+                ),
                 "reason": candidate.get("reason"),
                 "entryScore": candidate_policy.get("candidateScore") if candidate_policy else candidate.get("score"),
                 "rawEntryScore": candidate.get("score"),
@@ -3854,9 +4040,10 @@ def paper_trade_locked(
                     "globalSampleCount": candidate_policy.get("globalSampleCount") if candidate_policy else 0,
                     "appliedImmediately": True,
                     "appliedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    "costEvidence": candidate_policy.get("costEvidence") if candidate_policy else None,
+                    "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                    "contextEvidence": candidate_policy.get("contextEvidence") if candidate_policy else None,
+                    "legacyDiagnostics": candidate_policy.get("legacyDiagnostics") if candidate_policy else None,
                     "instrumentRisk": candidate_policy.get("instrumentRisk") if candidate_policy else None,
-                    "timeContext": candidate_policy.get("timeContext") if candidate_policy else None,
                     "leveragedEvidence": candidate_policy.get("leveragedEvidence") if candidate_policy else None,
                 },
                 "strategyIds": list(execution_policy.get("enabledIds") or []),

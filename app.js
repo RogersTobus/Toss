@@ -1586,6 +1586,7 @@ function renderPaperSummary(state) {
   const dailyAccountRisk = summary.dailyAccountRisk || {};
   const billionGoal = summary.billionGoal || {};
   const shadowPaper = summary.shadowPaper || {};
+  const currentShadow = shadowPaper.currentStrategy || {};
   const accountReturn = Number(dailyAccountRisk.returnRate ?? averageReturn);
   const targetRate = Number(summary.targetRate || 0.01);
   const stopRate = Number(summary.stopRate || -0.0045);
@@ -1604,8 +1605,14 @@ function renderPaperSummary(state) {
   const shadowPerformance = document.querySelector("#shadowPerformance");
   if (shadowActive) shadowActive.textContent = `활성 ${Number(shadowPaper.activeCount || 0).toLocaleString("ko-KR")}개`;
   if (shadowToday) shadowToday.textContent = `${Number(shadowPaper.todayCompletedCount || 0).toLocaleString("ko-KR")}건`;
-  if (shadowSamples) shadowSamples.textContent = `${Number(shadowPaper.sampleCount || 0).toLocaleString("ko-KR")}건`;
-  if (shadowPerformance) shadowPerformance.textContent = `승률 ${(Number(shadowPaper.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(shadowPaper.averageNetReturn || 0))}`;
+  const currentShadowCount = Number(currentShadow.sampleCount || 0);
+  const requiredContextSamples = Number(currentShadow.requiredContextSamples || 12);
+  if (shadowSamples) shadowSamples.textContent = `${currentShadowCount.toLocaleString("ko-KR")}/${requiredContextSamples}건`;
+  if (shadowPerformance) {
+    shadowPerformance.textContent = currentShadowCount
+      ? `승률 ${(Number(currentShadow.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(currentShadow.averageNetReturn || 0))} · PF ${Number(currentShadow.profitFactor || 0).toFixed(2)}`
+      : "새 전략 검증 표본 수집 중";
+  }
 
   const goalProbabilityRate = Number(billionGoal.probabilityRate ?? 0.0005);
   const goalProbabilityPercent = Math.max(0, goalProbabilityRate * 100);
