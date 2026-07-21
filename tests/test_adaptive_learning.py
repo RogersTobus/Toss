@@ -287,6 +287,21 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
         self.assertFalse(rejected["allowed"])
         self.assertTrue(rejected["shadowOnly"])
 
+    def test_evidence_gate_explains_shadow_only_mode(self):
+        summary = server.evidence_gate_summary(
+            [
+                {
+                    "symbol": "BLOCKED",
+                    "allowed": False,
+                    "reason": "KR 장중 비용 후 음수",
+                    "timeContext": {"shadowOnly": True},
+                }
+            ]
+        )
+        self.assertTrue(summary["mainEntryPaused"])
+        self.assertEqual(summary["shadowOnlyCount"], 1)
+        self.assertEqual(summary["primaryReason"], "KR 장중 비용 후 음수")
+
 
 class OffMarketResearchTests(unittest.TestCase):
     def candles(self, count=180):

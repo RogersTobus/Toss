@@ -2977,6 +2977,27 @@ def sample_diversity_summary(
     }
 
 
+def evidence_gate_summary(decisions: list[dict[str, Any]]) -> dict[str, Any]:
+    shadow_only = [
+        item for item in decisions
+        if not item.get("allowed")
+        and any(
+            isinstance(item.get(key), dict) and item.get(key, {}).get("shadowOnly")
+            for key in ("costEvidence", "timeContext", "leveragedEvidence")
+        )
+    ]
+    allowed = [item for item in decisions if item.get("allowed")]
+    primary = shadow_only[0] if shadow_only else None
+    return {
+        "evaluatedCount": len(decisions),
+        "mainEligibleCount": len(allowed),
+        "shadowOnlyCount": len(shadow_only),
+        "mainEntryPaused": bool(decisions) and not allowed and bool(shadow_only),
+        "primaryReason": primary.get("reason") if primary else None,
+        "mode": "NET_EXPECTANCY_GATE",
+    }
+
+
 def extract_stock_price(stock: dict[str, Any]) -> Any:
     price = stock.get("price") if isinstance(stock.get("price"), dict) else {}
     return (
@@ -3757,6 +3778,17 @@ def paper_trade_locked(
         working_capital = decimal(capital_plan.get("workingCapitalKrw"))
         allocation_rate = allocated_krw / working_capital if working_capital else 0.0
         break
+    evidence_gate = evidence_gate_summary(learning_decisions)
+    summary["evidenceGate"] = evidence_gate
+    if not candidate and evidence_gate.get("mainEntryPaused"):
+        current_decision = dict(summary.get("decision") or {})
+        summary["decision"] = {
+            **current_decision,
+            "mode": "그림자 학습",
+            "tone": "caution",
+            "reason": evidence_gate.get("primaryReason") or "비용 후 기대값 재검증 중",
+            "action": "메인 진입 보류 · 그림자 PAPER 표본 계속 수집",
+        }
     if candidate:
         created_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         buy_order = {
