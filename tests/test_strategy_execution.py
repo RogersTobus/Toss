@@ -44,6 +44,20 @@ class StrategyExecutionTests(unittest.TestCase):
         self.assertEqual(parameters["reentryCooldownSeconds"], 600)
         self.assertEqual(parameters["maxAllocationRate"], 0.30)
 
+    def test_risk_refresh_preserves_shadow_only_entry_decision(self):
+        previous = {
+            "decision": {"mode": "그림자 학습", "reason": "비용 후 음수"},
+            "evidenceGate": {"mainEntryPaused": True},
+            "learningDecisions": [{"allowed": False}],
+        }
+        merged = server.preserve_entry_policy_summary(
+            {"decision": {"mode": "균형 모드"}, "openPositionCount": 0},
+            previous,
+        )
+        self.assertEqual(merged["decision"]["mode"], "그림자 학습")
+        self.assertTrue(merged["evidenceGate"]["mainEntryPaused"])
+        self.assertEqual(len(merged["learningDecisions"]), 1)
+
     def tearDown(self):
         server.STRATEGY_CONFIG_PATH = self.original_strategy_path
         server.PAPER_PATH = self.original_paper_path

@@ -5305,6 +5305,23 @@ def monitor_active_position_risks(
     return orders, changed, active
 
 
+def preserve_entry_policy_summary(
+    fresh: dict[str, Any], previous: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Keep candidate evidence decisions when the 1-second risk monitor refreshes P&L."""
+    merged = dict(fresh)
+    previous = previous or {}
+    for key in (
+        "learningBrain", "learningDecisions", "evidenceGate",
+        "entryBlockedReason", "lossStreakCooldown", "sessionMode",
+    ):
+        if key not in merged and key in previous:
+            merged[key] = previous[key]
+    if (previous.get("evidenceGate") or {}).get("mainEntryPaused"):
+        merged["decision"] = previous.get("decision") or merged.get("decision")
+    return merged
+
+
 def position_risk_loop() -> None:
     """Watch every concurrently open PAPER market independently from candidate scans."""
     while True:
@@ -5329,6 +5346,9 @@ def position_risk_loop() -> None:
                     }
                 )
                 if changed:
+                    paper_stats = preserve_entry_policy_summary(
+                        paper_stats or {}, ANALYSIS.get("paperSummary")
+                    )
                     monitor["lastActionAt"] = monitor["lastRunAt"]
                     ANALYSIS["paperOrders"] = orders[-50:]
                     ANALYSIS["paperSummary"] = paper_stats
