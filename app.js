@@ -1041,6 +1041,7 @@ function renderLearningBrain(learning = {}, entries = []) {
   const globalBrain = learning.global || {};
   const domesticReview = learning.domesticDayReview || {};
   const offlineStudy = learning.offlineStudy || {};
+  const intradayBacktest = learning.intradayBacktest || {};
   const candidateStrategies = learning.candidateStrategies || offlineStudy.candidateStrategies || {};
   const symbols = learning.symbols || [];
   const memories = globalBrain.revisions || [];
@@ -1227,10 +1228,13 @@ function renderLearningBrain(learning = {}, entries = []) {
   }
   if (offlineSummary) {
     const studySummary = offlineStudy.summary || {};
+    const replayMetrics = intradayBacktest.metrics?.overall || {};
     const items = [
       ["전체 유니버스", `${Number(offlineStudy.universeCount || 0).toLocaleString("ko-KR")}개`],
       ["이번 묶음", `${Number(offlineStudy.analyzedSymbolCount || 0)}종목`],
       ["패턴 관찰", `${Number(studySummary.patternObservationCount || 0).toLocaleString("ko-KR")}건`],
+      ["1분봉 검증", `${Number(intradayBacktest.tradeCount || 0).toLocaleString("ko-KR")}건`],
+      ["검증 순성과", `${signedPercent(Number(replayMetrics.averageNetReturn || 0))} · PF ${Number(replayMetrics.profitFactor || 0).toFixed(2)}`],
       ["누적 후보", `${Number(candidateStrategies.candidateCount || 0).toLocaleString("ko-KR")}개`],
       ["100건 검증", `${Number(candidateStrategies.validatingCount || 0)}개`],
       ["비교 준비", `${Number(candidateStrategies.readyToCompareCount || 0)}개`],

@@ -134,6 +134,10 @@ OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 50
 OFF_MARKET_STUDY_BATCH_PER_MARKET = 8
 OFF_MARKET_STUDY_CANDLE_PAGES = 3
 OFF_MARKET_STUDY_POLL_SECONDS = 300
+INTRADAY_BACKTEST_BATCH_PER_MARKET = 4
+INTRADAY_BACKTEST_CANDLE_PAGES = 8
+INTRADAY_BACKTEST_HISTORY_LIMIT = 5000
+INTRADAY_BACKTEST_VERSION = "minute-replay-v1"
 STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
 RESEARCH_MIN_VALIDATION_SAMPLES = 100
@@ -4267,6 +4271,283 @@ def study_daily_candles(env: dict[str, str], symbol: str) -> list[dict[str, Any]
     return sorted(by_timestamp.values(), key=lambda item: str(item.get("timestamp") or ""))
 
 
+def study_intraday_candles(
+    env: dict[str, str], symbol: str, pages: int = INTRADAY_BACKTEST_CANDLE_PAGES
+) -> list[dict[str, Any]]:
+    """Fetch adjusted one-minute candles without retaining raw market data in state."""
+    by_timestamp: dict[str, dict[str, Any]] = {}
+    before = None
+    for _ in range(max(1, pages)):
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "interval": "1m",
+            "count": 200,
+            "adjusted": "true",
+        }
+        if before:
+            params["before"] = before
+        result = toss_get(
+            f"/api/v1/candles?{urllib.parse.urlencode(params)}", env
+        ).get("result") or {}
+        candles = result.get("candles") or []
+        for raw in candles:
+            timestamp = str(raw.get("timestamp") or "")
+            if not timestamp:
+                continue
+            by_timestamp[timestamp] = {
+                "timestamp": timestamp,
+                "open": decimal(raw.get("openPrice")),
+                "high": decimal(raw.get("highPrice")),
+                "low": decimal(raw.get("lowPrice")),
+                "close": decimal(raw.get("closePrice")),
+                "volume": decimal(raw.get("volume")),
+            }
+        next_before = result.get("nextBefore")
+        if not next_before or next_before == before or not candles:
+            break
+        before = str(next_before)
+        time.sleep(0.23)
+    return sorted(by_timestamp.values(), key=lambda item: str(item.get("timestamp") or ""))
+
+
+def historical_candidate_score(market: str, rank: int, daily_rate: float) -> float:
+    profile = MARKET_SCORE_FEATURES.get(market, MARKET_SCORE_FEATURES["KR"])
+    liquidity_max = decimal(profile["liquidity"]["maxPoints"])
+    momentum_max = decimal(profile["momentum"]["maxPoints"])
+    stability_max = decimal(profile["stability"]["maxPoints"])
+    liquidity = max(0.0, liquidity_max - ((max(1, rank) - 1) * (liquidity_max / 33)))
+    if market == "US":
+        momentum = momentum_max if 0.03 <= daily_rate < 0.12 else (
+            momentum_max * 0.60 if 0 <= daily_rate < 0.03 else
+            momentum_max * 0.25 if daily_rate >= 0.12 else momentum_max * 0.15
+        )
+    else:
+        momentum = momentum_max if 0.02 <= daily_rate < 0.12 else (
+            momentum_max * 0.57 if 0 <= daily_rate < 0.02 else
+            momentum_max * 0.29 if daily_rate >= 0.12 else momentum_max * 0.14
+        )
+    stability = stability_max if -0.03 < daily_rate < 0.12 else stability_max * 0.32
+    return round(liquidity + momentum + stability, 1)
+
+
+def simulate_intraday_strategy(
+    candles: list[dict[str, Any]], market: str, symbol: str, name: str, rank: int
+) -> list[dict[str, Any]]:
+    """Conservative minute-bar replay of context-edge-v3 entry and exit rules."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for candle in candles:
+        moment = parse_study_candle_time(candle.get("timestamp"))
+        if not moment:
+            continue
+        grouped.setdefault(paper_trading_day(moment), []).append(candle)
+    trades: list[dict[str, Any]] = []
+    minimum_price = 5000.0 if market == "KR" else 5.0
+    cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+    for trading_day, rows in sorted(grouped.items()):
+        rows.sort(key=lambda item: str(item.get("timestamp") or ""))
+        if len(rows) < 12:
+            continue
+        session_open = decimal(rows[0].get("open"))
+        if session_open < minimum_price:
+            continue
+        index = 5
+        while index < len(rows) - 1:
+            entry_candle = rows[index]
+            entry = decimal(entry_candle.get("close"))
+            moment = parse_study_candle_time(entry_candle.get("timestamp"))
+            if entry <= 0 or not moment:
+                index += 1
+                continue
+            daily_rate = (entry / session_open) - 1 if session_open else 0.0
+            score = historical_candidate_score(market, rank, daily_rate)
+            if score < 83 or not (-0.03 < daily_rate < 0.12):
+                index += 1
+                continue
+            risk = instrument_risk_policy({"symbol": symbol, "name": name})
+            score = max(0.0, score - decimal(risk.get("scorePenalty")))
+            if score < 83:
+                index += 1
+                continue
+            candidate = {"symbol": symbol, "name": name, "score": score, "dailyRate": daily_rate}
+            context = candidate_evidence_context(candidate, market, moment)
+            stop_price = entry * (1 + PAPER_STOP_RATE)
+            target_price = entry * (1 + PAPER_TARGET_RATE)
+            high_water = entry
+            partial_taken = False
+            partial_return = 0.0
+            exit_index = len(rows) - 1
+            exit_price = decimal(rows[-1].get("close"))
+            exit_kind = "마감청산"
+            gross_return = (exit_price / entry) - 1 if entry else 0.0
+            for future_index in range(index + 1, len(rows)):
+                bar = rows[future_index]
+                bar_open = decimal(bar.get("open"))
+                bar_high = decimal(bar.get("high"))
+                bar_low = decimal(bar.get("low"))
+                bar_close = decimal(bar.get("close"))
+                if not partial_taken:
+                    # Minute bars do not reveal intrabar order. When stop and target
+                    # both appear, assume the stop happened first.
+                    if bar_low <= stop_price:
+                        exit_price = min(stop_price, bar_open or stop_price)
+                        gross_return = (exit_price / entry) - 1
+                        exit_kind, exit_index = "손실선", future_index
+                        break
+                    if bar_high >= target_price:
+                        partial_taken = True
+                        partial_return = PAPER_TARGET_RATE
+                        high_water = max(high_water, target_price)
+                else:
+                    trailing_trigger = max(entry, high_water * (1 + PAPER_TRAILING_RATE))
+                    if bar_low <= trailing_trigger:
+                        exit_price = min(trailing_trigger, bar_open or trailing_trigger)
+                        remainder_return = (exit_price / entry) - 1
+                        gross_return = (
+                            partial_return * PAPER_PARTIAL_TAKE_PROFIT_RATE
+                            + remainder_return * (1 - PAPER_PARTIAL_TAKE_PROFIT_RATE)
+                        )
+                        exit_kind, exit_index = "추적손절", future_index
+                        break
+                high_water = max(high_water, bar_high)
+                exit_price = bar_close
+                if future_index == len(rows) - 1:
+                    remainder_return = (exit_price / entry) - 1
+                    gross_return = (
+                        partial_return * PAPER_PARTIAL_TAKE_PROFIT_RATE
+                        + remainder_return * (1 - PAPER_PARTIAL_TAKE_PROFIT_RATE)
+                        if partial_taken else remainder_return
+                    )
+            opened_at = str(entry_candle.get("timestamp") or "")
+            closed_at = str(rows[exit_index].get("timestamp") or "")
+            trade_id = hashlib.sha1(
+                f"{INTRADAY_BACKTEST_VERSION}:{market}:{symbol}:{opened_at}".encode("utf-8")
+            ).hexdigest()[:18]
+            trades.append({
+                "id": trade_id, "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                "backtestVersion": INTRADAY_BACKTEST_VERSION, "market": market,
+                "symbol": symbol, "name": name, "tradingDay": trading_day,
+                "openedAt": opened_at, "closedAt": closed_at, "entryPrice": entry,
+                "exitPrice": exit_price, "entryScore": score, "dailyRate": daily_rate,
+                "entryContext": context, "exitKind": exit_kind,
+                "grossReturnRate": gross_return, "estimatedCostRate": cost_rate,
+                "netReturnRate": gross_return - cost_rate,
+                "invested": 1.0, "estimatedCost": cost_rate,
+                "netProfit": gross_return - cost_rate,
+                "conservativeIntrabar": True,
+            })
+            index = max(index + 1, exit_index + 10)
+    return trades
+
+
+def intraday_backtest_metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
+    ordered = sorted(trades, key=lambda item: str(item.get("closedAt") or ""))
+    count = len(ordered)
+    train_end = int(count * 0.60)
+    validate_end = int(count * 0.80)
+    splits = {
+        "train": ordered[:train_end],
+        "validation": ordered[train_end:validate_end],
+        "holdout": ordered[validate_end:],
+    }
+    return {
+        "overall": performance_metrics(ordered),
+        "splits": {key: performance_metrics(value) for key, value in splits.items()},
+        "splitPolicy": "TIME_ORDERED_60_20_20",
+    }
+
+
+def intraday_backtest_universe(env: dict[str, str], market: str) -> list[dict[str, Any]]:
+    query = urllib.parse.urlencode({
+        "type": "MARKET_TRADING_AMOUNT", "marketCountry": market,
+        "duration": "1d", "excludeInvestmentCaution": "true", "count": "50",
+    })
+    rows = (toss_get(f"/api/v1/rankings?{query}", env).get("result") or {}).get("rankings") or []
+    symbols = [str(row.get("symbol") or "") for row in rows if row.get("symbol")]
+    stocks = toss_get(
+        f"/api/v1/stocks?{urllib.parse.urlencode({'symbols': ','.join(symbols)})}", env
+    ).get("result") or [] if symbols else []
+    names = {str(item.get("symbol") or ""): item.get("name") for item in stocks}
+    return [
+        {"symbol": str(row.get("symbol") or ""),
+         "name": names.get(str(row.get("symbol") or "")) or row.get("name") or row.get("symbol"),
+         "rank": int(row.get("rank") or index + 1)}
+        for index, row in enumerate(rows) if row.get("symbol")
+    ]
+
+
+def run_intraday_backtest_cycle(
+    env: dict[str, str], markets: tuple[str, ...] = ("KR", "US")
+) -> dict[str, Any]:
+    started = now_kst()
+    with LEARNING_LOCK:
+        state = load_learning_state_unlocked()
+        previous = dict(state.get("intradayBacktest") or {})
+    cursors = dict(previous.get("universeCursors") or {})
+    all_trades = {
+        str(item.get("id")): item for item in previous.get("trades") or [] if item.get("id")
+    }
+    errors: list[str] = []
+    analyzed = []
+    universe_sizes = {}
+    for market in markets:
+        try:
+            universe = intraday_backtest_universe(env, market)
+            universe_sizes[market] = len(universe)
+            if not universe:
+                continue
+            start = int(cursors.get(market) or 0) % len(universe)
+            selected = [
+                universe[(start + offset) % len(universe)]
+                for offset in range(min(INTRADAY_BACKTEST_BATCH_PER_MARKET, len(universe)))
+            ]
+            cursors[market] = (start + len(selected)) % len(universe)
+            for stock in selected:
+                try:
+                    candles = study_intraday_candles(env, stock["symbol"])
+                    trades = simulate_intraday_strategy(
+                        candles, market, stock["symbol"], str(stock.get("name") or stock["symbol"]),
+                        int(stock.get("rank") or 50),
+                    )
+                    for trade in trades:
+                        all_trades[str(trade["id"])] = trade
+                    analyzed.append({
+                        "market": market, "symbol": stock["symbol"], "name": stock.get("name"),
+                        "candleCount": len(candles), "tradeCount": len(trades),
+                    })
+                except Exception as exc:
+                    errors.append(f"{market} {stock['symbol']}: {str(exc)[:180]}")
+        except Exception as exc:
+            errors.append(f"{market} 유니버스: {str(exc)[:180]}")
+    retained = sorted(all_trades.values(), key=lambda item: str(item.get("closedAt") or ""))[
+        -INTRADAY_BACKTEST_HISTORY_LIMIT:
+    ]
+    by_market = {
+        market: intraday_backtest_metrics([item for item in retained if item.get("market") == market])
+        for market in ("KR", "US")
+    }
+    result = {
+        "version": INTRADAY_BACKTEST_VERSION,
+        "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+        "status": "completed" if analyzed else "error",
+        "startedAt": started.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "completedAt": now_kst().strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "markets": list(markets), "universeSizes": universe_sizes,
+        "universeCursors": cursors, "analyzed": analyzed[-16:],
+        "tradeCount": len(retained), "metrics": intraday_backtest_metrics(retained),
+        "byMarket": by_market, "trades": retained,
+        "errors": errors[-12:], "autoPromotion": False,
+        "selectionBias": "CURRENT_LIQUIDITY_UNIVERSE",
+        "intrabarPolicy": "STOP_FIRST_WHEN_TARGET_AND_STOP_SHARE_MINUTE",
+        "note": "후보 선별용 보수적 1분봉 재생이며 실시간 SHADOW 검증을 대체하지 않음",
+    }
+    with LEARNING_LOCK:
+        state = load_learning_state_unlocked()
+        state["intradayBacktest"] = result
+        state["updatedAt"] = result["completedAt"]
+        save_learning_state_unlocked(state)
+    return result
+
+
 def parse_study_candle_time(value: Any) -> datetime | None:
     if isinstance(value, (int, float)):
         seconds = float(value)
@@ -5423,6 +5704,31 @@ def off_market_study_loop() -> None:
         time.sleep(OFF_MARKET_STUDY_POLL_SECONDS)
 
 
+def intraday_backtest_loop() -> None:
+    time.sleep(45)
+    while True:
+        try:
+            env = load_env()
+            sessions = active_market_sessions(env)
+            research_markets = markets_available_for_research(sessions)
+            if research_markets:
+                run_intraday_backtest_cycle(env, research_markets)
+        except Exception as exc:
+            try:
+                with LEARNING_LOCK:
+                    state = load_learning_state_unlocked()
+                    study = dict(state.get("intradayBacktest") or {})
+                    study.update({
+                        "status": "error", "lastAttemptAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "lastError": str(exc)[:500],
+                    })
+                    state["intradayBacktest"] = study
+                    save_learning_state_unlocked(state)
+            except OSError:
+                pass
+        time.sleep(OFF_MARKET_STUDY_POLL_SECONDS)
+
+
 def domestic_day_review_loop() -> None:
     """Use the low-activity US day session for one KR multi-timeframe review."""
     time.sleep(20)
@@ -6390,6 +6696,7 @@ def default_learning_state() -> dict[str, Any]:
         "domesticDayReviewHistory": [],
         "offlineStudy": {},
         "offlineStudyHistory": [],
+        "intradayBacktest": {},
         "candidateStrategyRegistry": {},
         "symbols": {},
         "memories": [],
@@ -6415,6 +6722,7 @@ def load_learning_state_unlocked() -> dict[str, Any]:
         "domesticDayReviewHistory": list(raw.get("domesticDayReviewHistory") or [])[-30:],
         "offlineStudy": dict(raw.get("offlineStudy") or {}),
         "offlineStudyHistory": list(raw.get("offlineStudyHistory") or [])[-30:],
+        "intradayBacktest": dict(raw.get("intradayBacktest") or {}),
         "candidateStrategyRegistry": dict(raw.get("candidateStrategyRegistry") or {}),
         "symbols": dict(raw.get("symbols") or {}),
         "memories": list(raw.get("memories") or []),
@@ -6793,6 +7101,8 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
 
     domestic_review = compact_study(state.get("domesticDayReview"))
     offline_study = compact_study(state.get("offlineStudy"))
+    intraday_backtest = json.loads(json.dumps(state.get("intradayBacktest") or {}, ensure_ascii=False))
+    intraday_backtest.pop("trades", None)
     domestic_history = [
         compact_study(item)
         for item in list(reversed(state.get("domesticDayReviewHistory") or []))[:10]
@@ -6820,6 +7130,7 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
         "domesticDayReview": domestic_review,
         "domesticDayReviewHistory": domestic_history,
         "offlineStudy": offline_study,
+        "intradayBacktest": intraday_backtest,
         "offlineStudyHistory": offline_history,
         "candidateStrategies": candidate_strategies,
         "symbols": symbols[:100],
@@ -7670,6 +7981,7 @@ if __name__ == "__main__":
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
     threading.Thread(target=domestic_day_review_loop, daemon=True, name="domestic-day-review-loop").start()
     threading.Thread(target=off_market_study_loop, daemon=True, name="off-market-study-loop").start()
+    threading.Thread(target=intraday_backtest_loop, daemon=True, name="intraday-backtest-loop").start()
     threading.Thread(target=macro_context_loop, daemon=True, name="macro-context-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
