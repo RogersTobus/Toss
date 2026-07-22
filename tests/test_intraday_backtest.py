@@ -5,34 +5,78 @@ import server
 
 
 class IntradayBacktestTests(unittest.TestCase):
-    def candles(self, prices):
-        start = datetime(2026, 7, 20, 0, 0, tzinfo=timezone.utc)
+    def candles(self, prices, start=None):
+        start = start or datetime(2026, 7, 20, 13, 30, tzinfo=timezone.utc)
         rows = []
-        for index, (open_price, high, low, close) in enumerate(prices):
+        for index, values in enumerate(prices):
+            open_price, high, low, close = values[:4]
+            volume = values[4] if len(values) > 4 else 1000
             rows.append({
                 "timestamp": (start + timedelta(minutes=index)).isoformat(),
-                "open": open_price, "high": high, "low": low, "close": close, "volume": 1000,
+                "open": open_price, "high": high, "low": low, "close": close, "volume": volume,
             })
         return rows
 
+    def qualifying_prefix(self):
+        rows = []
+        for index in range(20):
+            close = 100 + (index * 0.05)
+            rows.append((close - 0.03, close + 0.05, close - 0.05, close, 1000))
+        rows.append((100.95, 101.40, 100.90, 101.30, 1800))
+        return rows
+
+    def test_flat_high_rank_signal_is_rejected(self):
+        trades = server.simulate_intraday_strategy(
+            self.candles([(100, 100.1, 99.9, 100, 1000)] * 30),
+            "US", "TEST", "Test", 1,
+        )
+        self.assertEqual(trades, [])
+
     def test_same_minute_target_and_stop_assumes_stop_first(self):
-        flat = [(100, 100.2, 99.9, 100)] * 6
-        both = [(100, 101.5, 99.4, 101)]
-        tail = [(101, 101, 100.8, 101)] * 12
-        trades = server.simulate_intraday_strategy(self.candles(flat + both + tail), "US", "TEST", "Test", 1)
+        both = [(101.3, 102.5, 100.5, 102, 1400)]
+        tail = [(102, 102.1, 101.8, 102, 1000)] * 4
+        trades = server.simulate_intraday_strategy(
+            self.candles(self.qualifying_prefix() + both + tail),
+            "US", "TEST", "Test", 1,
+        )
         self.assertTrue(trades)
         self.assertEqual(trades[0]["exitKind"], "손실선")
         self.assertLessEqual(trades[0]["grossReturnRate"], server.PAPER_STOP_RATE)
 
     def test_target_then_trailing_combines_both_halves(self):
-        flat = [(100, 100.2, 99.9, 100)] * 6
-        target = [(100, 101.2, 100.2, 101)]
-        trailing = [(101, 102, 101, 101.5), (101.5, 101.6, 101.0, 101.1)]
-        tail = [(101.1, 101.2, 101, 101.1)] * 10
-        trades = server.simulate_intraday_strategy(self.candles(flat + target + trailing + tail), "US", "TEST", "Test", 1)
+        target = [(101.3, 102.5, 101.1, 102.4, 1400)]
+        trailing = [
+            (102.4, 103.0, 102.2, 102.7, 1200),
+            (102.7, 102.8, 102.4, 102.5, 1100),
+        ]
+        tail = [(102.5, 102.6, 102.4, 102.5, 1000)] * 4
+        trades = server.simulate_intraday_strategy(
+            self.candles(self.qualifying_prefix() + target + trailing + tail),
+            "US", "TEST", "Test", 1,
+        )
         self.assertTrue(trades)
         self.assertEqual(trades[0]["exitKind"], "추적손절")
         self.assertGreater(trades[0]["grossReturnRate"], 0)
+
+    def test_us_session_uses_exchange_date_across_korean_midnight(self):
+        first = datetime(2026, 7, 20, 14, 0, tzinfo=timezone.utc)
+        second = datetime(2026, 7, 20, 19, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            server.intraday_regular_session_key("US", first),
+            server.intraday_regular_session_key("US", second),
+        )
+
+    def test_leveraged_products_are_not_replayed_as_standard_entries(self):
+        trades = server.simulate_intraday_strategy(
+            self.candles(self.qualifying_prefix() + [(101.3, 102, 101, 101.7, 1200)]),
+            "US", "TQQQ", "TQQQ", 1,
+        )
+        self.assertEqual(trades, [])
+
+    def test_worker_resource_budget_is_bounded(self):
+        self.assertLessEqual(server.INTRADAY_BACKTEST_BATCH_PER_MARKET, 1)
+        self.assertLessEqual(server.INTRADAY_BACKTEST_CANDLE_PAGES, 4)
+        self.assertLessEqual(server.INTRADAY_BACKTEST_HISTORY_LIMIT, 1200)
 
     def test_time_ordered_split_keeps_holdout_separate(self):
         trades = [

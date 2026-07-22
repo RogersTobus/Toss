@@ -48,9 +48,11 @@ LEARNING_LOCK = threading.Lock()
 PAPER_LOCK = threading.RLock()
 SHADOW_PAPER_LOCK = threading.RLock()
 STRATEGY_LOCK = threading.RLock()
+RESEARCH_WORKER_LOCK = threading.Lock()
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
+US_EASTERN = ZoneInfo("America/New_York")
 PAPER_SCHEMA_VERSION = 2
 OPEN_POSITION_RESET_GENERATION = "2026-07-20-clear-legacy-open-positions"
 PAPER_STARTING_CAPITAL_KRW = 1_000_000
@@ -117,7 +119,7 @@ PAPER_COST_EVIDENCE_RECENT_SAMPLES = 5
 PAPER_LEVERAGED_SCORE_PENALTY = 4
 PAPER_LEVERAGED_ALLOCATION_SCALE = 0.50
 PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 20
-PAPER_STRATEGY_ENGINE_VERSION = "context-edge-v3"
+PAPER_STRATEGY_ENGINE_VERSION = "context-edge-v4"
 PAPER_CONTEXT_MIN_SAMPLES = 12
 PAPER_CONTEXT_RECENT_SAMPLES = 8
 PAPER_CONTEXT_HISTORY_LIMIT = 40
@@ -134,10 +136,12 @@ OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 50
 OFF_MARKET_STUDY_BATCH_PER_MARKET = 8
 OFF_MARKET_STUDY_CANDLE_PAGES = 3
 OFF_MARKET_STUDY_POLL_SECONDS = 300
-INTRADAY_BACKTEST_BATCH_PER_MARKET = 4
-INTRADAY_BACKTEST_CANDLE_PAGES = 8
-INTRADAY_BACKTEST_HISTORY_LIMIT = 5000
-INTRADAY_BACKTEST_VERSION = "minute-replay-v1"
+INTRADAY_BACKTEST_BATCH_PER_MARKET = 1
+INTRADAY_BACKTEST_CANDLE_PAGES = 4
+INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
+INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
+INTRADAY_BACKTEST_POLL_SECONDS = 900
+INTRADAY_BACKTEST_VERSION = "minute-replay-v2"
 STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
 RESEARCH_MIN_VALIDATION_SAMPLES = 100
@@ -167,8 +171,8 @@ DEFAULT_STRATEGIES = [
     {
         "id": "liquidity-momentum-filter",
         "title": "유동성·모멘텀 후보 필터",
-        "description": "한국·미국 주식/ETF/ADR 중 실제 수집되는 거래대금 순위, 당일 추세, 최소 가격, 급등락 안정성 조건을 통과한 종목만 후보로 올립니다. 스프레드·VWAP·상대 거래량은 데이터 연결 전까지 점수에 포함하지 않습니다.",
-        "judge": "필수조건 통과 전에는 진입 금지",
+        "description": "한국·미국 거래대금 상위 종목 중 과열되지 않은 양의 당일 추세만 후보로 올립니다. 장중 리플레이에서는 정규장 20분 이후, VWAP·단기 이평·5분 돌파·상대 거래량을 함께 검증하고 레버리지·인버스는 별도 검증 전 제외합니다.",
+        "judge": "양의 추세·VWAP·거래량 확인 전 진입 금지",
         "enabled": True,
     },
     {
@@ -2859,6 +2863,11 @@ def daily_rate_bucket(value: Any) -> str:
     return "8% 이상"
 
 
+def candidate_momentum_range(market: str) -> tuple[float, float]:
+    """Return the controlled positive trend range used by v4 candidates."""
+    return (0.008, 0.08) if market == "US" else (0.005, 0.06)
+
+
 def candidate_evidence_context(
     item: dict[str, Any], market: str, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -4330,6 +4339,74 @@ def historical_candidate_score(market: str, rank: int, daily_rate: float) -> flo
     return round(liquidity + momentum + stability, 1)
 
 
+def intraday_regular_session_key(market: str, moment: datetime) -> str | None:
+    """Return the exchange-local trading day only for regular-session bars."""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=KST)
+    local = moment.astimezone(US_EASTERN if market == "US" else KST)
+    minute = local.hour * 60 + local.minute
+    if market == "US":
+        return local.date().isoformat() if 570 <= minute < 960 else None
+    return local.date().isoformat() if 540 <= minute < 930 else None
+
+
+def intraday_entry_snapshot(
+    rows: list[dict[str, Any]], index: int, market: str, session_open: float
+) -> dict[str, Any]:
+    """Evaluate a non-lookahead breakout using only bars known at entry."""
+    if index < 20 or index >= len(rows):
+        return {"allowed": False, "reason": "정규장 20분 확인 전"}
+    current = rows[index]
+    previous = rows[index - 20:index]
+    entry = decimal(current.get("close"))
+    if entry <= 0 or session_open <= 0:
+        return {"allowed": False, "reason": "가격 확인 실패"}
+    closes = [decimal(item.get("close")) for item in previous]
+    volumes = [max(0.0, decimal(item.get("volume"))) for item in previous]
+    sma5 = sum(closes[-5:]) / 5
+    sma20 = sum(closes) / len(closes)
+    vwap_rows = previous + [current]
+    total_volume = sum(max(0.0, decimal(item.get("volume"))) for item in vwap_rows)
+    vwap = (
+        sum(
+            decimal(item.get("close")) * max(0.0, decimal(item.get("volume")))
+            for item in vwap_rows
+        ) / total_volume
+        if total_volume else sum(decimal(item.get("close")) for item in vwap_rows) / len(vwap_rows)
+    )
+    prior_volume = sum(volumes) / len(volumes) if volumes else 0.0
+    volume_ratio = decimal(current.get("volume")) / prior_volume if prior_volume else 0.0
+    short_momentum = entry / closes[-5] - 1 if closes[-5] else 0.0
+    daily_rate = entry / session_open - 1
+    prior_breakout = max(decimal(item.get("high")) for item in previous[-5:])
+    bar_high = decimal(current.get("high"))
+    bar_low = decimal(current.get("low"))
+    close_position = (entry - bar_low) / (bar_high - bar_low) if bar_high > bar_low else 0.5
+    momentum_min, momentum_max = candidate_momentum_range(market)
+    short_min = 0.002 if market == "US" else 0.0015
+    volume_min = 1.30 if market == "US" else 1.20
+    checks = {
+        "controlledDailyMomentum": momentum_min <= daily_rate < momentum_max,
+        "trendAligned": sma5 > sma20 and entry > vwap,
+        "fiveMinuteMomentum": short_min <= short_momentum <= 0.025,
+        "breakout": entry >= prior_breakout,
+        "relativeVolume": volume_ratio >= volume_min,
+        "strongClose": close_position >= 0.70,
+    }
+    return {
+        "allowed": all(checks.values()),
+        "checks": checks,
+        "dailyRate": daily_rate,
+        "shortMomentum": short_momentum,
+        "volumeRatio": volume_ratio,
+        "sma5": sma5,
+        "sma20": sma20,
+        "vwap": vwap,
+        "closePosition": close_position,
+        "reason": "통제 돌파 확인" if all(checks.values()) else "장중 확인 조건 미달",
+    }
+
+
 def simulate_intraday_strategy(
     candles: list[dict[str, Any]], market: str, symbol: str, name: str, rank: int
 ) -> list[dict[str, Any]]:
@@ -4339,18 +4416,23 @@ def simulate_intraday_strategy(
         moment = parse_study_candle_time(candle.get("timestamp"))
         if not moment:
             continue
-        grouped.setdefault(paper_trading_day(moment), []).append(candle)
+        trading_day = intraday_regular_session_key(market, moment)
+        if trading_day:
+            grouped.setdefault(trading_day, []).append(candle)
     trades: list[dict[str, Any]] = []
     minimum_price = 5000.0 if market == "KR" else 5.0
     cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
     for trading_day, rows in sorted(grouped.items()):
         rows.sort(key=lambda item: str(item.get("timestamp") or ""))
-        if len(rows) < 12:
+        if len(rows) < 22:
             continue
         session_open = decimal(rows[0].get("open"))
         if session_open < minimum_price:
             continue
-        index = 5
+        risk = instrument_risk_policy({"symbol": symbol, "name": name})
+        if risk.get("leveraged"):
+            continue
+        index = 20
         while index < len(rows) - 1:
             entry_candle = rows[index]
             entry = decimal(entry_candle.get("close"))
@@ -4358,12 +4440,15 @@ def simulate_intraday_strategy(
             if entry <= 0 or not moment:
                 index += 1
                 continue
-            daily_rate = (entry / session_open) - 1 if session_open else 0.0
-            score = historical_candidate_score(market, rank, daily_rate)
-            if score < 83 or not (-0.03 < daily_rate < 0.12):
+            signal = intraday_entry_snapshot(rows, index, market, session_open)
+            if not signal.get("allowed"):
                 index += 1
                 continue
-            risk = instrument_risk_policy({"symbol": symbol, "name": name})
+            daily_rate = decimal(signal.get("dailyRate"))
+            score = historical_candidate_score(market, rank, daily_rate)
+            if score < 83:
+                index += 1
+                continue
             score = max(0.0, score - decimal(risk.get("scorePenalty")))
             if score < 83:
                 index += 1
@@ -4429,13 +4514,16 @@ def simulate_intraday_strategy(
                 "openedAt": opened_at, "closedAt": closed_at, "entryPrice": entry,
                 "exitPrice": exit_price, "entryScore": score, "dailyRate": daily_rate,
                 "entryContext": context, "exitKind": exit_kind,
+                "entrySignal": signal,
                 "grossReturnRate": gross_return, "estimatedCostRate": cost_rate,
                 "netReturnRate": gross_return - cost_rate,
                 "invested": 1.0, "estimatedCost": cost_rate,
                 "netProfit": gross_return - cost_rate,
                 "conservativeIntrabar": True,
             })
-            index = max(index + 1, exit_index + 10)
+            # One independent sample per symbol and exchange-local session prevents
+            # repeated correlated entries from inflating the result.
+            break
     return trades
 
 
@@ -4482,9 +4570,20 @@ def run_intraday_backtest_cycle(
     with LEARNING_LOCK:
         state = load_learning_state_unlocked()
         previous = dict(state.get("intradayBacktest") or {})
+    previous_version = str(previous.get("version") or "")
+    baseline = previous.get("baseline") if isinstance(previous.get("baseline"), dict) else None
+    if previous_version and previous_version != INTRADAY_BACKTEST_VERSION:
+        baseline = {
+            "version": previous_version,
+            "tradeCount": int(previous.get("tradeCount") or 0),
+            "metrics": previous.get("metrics") or {},
+            "byMarket": previous.get("byMarket") or {},
+        }
     cursors = dict(previous.get("universeCursors") or {})
     all_trades = {
-        str(item.get("id")): item for item in previous.get("trades") or [] if item.get("id")
+        str(item.get("id")): item
+        for item in previous.get("trades") or []
+        if item.get("id") and item.get("backtestVersion") == INTRADAY_BACKTEST_VERSION
     }
     errors: list[str] = []
     analyzed = []
@@ -4535,10 +4634,11 @@ def run_intraday_backtest_cycle(
         "universeCursors": cursors, "analyzed": analyzed[-16:],
         "tradeCount": len(retained), "metrics": intraday_backtest_metrics(retained),
         "byMarket": by_market, "trades": retained,
+        "baseline": baseline,
         "errors": errors[-12:], "autoPromotion": False,
         "selectionBias": "CURRENT_LIQUIDITY_UNIVERSE",
         "intrabarPolicy": "STOP_FIRST_WHEN_TARGET_AND_STOP_SHARE_MINUTE",
-        "note": "후보 선별용 보수적 1분봉 재생이며 실시간 SHADOW 검증을 대체하지 않음",
+        "note": "VWAP·단기추세·돌파·상대거래량을 확인하는 보수형 v2이며 실시간 SHADOW 검증을 대체하지 않음",
     }
     with LEARNING_LOCK:
         state = load_learning_state_unlocked()
@@ -5683,8 +5783,11 @@ def off_market_study_loop() -> None:
             env = load_env()
             sessions = active_market_sessions(env)
             research_markets = markets_available_for_research(sessions)
-            if research_markets:
-                run_off_market_study(env, research_markets)
+            if research_markets and RESEARCH_WORKER_LOCK.acquire(blocking=False):
+                try:
+                    run_off_market_study(env, research_markets)
+                finally:
+                    RESEARCH_WORKER_LOCK.release()
         except Exception as exc:
             try:
                 with LEARNING_LOCK:
@@ -5705,14 +5808,19 @@ def off_market_study_loop() -> None:
 
 
 def intraday_backtest_loop() -> None:
-    time.sleep(45)
+    # Let the API server and lighter monitoring loops warm up first. The 1 GB
+    # Lightsail instance must never run the minute replay in the startup burst.
+    time.sleep(INTRADAY_BACKTEST_START_DELAY_SECONDS)
     while True:
         try:
             env = load_env()
             sessions = active_market_sessions(env)
             research_markets = markets_available_for_research(sessions)
-            if research_markets:
-                run_intraday_backtest_cycle(env, research_markets)
+            if research_markets and RESEARCH_WORKER_LOCK.acquire(blocking=False):
+                try:
+                    run_intraday_backtest_cycle(env, research_markets)
+                finally:
+                    RESEARCH_WORKER_LOCK.release()
         except Exception as exc:
             try:
                 with LEARNING_LOCK:
@@ -5726,7 +5834,7 @@ def intraday_backtest_loop() -> None:
                     save_learning_state_unlocked(state)
             except OSError:
                 pass
-        time.sleep(OFF_MARKET_STUDY_POLL_SECONDS)
+        time.sleep(INTRADAY_BACKTEST_POLL_SECONDS)
 
 
 def domestic_day_review_loop() -> None:
@@ -6547,15 +6655,20 @@ def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any])
     rate = decimal(item.get("dailyRate"))
     source_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
     minimum_price = 5.0 if market == "US" else 5000.0 if market == "KR" else 0.0
+    momentum_min, momentum_max = candidate_momentum_range(market)
     gate_checks = {
         "minimumPrice": source_price >= minimum_price,
-        "overheatRange": -0.08 < rate < 0.12,
+        "controlledMomentum": momentum_min <= rate < momentum_max,
     }
     gates_passed = all(gate_checks.values())
     if not gate_checks["minimumPrice"]:
         verdict, reason = "진입 불가", f"{market or '공통'} 최소가격 기준 미달"
-    elif not gate_checks["overheatRange"]:
-        verdict, reason = "진입 불가", f"급등락 추격 위험 · {market or '공통'} 전략 평가 {score:.1f}점"
+    elif not gate_checks["controlledMomentum"]:
+        verdict, reason = (
+            "진입 불가",
+            f"통제 추세 범위 {momentum_min * 100:.1f}~{momentum_max * 100:.1f}% 밖 · "
+            f"{market or '공통'} 전략 평가 {score:.1f}점",
+        )
     elif score >= threshold:
         verdict, reason = "정밀 분석", f"{market or '공통'} 전략 {threshold}점 통과 · {score:.1f}점"
     elif score >= max(60, threshold - 20):
@@ -7101,8 +7214,12 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
 
     domestic_review = compact_study(state.get("domesticDayReview"))
     offline_study = compact_study(state.get("offlineStudy"))
-    intraday_backtest = json.loads(json.dumps(state.get("intradayBacktest") or {}, ensure_ascii=False))
-    intraday_backtest.pop("trades", None)
+    # Avoid serializing and duplicating the raw replay ledger on every dashboard
+    # poll; that was enough to exhaust the small VPS while the worker ran.
+    raw_intraday_backtest = state.get("intradayBacktest") or {}
+    intraday_backtest = {
+        key: value for key, value in raw_intraday_backtest.items() if key != "trades"
+    } if isinstance(raw_intraday_backtest, dict) else {}
     domestic_history = [
         compact_study(item)
         for item in list(reversed(state.get("domesticDayReviewHistory") or []))[:10]
