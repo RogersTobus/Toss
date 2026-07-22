@@ -142,6 +142,7 @@ INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
 INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
 INTRADAY_BACKTEST_POLL_SECONDS = 900
 INTRADAY_BACKTEST_VERSION = "minute-replay-v2"
+INTRADAY_BACKTEST_AUTO_ENABLED = False
 STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
 RESEARCH_MIN_VALIDATION_SAMPLES = 100
@@ -6849,6 +6850,40 @@ def save_learning_state_unlocked(state: dict[str, Any]) -> None:
     temporary.replace(LEARNING_PATH)
 
 
+def compact_intraday_backtest_record(value: Any) -> tuple[dict[str, Any], bool]:
+    """Keep replay summaries while bounding the raw ledger held by the API process."""
+    study = dict(value or {}) if isinstance(value, dict) else {}
+    trades = list(study.get("trades") or [])
+    if not trades:
+        return study, False
+    version = str(study.get("version") or "")
+    retained = trades[-INTRADAY_BACKTEST_HISTORY_LIMIT:] if version == INTRADAY_BACKTEST_VERSION else []
+    if retained == trades:
+        return study, False
+    study["trades"] = retained
+    study["rawTradesCompactedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    study["rawTradesCompactedCount"] = len(trades) - len(retained)
+    if version != INTRADAY_BACKTEST_VERSION:
+        study["rawTradesCompactionReason"] = "LEGACY_VERSION_SUMMARY_PRESERVED"
+    return study, True
+
+
+def compact_intraday_backtest_state_once() -> dict[str, Any]:
+    """Remove stale replay rows before background loops begin on the small VPS."""
+    with LEARNING_LOCK:
+        state = load_learning_state_unlocked()
+        compacted, changed = compact_intraday_backtest_record(state.get("intradayBacktest"))
+        if changed:
+            state["intradayBacktest"] = compacted
+            state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            save_learning_state_unlocked(state)
+        return {
+            "changed": changed,
+            "removed": int(compacted.get("rawTradesCompactedCount") or 0),
+            "version": compacted.get("version"),
+        }
+
+
 def learning_severity_rank(value: Any) -> int:
     return {"minor": 1, "major": 2, "critical": 3}.get(str(value or ""), 0)
 
@@ -8094,11 +8129,23 @@ if __name__ == "__main__":
             f"{reset_result.get('retiredPositionCount', 0)} archived · "
             f"{reset_result.get('generation')}"
         )
+    replay_compaction = compact_intraday_backtest_state_once()
+    if replay_compaction.get("changed"):
+        print(
+            "Intraday replay compaction: "
+            f"{replay_compaction.get('removed', 0)} legacy rows removed · "
+            f"{replay_compaction.get('version') or 'unknown'} summary preserved"
+        )
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
     threading.Thread(target=domestic_day_review_loop, daemon=True, name="domestic-day-review-loop").start()
     threading.Thread(target=off_market_study_loop, daemon=True, name="off-market-study-loop").start()
-    threading.Thread(target=intraday_backtest_loop, daemon=True, name="intraday-backtest-loop").start()
+    if INTRADAY_BACKTEST_AUTO_ENABLED:
+        threading.Thread(
+            target=intraday_backtest_loop,
+            daemon=True,
+            name="intraday-backtest-loop",
+        ).start()
     threading.Thread(target=macro_context_loop, daemon=True, name="macro-context-loop").start()
     print(f"Orbit dashboard: http://{display_host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()

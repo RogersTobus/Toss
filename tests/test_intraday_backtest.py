@@ -77,6 +77,19 @@ class IntradayBacktestTests(unittest.TestCase):
         self.assertLessEqual(server.INTRADAY_BACKTEST_BATCH_PER_MARKET, 1)
         self.assertLessEqual(server.INTRADAY_BACKTEST_CANDLE_PAGES, 4)
         self.assertLessEqual(server.INTRADAY_BACKTEST_HISTORY_LIMIT, 1200)
+        self.assertFalse(server.INTRADAY_BACKTEST_AUTO_ENABLED)
+
+    def test_legacy_raw_trades_are_compacted_without_losing_summary(self):
+        study, changed = server.compact_intraday_backtest_record({
+            "version": "minute-replay-v1",
+            "tradeCount": 536,
+            "metrics": {"profitFactor": 0.41},
+            "trades": [{"id": "a"}, {"id": "b"}],
+        })
+        self.assertTrue(changed)
+        self.assertEqual(study["trades"], [])
+        self.assertEqual(study["tradeCount"], 536)
+        self.assertEqual(study["metrics"]["profitFactor"], 0.41)
 
     def test_time_ordered_split_keeps_holdout_separate(self):
         trades = [
