@@ -136,6 +136,8 @@ OFF_MARKET_STUDY_UNIVERSE_PER_HORIZON = 50
 OFF_MARKET_STUDY_BATCH_PER_MARKET = 8
 OFF_MARKET_STUDY_CANDLE_PAGES = 3
 OFF_MARKET_STUDY_POLL_SECONDS = 300
+OFF_MARKET_STUDY_AUTO_ENABLED = False
+DOMESTIC_DAY_REVIEW_AUTO_ENABLED = False
 INTRADAY_BACKTEST_BATCH_PER_MARKET = 1
 INTRADAY_BACKTEST_CANDLE_PAGES = 4
 INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
@@ -8138,8 +8140,18 @@ if __name__ == "__main__":
         )
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
-    threading.Thread(target=domestic_day_review_loop, daemon=True, name="domestic-day-review-loop").start()
-    threading.Thread(target=off_market_study_loop, daemon=True, name="off-market-study-loop").start()
+    if DOMESTIC_DAY_REVIEW_AUTO_ENABLED:
+        threading.Thread(
+            target=domestic_day_review_loop,
+            daemon=True,
+            name="domestic-day-review-loop",
+        ).start()
+    if OFF_MARKET_STUDY_AUTO_ENABLED:
+        threading.Thread(
+            target=off_market_study_loop,
+            daemon=True,
+            name="off-market-study-loop",
+        ).start()
     if INTRADAY_BACKTEST_AUTO_ENABLED:
         threading.Thread(
             target=intraday_backtest_loop,

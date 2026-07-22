@@ -78,6 +78,8 @@ class IntradayBacktestTests(unittest.TestCase):
         self.assertLessEqual(server.INTRADAY_BACKTEST_CANDLE_PAGES, 4)
         self.assertLessEqual(server.INTRADAY_BACKTEST_HISTORY_LIMIT, 1200)
         self.assertFalse(server.INTRADAY_BACKTEST_AUTO_ENABLED)
+        self.assertFalse(server.OFF_MARKET_STUDY_AUTO_ENABLED)
+        self.assertFalse(server.DOMESTIC_DAY_REVIEW_AUTO_ENABLED)
 
     def test_legacy_raw_trades_are_compacted_without_losing_summary(self):
         study, changed = server.compact_intraday_backtest_record({
