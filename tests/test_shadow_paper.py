@@ -46,3 +46,21 @@ class ShadowPaperTests(unittest.TestCase):
         self.assertEqual(summary["sampleCount"], 0)
         self.assertEqual(summary["activeCount"], 0)
 
+    def test_summary_keeps_kr_and_us_results_on_the_same_trading_day(self):
+        state = server.new_shadow_paper_state()
+        state["samples"] = [
+            {
+                "status": "CLOSED", "market": "KR",
+                "closedAt": "2026-07-22T14:00:00+0900", "netReturnRate": 0.01,
+            },
+            {
+                "status": "CLOSED", "market": "US",
+                "closedAt": "2026-07-23T03:00:00+0900", "netReturnRate": -0.005,
+            },
+        ]
+        summary = server.shadow_paper_summary(state)
+        day = summary["recentDays"][0]
+        self.assertEqual(day["tradingDay"], "2026-07-22")
+        self.assertEqual(day["byMarket"]["KR"]["sampleCount"], 1)
+        self.assertEqual(day["byMarket"]["US"]["sampleCount"], 1)
+

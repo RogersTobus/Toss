@@ -49,6 +49,8 @@ PAPER_LOCK = threading.RLock()
 SHADOW_PAPER_LOCK = threading.RLock()
 STRATEGY_LOCK = threading.RLock()
 RESEARCH_WORKER_LOCK = threading.Lock()
+RELATIVE_STRENGTH_LOCK = threading.Lock()
+RELATIVE_STRENGTH_HISTORY: dict[str, list[dict[str, Any]]] = {}
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
@@ -119,12 +121,15 @@ PAPER_COST_EVIDENCE_RECENT_SAMPLES = 5
 PAPER_LEVERAGED_SCORE_PENALTY = 4
 PAPER_LEVERAGED_ALLOCATION_SCALE = 0.50
 PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 20
-PAPER_STRATEGY_ENGINE_VERSION = "context-edge-v4"
+PAPER_STRATEGY_ENGINE_VERSION = "relative-strength-v5"
 PAPER_CONTEXT_MIN_SAMPLES = 12
 PAPER_CONTEXT_RECENT_SAMPLES = 8
 PAPER_CONTEXT_HISTORY_LIMIT = 40
 PAPER_CONTEXT_MIN_WIN_RATE = 0.40
 PAPER_CONTEXT_MIN_PROFIT_FACTOR = 1.15
+RELATIVE_STRENGTH_CONFIRMATION_SAMPLES = 4
+RELATIVE_STRENGTH_CONFIRMATION_SECONDS = 25
+RELATIVE_STRENGTH_HISTORY_SECONDS = 180
 PAPER_LEVERAGED_MIN_WIN_RATE = 0.45
 PAPER_LEVERAGED_MIN_PROFIT_FACTOR = 1.30
 KNOWN_LEVERAGED_OR_INVERSE_SYMBOLS = {
@@ -174,8 +179,8 @@ DEFAULT_STRATEGIES = [
     {
         "id": "liquidity-momentum-filter",
         "title": "유동성·모멘텀 후보 필터",
-        "description": "한국·미국 거래대금 상위 종목 중 과열되지 않은 양의 당일 추세만 후보로 올립니다. 장중 리플레이에서는 정규장 20분 이후, VWAP·단기 이평·5분 돌파·상대 거래량을 함께 검증하고 레버리지·인버스는 별도 검증 전 제외합니다.",
-        "judge": "양의 추세·VWAP·거래량 확인 전 진입 금지",
+        "description": "한국·미국 거래대금 상위 종목 중 시장 중앙값보다 강한 상위 25%를 찾고, 상대강도·거래대금·순위가 최소 30초 동안 유지될 때만 후보로 올립니다. 단일 상승 스냅샷과 이미 무너지는 급등 추격은 제외합니다.",
+        "judge": "상대강도·거래대금 지속 확인 전 진입 금지",
         "enabled": True,
     },
     {
@@ -1842,6 +1847,27 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
                 if market_closed else 0.0
             ),
         }
+    daily_groups: dict[str, list[dict[str, Any]]] = {}
+    for item in closed:
+        daily_groups.setdefault(paper_trading_day(item.get("closedAt")), []).append(item)
+    recent_days = []
+    for trading_day in sorted(daily_groups, reverse=True)[:7]:
+        day_samples = daily_groups[trading_day]
+        markets = {}
+        for market in ("KR", "US"):
+            market_samples = [item for item in day_samples if item.get("market") == market]
+            markets[market] = return_evidence(
+                market_samples, min(PAPER_CONTEXT_RECENT_SAMPLES, len(market_samples))
+            )
+        recent_days.append(
+            {
+                "tradingDay": trading_day,
+                **return_evidence(
+                    day_samples, min(PAPER_CONTEXT_RECENT_SAMPLES, len(day_samples))
+                ),
+                "byMarket": markets,
+            }
+        )
     return {
         "enabled": True,
         "mode": "SIGNAL_ONLY_NO_CAPITAL",
@@ -1860,6 +1886,7 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
             "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
         },
         "byMarket": by_market,
+        "recentDays": recent_days,
         "excludedFromCapitalLedger": True,
         "excludedFromBillionGoal": True,
     }
@@ -2867,8 +2894,139 @@ def daily_rate_bucket(value: Any) -> str:
 
 
 def candidate_momentum_range(market: str) -> tuple[float, float]:
-    """Return the controlled positive trend range used by v4 candidates."""
+    """Return the controlled positive trend range used by live candidates."""
     return (0.008, 0.08) if market == "US" else (0.005, 0.06)
+
+
+def distribution_value(values: list[float], fraction: float) -> float:
+    """Return a deterministic nearest-rank value without external dependencies."""
+    ordered = sorted(decimal(value) for value in values)
+    if not ordered:
+        return 0.0
+    index = int(round((len(ordered) - 1) * clamp(fraction, 0.0, 1.0, 0.0)))
+    return ordered[index]
+
+
+def apply_relative_strength_confirmation(
+    results: list[dict[str, Any]],
+    market: str,
+    now: datetime | None = None,
+    history: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Require cross-sectional leadership to persist across several live scans."""
+    if not results:
+        return results
+    now = now or datetime.now().astimezone()
+    timestamp = now.timestamp()
+    rates = [decimal(item.get("dailyRate")) for item in results]
+    market_median = distribution_value(rates, 0.50)
+    upper_quartile = distribution_value(rates, 0.75)
+    relative_minimum = 0.008 if market == "US" else 0.005
+    momentum_minimum, momentum_maximum = candidate_momentum_range(market)
+    target_history = RELATIVE_STRENGTH_HISTORY if history is None else history
+
+    def update() -> None:
+        active_keys: set[str] = set()
+        for item in results:
+            symbol = str(item.get("symbol") or "")
+            if not symbol:
+                continue
+            key = f"{market}:{symbol}"
+            active_keys.add(key)
+            rate = decimal(item.get("dailyRate"))
+            relative = rate - market_median
+            observations = [
+                entry for entry in target_history.get(key, [])
+                if timestamp - decimal(entry.get("timestamp")) <= RELATIVE_STRENGTH_HISTORY_SECONDS
+            ]
+            observations.append(
+                {
+                    "timestamp": timestamp,
+                    "dailyRate": rate,
+                    "relativeStrength": relative,
+                    "tradingAmount": decimal(item.get("tradingAmount")),
+                    "rank": int(item.get("rank") or 9999),
+                    "upperQuartile": rate >= upper_quartile,
+                }
+            )
+            observations = observations[-8:]
+            target_history[key] = observations
+            recent = observations[-RELATIVE_STRENGTH_CONFIRMATION_SAMPLES:]
+            elapsed = (
+                decimal(recent[-1].get("timestamp")) - decimal(recent[0].get("timestamp"))
+                if len(recent) >= 2 else 0.0
+            )
+            strength_held = bool(recent) and all(
+                decimal(entry.get("relativeStrength")) >= relative_minimum
+                and bool(entry.get("upperQuartile"))
+                for entry in recent
+            )
+            rate_not_fading = bool(recent) and (
+                rate >= decimal(recent[0].get("dailyRate")) - 0.001
+            )
+            turnover_rising = len(recent) >= 2 and (
+                decimal(recent[-1].get("tradingAmount"))
+                > decimal(recent[0].get("tradingAmount"))
+            )
+            rank_stable = bool(recent) and (
+                int(recent[-1].get("rank") or 9999)
+                <= int(recent[0].get("rank") or 9999) + 3
+            )
+            controlled_momentum = momentum_minimum <= rate < momentum_maximum
+            enough_observations = (
+                len(recent) >= RELATIVE_STRENGTH_CONFIRMATION_SAMPLES
+                and elapsed >= RELATIVE_STRENGTH_CONFIRMATION_SECONDS
+            )
+            confirmed = all(
+                (
+                    controlled_momentum,
+                    enough_observations,
+                    strength_held,
+                    rate_not_fading,
+                    turnover_rising,
+                    rank_stable,
+                )
+            )
+            item["relativeStrengthEvidence"] = {
+                "allowed": confirmed,
+                "marketMedianRate": market_median,
+                "upperQuartileRate": upper_quartile,
+                "relativeStrength": relative,
+                "minimumRelativeStrength": relative_minimum,
+                "observationCount": len(recent),
+                "requiredObservations": RELATIVE_STRENGTH_CONFIRMATION_SAMPLES,
+                "elapsedSeconds": int(elapsed),
+                "requiredSeconds": RELATIVE_STRENGTH_CONFIRMATION_SECONDS,
+                "controlledMomentum": controlled_momentum,
+                "topQuartileHeld": strength_held,
+                "rateNotFading": rate_not_fading,
+                "turnoverRising": turnover_rising,
+                "rankStable": rank_stable,
+                "reason": (
+                    "시장 대비 상대강도 지속 확인"
+                    if confirmed
+                    else f"상대강도 지속 확인 {len(recent)}/{RELATIVE_STRENGTH_CONFIRMATION_SAMPLES}회"
+                ),
+            }
+        if history is None:
+            stale = [
+                key for key, entries in target_history.items()
+                if key not in active_keys
+                and (
+                    not entries
+                    or timestamp - decimal(entries[-1].get("timestamp"))
+                    > RELATIVE_STRENGTH_HISTORY_SECONDS
+                )
+            ]
+            for key in stale:
+                target_history.pop(key, None)
+
+    if history is None:
+        with RELATIVE_STRENGTH_LOCK:
+            update()
+    else:
+        update()
+    return results
 
 
 def candidate_evidence_context(
@@ -3727,6 +3885,7 @@ def update_shadow_paper(
                 "dailyRate": result.get("dailyRate"),
                 "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
                 "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
+                "relativeStrengthEvidence": result.get("relativeStrengthEvidence"),
                 "instrumentRisk": instrument_risk_policy(result),
                 "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
                 "entryContext": entry_context,
@@ -4045,6 +4204,7 @@ def paper_trade_locked(
                 "baseEntryScore": candidate.get("baseScore"),
                 "scoreFeatures": candidate.get("scoreFeatures"),
                 "scoreAudit": candidate.get("scoreAudit"),
+                "relativeStrengthEvidence": candidate.get("relativeStrengthEvidence"),
                 "learningPolicy": {
                     "requiredScore": candidate_policy.get("requiredScore") if candidate_policy else LEARNING_BASE_ENTRY_SCORE,
                     "candidateScore": candidate_policy.get("candidateScore") if candidate_policy else candidate.get("score"),
@@ -4182,6 +4342,9 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
                 },
             }
         results.append(apply_global_score_to_candidate(result, score_model))
+    apply_relative_strength_confirmation(results, market)
+    for item in results:
+        apply_global_score_to_candidate(item, score_model)
     return results
 
 
@@ -6659,10 +6822,17 @@ def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any])
     source_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
     minimum_price = 5.0 if market == "US" else 5000.0 if market == "KR" else 0.0
     momentum_min, momentum_max = candidate_momentum_range(market)
+    relative_evidence = (
+        item.get("relativeStrengthEvidence")
+        if isinstance(item.get("relativeStrengthEvidence"), dict)
+        else None
+    )
     gate_checks = {
         "minimumPrice": source_price >= minimum_price,
         "controlledMomentum": momentum_min <= rate < momentum_max,
     }
+    if relative_evidence is not None:
+        gate_checks["relativeStrengthConfirmed"] = bool(relative_evidence.get("allowed"))
     gates_passed = all(gate_checks.values())
     if not gate_checks["minimumPrice"]:
         verdict, reason = "진입 불가", f"{market or '공통'} 최소가격 기준 미달"
@@ -6671,6 +6841,12 @@ def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any])
             "진입 불가",
             f"통제 추세 범위 {momentum_min * 100:.1f}~{momentum_max * 100:.1f}% 밖 · "
             f"{market or '공통'} 전략 평가 {score:.1f}점",
+        )
+    elif not gate_checks.get("relativeStrengthConfirmed", True):
+        verdict, reason = (
+            "관찰",
+            f"{relative_evidence.get('reason') or '상대강도 지속 확인 전'} · "
+            f"시장 대비 {decimal(relative_evidence.get('relativeStrength')) * 100:+.2f}%p",
         )
     elif score >= threshold:
         verdict, reason = "정밀 분석", f"{market or '공통'} 전략 {threshold}점 통과 · {score:.1f}점"
