@@ -2987,6 +2987,21 @@ def apply_relative_strength_confirmation(
                     rank_stable,
                 )
             )
+            failed_reasons = []
+            if not controlled_momentum:
+                failed_reasons.append("통제 상승범위 이탈")
+            if not enough_observations:
+                failed_reasons.append(
+                    f"지속 확인 {len(recent)}/{RELATIVE_STRENGTH_CONFIRMATION_SAMPLES}회·{int(elapsed)}초"
+                )
+            if not strength_held:
+                failed_reasons.append("시장 상위 25% 상대강도 미유지")
+            if not rate_not_fading:
+                failed_reasons.append("상승률 둔화")
+            if not turnover_rising:
+                failed_reasons.append("거래대금 증가 미확인")
+            if not rank_stable:
+                failed_reasons.append("거래대금 순위 하락")
             item["relativeStrengthEvidence"] = {
                 "allowed": confirmed,
                 "marketMedianRate": market_median,
@@ -3005,7 +3020,7 @@ def apply_relative_strength_confirmation(
                 "reason": (
                     "시장 대비 상대강도 지속 확인"
                     if confirmed
-                    else f"상대강도 지속 확인 {len(recent)}/{RELATIVE_STRENGTH_CONFIRMATION_SAMPLES}회"
+                    else " · ".join(failed_reasons)
                 ),
             }
         if history is None:

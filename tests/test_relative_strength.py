@@ -55,6 +55,7 @@ class RelativeStrengthConfirmationTests(unittest.TestCase):
         )
         leader = next(item for item in rows if item["symbol"] == "LEADER")
         self.assertFalse(leader["relativeStrengthEvidence"]["allowed"])
+        self.assertIn("지속 확인 1/4회", leader["relativeStrengthEvidence"]["reason"])
 
     def test_market_laggard_never_passes_relative_gate(self):
         history = {}
