@@ -40,6 +40,8 @@ class ShadowPaperTests(unittest.TestCase):
         sample = server.load_shadow_paper_state()["samples"][0]
         self.assertEqual(sample["exitKind"], "손실선")
         self.assertLess(sample["netReturnRate"], server.PAPER_STOP_RATE)
+        self.assertAlmostEqual(sample["maximumFavorableExcursionRate"], 0.0)
+        self.assertAlmostEqual(sample["maximumAdverseExcursionRate"], -0.01)
 
     def test_non_regular_session_does_not_create_samples(self):
         summary = server.update_shadow_paper([self.candidate()], "US", "US 데이마켓")

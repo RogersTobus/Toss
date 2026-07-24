@@ -52,6 +52,9 @@ class RelativeStrengthConfirmationTests(unittest.TestCase):
         self.assertAlmostEqual(evidence["pullbackDepth"], 0.004)
         self.assertAlmostEqual(evidence["recoveryRate"], 0.0025)
         self.assertTrue(evidence["turnoverRising"])
+        breadth = leader["marketBreadthEvidence"]
+        self.assertIn(breadth["regime"], ("확산 상승", "선별 상승", "하락 우세"))
+        self.assertFalse(breadth["directGate"])
 
         rows = self.universe(leader_rate=0.031, turnover=1500)
         server.apply_pullback_resumption_confirmation(

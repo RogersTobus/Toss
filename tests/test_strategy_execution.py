@@ -146,9 +146,10 @@ class StrategyExecutionTests(unittest.TestCase):
         orders, changed = server.close_paper_positions_if_needed(
             {}, [buy], [], "US", "US 프리마켓", stop_only=True
         )
-        self.assertFalse(changed)
+        self.assertTrue(changed)
         self.assertEqual(len(orders), 1)
         self.assertNotIn("protectiveStopOrder", orders[0])
+        self.assertEqual(orders[0]["lowWaterPrice"], 90.0)
 
     def test_bounded_funding_policy_is_reflected_in_capital_summary(self):
         capital = server.paper_capital_summary(

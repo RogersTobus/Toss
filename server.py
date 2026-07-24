@@ -120,13 +120,15 @@ PAPER_COST_EVIDENCE_MIN_SAMPLES = 8
 PAPER_COST_EVIDENCE_RECENT_SAMPLES = 5
 PAPER_LEVERAGED_SCORE_PENALTY = 4
 PAPER_LEVERAGED_ALLOCATION_SCALE = 0.50
-PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 20
-PAPER_STRATEGY_ENGINE_VERSION = "pullback-resumption-v6"
-PAPER_CONTEXT_MIN_SAMPLES = 12
-PAPER_CONTEXT_RECENT_SAMPLES = 8
-PAPER_CONTEXT_HISTORY_LIMIT = 40
+PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 40
+PAPER_STRATEGY_ENGINE_VERSION = "cost-aware-pullback-v7"
+PAPER_CONTEXT_MIN_SAMPLES = 30
+PAPER_CONTEXT_RECENT_SAMPLES = 12
+PAPER_CONTEXT_HISTORY_LIMIT = 60
+PAPER_CONTEXT_MIN_TRADING_DAYS = 2
 PAPER_CONTEXT_MIN_WIN_RATE = 0.40
-PAPER_CONTEXT_MIN_PROFIT_FACTOR = 1.15
+PAPER_CONTEXT_MIN_PROFIT_FACTOR = 1.25
+PAPER_CONTEXT_CONFIDENCE_Z = 1.645
 PULLBACK_CONFIRMATION_SECONDS = 25
 PULLBACK_HISTORY_SECONDS = 300
 PULLBACK_MAX_OBSERVATION_GAP_SECONDS = 90
@@ -200,8 +202,8 @@ DEFAULT_STRATEGIES = [
     {
         "id": "score-entry-80",
         "title": "상황별 검증형 100점 평가",
-        "description": "표시 점수는 후보 순위에만 사용합니다. 실제 진입은 같은 시장·시간대·상품군·당일 등락 구간에서 새 청산 규칙으로 수집한 그림자 PAPER 12건의 비용 후 승률·기대값·손익비가 모두 양수일 때만 허용합니다.",
-        "judge": "점수는 순위 · 동일 상황의 검증 결과로 진입",
+        "description": "표시 점수는 후보 순위에만 사용합니다. 실제 진입은 같은 시장·시간대·상품군·당일 등락 구간에서 그림자 PAPER 30건과 2거래일 이상을 모은 뒤, 비용 후 평균·최근 평균·PF와 90% 신뢰하한이 모두 양수일 때만 허용합니다.",
+        "judge": "점수는 순위 · 비용 후 신뢰구간으로 진입",
         "enabled": True,
     },
     {
@@ -491,8 +493,10 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
         "contextValidation": {
             "minimumSamples": PAPER_CONTEXT_MIN_SAMPLES,
             "recentSamples": PAPER_CONTEXT_RECENT_SAMPLES,
+            "minimumTradingDays": PAPER_CONTEXT_MIN_TRADING_DAYS,
             "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
             "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
+            "minimumLowerConfidenceBound": 0.0,
         },
         "dailyRisk": PAPER_DAILY_LOSS_LOCK_ENABLED and "daily-risk-kill-switch" in enabled,
         "dailyLossLockEnabled": PAPER_DAILY_LOSS_LOCK_ENABLED,
@@ -1914,8 +1918,10 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
             "byMarket": current_strategy_by_market,
             "exitKinds": current_strategy_exit_kinds,
             "requiredContextSamples": PAPER_CONTEXT_MIN_SAMPLES,
+            "requiredTradingDays": PAPER_CONTEXT_MIN_TRADING_DAYS,
             "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
             "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
+            "minimumLowerConfidenceBound90": 0.0,
         },
         "byMarket": by_market,
         "recentDays": recent_days,
@@ -2918,11 +2924,73 @@ def return_evidence(
     recent_returns = returns[-max(1, int(recent_samples)):]
     gains = sum(value for value in returns if value > 0)
     losses = -sum(value for value in returns if value < 0)
+    average = sum(returns) / len(returns) if returns else 0.0
+    variance = (
+        sum((value - average) ** 2 for value in returns) / (len(returns) - 1)
+        if len(returns) > 1
+        else 0.0
+    )
+    standard_deviation = math.sqrt(max(0.0, variance))
+    standard_error = (
+        standard_deviation / math.sqrt(len(returns)) if returns else 0.0
+    )
+    lower_confidence_bound = average - PAPER_CONTEXT_CONFIDENCE_Z * standard_error
+    wins = [value for value in returns if value > 0]
+    losing_returns = [-value for value in returns if value < 0]
+    average_win = sum(wins) / len(wins) if wins else 0.0
+    average_loss = (
+        sum(losing_returns) / len(losing_returns) if losing_returns else 0.0
+    )
+    break_even_win_rate = (
+        average_loss / (average_win + average_loss)
+        if average_win > 0 and average_loss > 0
+        else 0.0 if average_win > 0 else 1.0
+    )
+    win_rate = len(wins) / len(returns) if returns else 0.0
+    trading_days = {
+        paper_trading_day(item.get("closedAt"))
+        for item in ordered
+        if item.get("closedAt")
+    }
+    favorable_excursions = [
+        decimal(item.get("maximumFavorableExcursionRate"))
+        for item in ordered
+        if item.get("maximumFavorableExcursionRate") is not None
+    ]
+    adverse_excursions = [
+        decimal(item.get("maximumAdverseExcursionRate"))
+        for item in ordered
+        if item.get("maximumAdverseExcursionRate") is not None
+    ]
+    cost_covered = [
+        item for item in ordered
+        if decimal(item.get("maximumFavorableExcursionRate"))
+        >= decimal(item.get("estimatedCostRate"))
+    ]
     return {
         "sampleCount": len(returns),
-        "averageNetReturn": sum(returns) / len(returns) if returns else 0.0,
-        "winRate": sum(1 for value in returns if value > 0) / len(returns) if returns else 0.0,
+        "tradingDayCount": len(trading_days),
+        "averageNetReturn": average,
+        "standardDeviation": standard_deviation,
+        "standardError": standard_error,
+        "lowerConfidenceBound90": lower_confidence_bound,
+        "winRate": win_rate,
+        "averageWin": average_win,
+        "averageLoss": average_loss,
+        "breakEvenWinRate": break_even_win_rate,
+        "winRateEdge": win_rate - break_even_win_rate,
         "profitFactor": gains / losses if losses else (999.0 if gains else 0.0),
+        "averageMaximumFavorableExcursion": (
+            sum(favorable_excursions) / len(favorable_excursions)
+            if favorable_excursions else 0.0
+        ),
+        "averageMaximumAdverseExcursion": (
+            sum(adverse_excursions) / len(adverse_excursions)
+            if adverse_excursions else 0.0
+        ),
+        "costCoverageRate": (
+            len(cost_covered) / len(ordered) if ordered else 0.0
+        ),
         "recent": {
             "sampleCount": len(recent_returns),
             "averageNetReturn": (
@@ -2981,7 +3049,27 @@ def apply_pullback_resumption_confirmation(
     timestamp = now.timestamp()
     rates = [decimal(item.get("dailyRate")) for item in results]
     market_median = distribution_value(rates, 0.50)
+    lower_quartile = distribution_value(rates, 0.25)
     upper_quartile = distribution_value(rates, 0.75)
+    advance_ratio = (
+        sum(1 for value in rates if value > 0) / len(rates) if rates else 0.0
+    )
+    breadth_regime = (
+        "확산 상승"
+        if advance_ratio >= 0.60 and market_median > 0
+        else "선별 상승"
+        if advance_ratio >= 0.40
+        else "하락 우세"
+    )
+    breadth_evidence = {
+        "regime": breadth_regime,
+        "advanceRatio": advance_ratio,
+        "marketMedianRate": market_median,
+        "lowerQuartileRate": lower_quartile,
+        "upperQuartileRate": upper_quartile,
+        "dispersion": upper_quartile - lower_quartile,
+        "directGate": False,
+    }
     rules = PULLBACK_MARKET_RULES.get(market, PULLBACK_MARKET_RULES["KR"])
     relative_minimum = decimal(rules.get("relativeMinimum"))
     minimum_pullback = decimal(rules.get("minimumPullback"))
@@ -3213,6 +3301,7 @@ def apply_pullback_resumption_confirmation(
             item["entryPatternEvidence"] = evidence
             # Kept as a compatibility alias for existing journal/API consumers.
             item["relativeStrengthEvidence"] = evidence
+            item["marketBreadthEvidence"] = dict(breadth_evidence)
         if history is None:
             stale = [
                 key for key, entries in target_history.items()
@@ -3248,11 +3337,17 @@ def candidate_evidence_context(
     item: dict[str, Any], market: str, now: datetime | None = None
 ) -> dict[str, Any]:
     risk = instrument_risk_policy(item)
+    breadth = (
+        item.get("marketBreadthEvidence")
+        if isinstance(item.get("marketBreadthEvidence"), dict)
+        else {}
+    )
     return {
         "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
         "market": market,
         "timeBucket": market_time_bucket(market, now or datetime.now().astimezone()),
         "instrumentClass": risk.get("class"),
+        "breadthRegime": breadth.get("regime") or "기록 없음",
         "dailyRateBucket": daily_rate_bucket(item.get("dailyRate")),
         "scoreBucket": score_bucket(item.get("score")),
     }
@@ -3274,11 +3369,13 @@ def shadow_context_records(
             str(sample.get("market") or market), sample.get("openedAt")
         )
         sample_class = sample_context.get("instrumentClass") or instrument_risk_policy(sample).get("class")
+        sample_breadth = sample_context.get("breadthRegime") or "기록 없음"
         sample_rate_bucket = sample_context.get("dailyRateBucket") or daily_rate_bucket(sample.get("dailyRate"))
         if (
             sample.get("market") == market
             and sample_time == context["timeBucket"]
             and sample_class == context["instrumentClass"]
+            and sample_breadth == context["breadthRegime"]
             and sample_rate_bucket == context["dailyRateBucket"]
         ):
             matched.append(sample)
@@ -3301,31 +3398,46 @@ def contextual_shadow_entry_policy(
     win_rate = decimal(evidence.get("winRate"))
     recent_win_rate = decimal(recent.get("winRate"))
     profit_factor = decimal(evidence.get("profitFactor"))
+    trading_day_count = int(evidence.get("tradingDayCount") or 0)
+    lower_confidence_bound = decimal(evidence.get("lowerConfidenceBound90"))
+    break_even_win_rate = decimal(evidence.get("breakEvenWinRate"))
+    required_win_rate = max(PAPER_CONTEXT_MIN_WIN_RATE, break_even_win_rate)
     promoted = (
         sample_count >= PAPER_CONTEXT_MIN_SAMPLES
         and recent_count >= PAPER_CONTEXT_RECENT_SAMPLES
+        and trading_day_count >= PAPER_CONTEXT_MIN_TRADING_DAYS
         and average > 0
         and recent_average > 0
-        and win_rate >= PAPER_CONTEXT_MIN_WIN_RATE
-        and recent_win_rate >= PAPER_CONTEXT_MIN_WIN_RATE
+        and lower_confidence_bound > 0
+        and win_rate >= required_win_rate
+        and recent_win_rate >= required_win_rate
         and profit_factor >= PAPER_CONTEXT_MIN_PROFIT_FACTOR
     )
     if promoted:
-        allocation_scale = 1.0 if sample_count >= 40 else (0.65 if sample_count >= 20 else 0.35)
+        allocation_scale = 1.0 if sample_count >= 60 else (0.65 if sample_count >= 45 else 0.35)
         reason = (
-            f"상황별 그림자 검증 통과 · {sample_count}건 · 승률 {win_rate * 100:.1f}% · "
-            f"비용 후 {average * 100:+.3f}% · PF {profit_factor:.2f}"
+            f"상황별 그림자 검증 통과 · {sample_count}건/{trading_day_count}일 · "
+            f"승률 {win_rate * 100:.1f}% (손익분기 {break_even_win_rate * 100:.1f}%) · "
+            f"비용 후 {average * 100:+.3f}% · 90% 하한 "
+            f"{lower_confidence_bound * 100:+.3f}% · PF {profit_factor:.2f}"
         )
-    elif sample_count < PAPER_CONTEXT_MIN_SAMPLES:
+    elif (
+        sample_count < PAPER_CONTEXT_MIN_SAMPLES
+        or trading_day_count < PAPER_CONTEXT_MIN_TRADING_DAYS
+    ):
         allocation_scale = 0.0
         reason = (
             f"새 전략 상황별 검증 {sample_count}/{PAPER_CONTEXT_MIN_SAMPLES}건 · "
-            f"{context['timeBucket']}·{context['instrumentClass']}·{context['dailyRateBucket']} 그림자 PAPER"
+            f"{trading_day_count}/{PAPER_CONTEXT_MIN_TRADING_DAYS}거래일 · "
+            f"{context['timeBucket']}·{context['breadthRegime']}·"
+            f"{context['instrumentClass']}·{context['dailyRateBucket']} 그림자 PAPER"
         )
     else:
         allocation_scale = 0.0
         reason = (
-            f"상황별 기대값 미달 · 승률 {win_rate * 100:.1f}% · 비용 후 {average * 100:+.3f}% · "
+            f"상황별 기대값 미달 · 승률 {win_rate * 100:.1f}%/"
+            f"손익분기 {break_even_win_rate * 100:.1f}% · 비용 후 {average * 100:+.3f}% · "
+            f"90% 하한 {lower_confidence_bound * 100:+.3f}% · "
             f"최근 {recent_average * 100:+.3f}% · PF {profit_factor:.2f}"
         )
     return {
@@ -3334,7 +3446,12 @@ def contextual_shadow_entry_policy(
         "context": context,
         "sampleCount": sample_count,
         "averageNetReturn": average,
+        "tradingDayCount": trading_day_count,
+        "requiredTradingDays": PAPER_CONTEXT_MIN_TRADING_DAYS,
+        "lowerConfidenceBound90": lower_confidence_bound,
         "winRate": win_rate,
+        "breakEvenWinRate": break_even_win_rate,
+        "requiredWinRate": required_win_rate,
         "profitFactor": profit_factor,
         "recentSampleCount": recent_count,
         "recentAverageNetReturn": recent_average,
@@ -3481,23 +3598,32 @@ def leveraged_shadow_entry_policy(
     average = decimal(evidence.get("averageNetReturn"))
     win_rate = decimal(evidence.get("winRate"))
     profit_factor = decimal(evidence.get("profitFactor"))
+    trading_day_count = int(evidence.get("tradingDayCount") or 0)
+    lower_confidence_bound = decimal(evidence.get("lowerConfidenceBound90"))
+    break_even_win_rate = decimal(evidence.get("breakEvenWinRate"))
+    required_win_rate = max(PAPER_LEVERAGED_MIN_WIN_RATE, break_even_win_rate)
     recent_count = int(recent.get("sampleCount") or 0)
     recent_average = decimal(recent.get("averageNetReturn"))
     recent_win_rate = decimal(recent.get("winRate"))
     promoted = (
         sample_count >= PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES
+        and trading_day_count >= PAPER_CONTEXT_MIN_TRADING_DAYS
         and average > 0
-        and win_rate >= PAPER_LEVERAGED_MIN_WIN_RATE
+        and lower_confidence_bound > 0
+        and win_rate >= required_win_rate
         and profit_factor >= PAPER_LEVERAGED_MIN_PROFIT_FACTOR
         and recent_count >= PAPER_CONTEXT_RECENT_SAMPLES
         and recent_average > 0
-        and recent_win_rate >= PAPER_LEVERAGED_MIN_WIN_RATE
+        and recent_win_rate >= required_win_rate
     )
     return {
         "allowed": promoted,
         "shadowOnly": not promoted,
         "sampleCount": sample_count,
         "averageNetReturn": average,
+        "tradingDayCount": trading_day_count,
+        "lowerConfidenceBound90": lower_confidence_bound,
+        "breakEvenWinRate": break_even_win_rate,
         "winRate": win_rate,
         "profitFactor": profit_factor,
         "recentSampleCount": recent_count,
@@ -3505,11 +3631,13 @@ def leveraged_shadow_entry_policy(
         "recentWinRate": recent_win_rate,
         "allocationScale": PAPER_LEVERAGED_ALLOCATION_SCALE,
         "reason": (
-            f"레버리지 그림자 검증 통과 · 승률 {win_rate * 100:.1f}% · "
-            f"전체 {average * 100:+.3f}% · PF {profit_factor:.2f}"
+            f"레버리지 그림자 검증 통과 · {sample_count}건/{trading_day_count}일 · "
+            f"승률 {win_rate * 100:.1f}% · 90% 하한 "
+            f"{lower_confidence_bound * 100:+.3f}% · PF {profit_factor:.2f}"
             if promoted else
             f"레버리지 새 전략 검증 {sample_count}/{PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES}건 · "
-            "승률 45%·PF 1.30 확인 전 메인 제외"
+            f"{trading_day_count}/{PAPER_CONTEXT_MIN_TRADING_DAYS}거래일 · "
+            "손익분기 승률·90% 하한·PF 1.30 확인 전 메인 제외"
         ),
     }
 
@@ -3837,6 +3965,14 @@ def close_paper_positions_if_needed(
         last = prices.get(symbol, 0.0)
         if not last:
             continue
+        previous_high = decimal(order.get("highWaterPrice") or entry)
+        previous_low = decimal(order.get("lowWaterPrice") or entry)
+        order["highWaterPrice"] = max(previous_high, last)
+        order["lowWaterPrice"] = min(previous_low, last)
+        changed = changed or (
+            order["highWaterPrice"] != previous_high
+            or order["lowWaterPrice"] != previous_low
+        )
         observed_rate = (last - entry) / entry
         fill_price = last
         rate = observed_rate
@@ -3968,6 +4104,12 @@ def close_paper_positions_if_needed(
                 "targetRate": target_rate,
                 "returnRate": rate,
                 "observedReturnRate": observed_rate,
+                "maximumFavorableExcursionRate": (
+                    decimal(order.get("highWaterPrice") or entry) - entry
+                ) / entry,
+                "maximumAdverseExcursionRate": (
+                    decimal(order.get("lowWaterPrice") or entry) - entry
+                ) / entry,
                 "profit": (fill_price - entry) * decimal(order.get("remainingQuantity") or order.get("quantity") or 1),
                 "fillPolicy": "WORST_OF_TRIGGER_OR_OBSERVED_PRICE",
                 "strategyRevision": entry_policy.get("revision") or order.get("strategyRevision"),
@@ -4013,6 +4155,8 @@ def close_stale_shadow_positions(
         if entry <= 0 or last <= 0:
             continue
         observed_rate = (last - entry) / entry
+        high_water = decimal(item.get("highWaterPrice") or entry)
+        low_water = decimal(item.get("lowWaterPrice") or entry)
         gross_return = observed_rate
         if item.get("partialTaken"):
             gross_return = (
@@ -4029,6 +4173,8 @@ def close_stale_shadow_positions(
                 "grossReturnRate": gross_return,
                 "estimatedCostRate": cost_rate,
                 "netReturnRate": gross_return - cost_rate,
+                "maximumFavorableExcursionRate": (high_water - entry) / entry,
+                "maximumAdverseExcursionRate": (low_water - entry) / entry,
                 "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
                 "fillPolicy": "LAST_OBSERVED_SESSION_CLOSE_FALLBACK",
                 "stalePositionRecovered": True,
@@ -4084,6 +4230,7 @@ def update_shadow_paper(
             item["lastObservedPrice"] = last
             item["lastObservedAt"] = now_text
             item["highWaterPrice"] = max(decimal(item.get("highWaterPrice") or entry), last)
+            item["lowWaterPrice"] = min(decimal(item.get("lowWaterPrice") or entry), last)
             if not item.get("partialTaken") and observed_rate >= target_rate:
                 item["partialTaken"] = True
                 item["partialReturnRate"] = observed_rate
@@ -4119,6 +4266,12 @@ def update_shadow_paper(
                     "status": "CLOSED", "closedAt": now_text, "exitPrice": last,
                     "exitKind": exit_kind, "grossReturnRate": gross_return,
                     "estimatedCostRate": cost_rate, "netReturnRate": gross_return - cost_rate,
+                    "maximumFavorableExcursionRate": (
+                        decimal(item.get("highWaterPrice") or entry) - entry
+                    ) / entry,
+                    "maximumAdverseExcursionRate": (
+                        decimal(item.get("lowWaterPrice") or entry) - entry
+                    ) / entry,
                     "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
                 })
 
@@ -4156,13 +4309,14 @@ def update_shadow_paper(
                 "mode": "SIGNAL_ONLY_NO_CAPITAL", "status": "OPEN",
                 "market": market, "session": session, "symbol": symbol,
                 "name": result.get("name") or symbol, "openedAt": now_text,
-                "entryPrice": price, "highWaterPrice": price,
+                "entryPrice": price, "highWaterPrice": price, "lowWaterPrice": price,
                 "lastObservedPrice": price, "lastObservedAt": now_text,
                 "dailyRate": result.get("dailyRate"),
                 "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
                 "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
                 "entryPatternEvidence": result.get("entryPatternEvidence"),
                 "relativeStrengthEvidence": result.get("relativeStrengthEvidence"),
+                "marketBreadthEvidence": result.get("marketBreadthEvidence"),
                 "instrumentRisk": instrument_risk_policy(result),
                 "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
                 "entryContext": entry_context,
@@ -4433,6 +4587,8 @@ def paper_trade_locked(
                 "side": "BUY",
                 "quantity": quantity,
                 "price": candidate.get("lastPrice"),
+                "highWaterPrice": candidate.get("lastPrice"),
+                "lowWaterPrice": candidate.get("lastPrice"),
                 "currency": "KRW",
                 "sourceCurrency": candidate.get("sourceCurrency") or candidate.get("currency"),
                 "sourcePrice": candidate.get("sourcePrice"),
@@ -4483,6 +4639,7 @@ def paper_trade_locked(
                 "scoreAudit": candidate.get("scoreAudit"),
                 "entryPatternEvidence": candidate.get("entryPatternEvidence"),
                 "relativeStrengthEvidence": candidate.get("relativeStrengthEvidence"),
+                "marketBreadthEvidence": candidate.get("marketBreadthEvidence"),
                 "learningPolicy": {
                     "requiredScore": candidate_policy.get("requiredScore") if candidate_policy else LEARNING_BASE_ENTRY_SCORE,
                     "candidateScore": candidate_policy.get("candidateScore") if candidate_policy else candidate.get("score"),
@@ -8237,6 +8394,12 @@ def build_trading_journal() -> dict[str, Any]:
                 ),
                 "observedExitPrice": decimal(exit_order.get("observedPrice")),
                 "observedExitReturnRate": decimal(exit_order.get("observedReturnRate")),
+                "maximumFavorableExcursionRate": decimal(
+                    exit_order.get("maximumFavorableExcursionRate")
+                ),
+                "maximumAdverseExcursionRate": decimal(
+                    exit_order.get("maximumAdverseExcursionRate")
+                ),
                 "postExitStudy": (
                     dict(exit_order.get("postExitStudy") or {})
                     if isinstance(exit_order.get("postExitStudy"), dict)
