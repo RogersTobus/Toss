@@ -91,6 +91,13 @@ SHADOW_PAPER_SCHEMA_VERSION = 1
 SHADOW_PAPER_COOLDOWN_SECONDS = 600
 SHADOW_PAPER_MAX_CLOSED_SAMPLES = 5000
 SHADOW_PAPER_LEARNING_WEIGHT = 0.30
+SHADOW_MAIN_EXIT_VARIANT = "partial-trailing"
+SHADOW_FIXED_TARGET_VARIANT = "fixed-net-rr"
+SHADOW_EXIT_VARIANTS = (
+    SHADOW_MAIN_EXIT_VARIANT,
+    SHADOW_FIXED_TARGET_VARIANT,
+)
+SHADOW_FIXED_NET_REWARD_RISK = 1.25
 LEARNING_SCHEMA_VERSION = 2
 GLOBAL_SCORE_MODEL_VERSION = 2
 LEARNING_BASE_ENTRY_SCORE = 80
@@ -1842,9 +1849,15 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
     today_closed = [item for item in closed if paper_trading_day(item.get("closedAt")) == today]
     net_returns = [decimal(item.get("netReturnRate")) for item in closed]
     wins = sum(1 for value in net_returns if value > 0)
-    current_strategy_closed = [
+    current_engine_closed = [
         item for item in closed
         if item.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
+    ]
+    current_strategy_closed = [
+        item for item in current_engine_closed
+        if (
+            item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT
+        ) == SHADOW_MAIN_EXIT_VARIANT
     ]
     current_strategy_evidence = return_evidence(
         current_strategy_closed[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES
@@ -1865,6 +1878,17 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
         current_strategy_exit_kinds[exit_kind] = (
             current_strategy_exit_kinds.get(exit_kind, 0) + 1
         )
+    exit_variant_evidence = {
+        variant: return_evidence(
+            [
+                item for item in current_engine_closed
+                if (item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT)
+                == variant
+            ][-PAPER_CONTEXT_HISTORY_LIMIT:],
+            PAPER_CONTEXT_RECENT_SAMPLES,
+        )
+        for variant in SHADOW_EXIT_VARIANTS
+    }
     by_market = {}
     for market in ("KR", "US"):
         market_closed = [item for item in closed if item.get("market") == market]
@@ -1914,9 +1938,11 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
         "minimumPromotionSamples": RESEARCH_MIN_VALIDATION_SAMPLES,
         "currentStrategy": {
             "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+            "deployableExitVariant": SHADOW_MAIN_EXIT_VARIANT,
             **current_strategy_evidence,
             "byMarket": current_strategy_by_market,
             "exitKinds": current_strategy_exit_kinds,
+            "exitVariantEvidence": exit_variant_evidence,
             "requiredContextSamples": PAPER_CONTEXT_MIN_SAMPLES,
             "requiredTradingDays": PAPER_CONTEXT_MIN_TRADING_DAYS,
             "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
@@ -2916,6 +2942,20 @@ def instrument_risk_policy(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def shadow_exit_target_rate(
+    market: str, variant: str, configured_target: Any = PAPER_TARGET_RATE
+) -> float:
+    base_target = max(PAPER_TARGET_RATE, decimal(configured_target))
+    if variant != SHADOW_FIXED_TARGET_VARIANT:
+        return base_target
+    cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+    net_loss_rate = abs(PAPER_STOP_RATE) + cost_rate
+    return max(
+        base_target,
+        cost_rate + SHADOW_FIXED_NET_REWARD_RISK * net_loss_rate,
+    )
+
+
 def return_evidence(
     records: list[dict[str, Any]], recent_samples: int = PAPER_COST_EVIDENCE_RECENT_SAMPLES
 ) -> dict[str, Any]:
@@ -3345,6 +3385,7 @@ def candidate_evidence_context(
     return {
         "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
         "market": market,
+        "exitVariant": SHADOW_MAIN_EXIT_VARIANT,
         "timeBucket": market_time_bucket(market, now or datetime.now().astimezone()),
         "instrumentClass": risk.get("class"),
         "breadthRegime": breadth.get("regime") or "기록 없음",
@@ -3365,6 +3406,11 @@ def shadow_context_records(
         if sample.get("engineVersion") != PAPER_STRATEGY_ENGINE_VERSION:
             continue
         sample_context = sample.get("entryContext") if isinstance(sample.get("entryContext"), dict) else {}
+        sample_variant = (
+            sample.get("experimentVariant")
+            or sample_context.get("exitVariant")
+            or SHADOW_MAIN_EXIT_VARIANT
+        )
         sample_time = sample_context.get("timeBucket") or market_time_bucket(
             str(sample.get("market") or market), sample.get("openedAt")
         )
@@ -3373,6 +3419,7 @@ def shadow_context_records(
         sample_rate_bucket = sample_context.get("dailyRateBucket") or daily_rate_bucket(sample.get("dailyRate"))
         if (
             sample.get("market") == market
+            and sample_variant == context["exitVariant"]
             and sample_time == context["timeBucket"]
             and sample_class == context["instrumentClass"]
             and sample_breadth == context["breadthRegime"]
@@ -3590,6 +3637,9 @@ def leveraged_shadow_entry_policy(
         and sample.get("status") == "CLOSED"
         and sample.get("market") == market
         and sample.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
+        and (
+            sample.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT
+        ) == SHADOW_MAIN_EXIT_VARIANT
         and instrument_risk_policy(sample).get("leveraged")
     ]
     evidence = return_evidence(samples[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES)
@@ -4199,7 +4249,10 @@ def update_shadow_paper(
     policy = strategy_execution_policy(config)
     runtime = policy.get("parameters") or {}
     required_score = int(runtime.get("entryScoreFloor") or LEARNING_BASE_ENTRY_SCORE)
-    target_rate = max(PAPER_TARGET_RATE, decimal(runtime.get("targetRate") or PAPER_TARGET_RATE))
+    configured_target_rate = max(
+        PAPER_TARGET_RATE,
+        decimal(runtime.get("targetRate") or PAPER_TARGET_RATE),
+    )
     cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
     with SHADOW_PAPER_LOCK:
         state = load_shadow_paper_state()
@@ -4216,7 +4269,11 @@ def update_shadow_paper(
             for item in results if item.get("symbol") and decimal(item.get("lastPrice")) > 0
         }
         active = {
-            (str(item.get("market") or ""), str(item.get("symbol") or "")): item
+            (
+                str(item.get("market") or ""),
+                str(item.get("symbol") or ""),
+                str(item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT),
+            ): item
             for item in samples if item.get("status") == "OPEN"
         }
         for key, item in list(active.items()):
@@ -4226,12 +4283,23 @@ def update_shadow_paper(
             entry = decimal(item.get("entryPrice"))
             if not last or not entry:
                 continue
+            exit_variant = key[2]
+            target_rate = decimal(
+                item.get("targetRate")
+                or shadow_exit_target_rate(
+                    market, exit_variant, configured_target_rate
+                )
+            )
             observed_rate = (last - entry) / entry
             item["lastObservedPrice"] = last
             item["lastObservedAt"] = now_text
             item["highWaterPrice"] = max(decimal(item.get("highWaterPrice") or entry), last)
             item["lowWaterPrice"] = min(decimal(item.get("lowWaterPrice") or entry), last)
-            if not item.get("partialTaken") and observed_rate >= target_rate:
+            if (
+                exit_variant == SHADOW_MAIN_EXIT_VARIANT
+                and not item.get("partialTaken")
+                and observed_rate >= target_rate
+            ):
                 item["partialTaken"] = True
                 item["partialReturnRate"] = observed_rate
                 item["partialAt"] = now_text
@@ -4240,7 +4308,16 @@ def update_shadow_paper(
             if observed_rate <= PAPER_STOP_RATE:
                 exit_kind = "손실선"
                 gross_return = min(PAPER_STOP_RATE, observed_rate)
-            elif item.get("partialTaken"):
+            elif (
+                exit_variant == SHADOW_FIXED_TARGET_VARIANT
+                and observed_rate >= target_rate
+            ):
+                exit_kind = "목표"
+                gross_return = observed_rate
+            elif (
+                exit_variant == SHADOW_MAIN_EXIT_VARIANT
+                and item.get("partialTaken")
+            ):
                 trailing_trigger = max(entry, decimal(item.get("highWaterPrice")) * (1 + PAPER_TRAILING_RATE))
                 if last <= trailing_trigger:
                     exit_kind = "추적손절"
@@ -4275,15 +4352,25 @@ def update_shadow_paper(
                     "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
                 })
 
-        recent_closed: dict[tuple[str, str], datetime] = {}
+        recent_closed: dict[tuple[str, str, str], datetime] = {}
         for item in samples:
             if item.get("status") != "CLOSED":
                 continue
             closed_at = parse_order_time(item.get("closedAt"))
             if closed_at:
-                recent_closed[(str(item.get("market") or ""), str(item.get("symbol") or ""))] = closed_at
+                recent_closed[
+                    (
+                        str(item.get("market") or ""),
+                        str(item.get("symbol") or ""),
+                        str(item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT),
+                    )
+                ] = closed_at
         active_keys = {
-            (str(item.get("market") or ""), str(item.get("symbol") or ""))
+            (
+                str(item.get("market") or ""),
+                str(item.get("symbol") or ""),
+                str(item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT),
+            )
             for item in samples if item.get("status") == "OPEN"
         }
         strategy_key_source = "|".join(
@@ -4292,40 +4379,66 @@ def update_shadow_paper(
         strategy_key = hashlib.sha1(strategy_key_source.encode("utf-8")).hexdigest()[:12]
         for result in results:
             symbol = str(result.get("symbol") or "")
-            key = (market, symbol)
-            if not symbol or key in active_keys:
+            if not symbol:
                 continue
             if result.get("verdict") != "정밀 분석" or decimal(result.get("score")) < required_score:
-                continue
-            last_closed = recent_closed.get(key)
-            if last_closed and (now_dt - last_closed).total_seconds() < SHADOW_PAPER_COOLDOWN_SECONDS:
                 continue
             price = decimal(result.get("lastPrice"))
             if price <= 0:
                 continue
             entry_context = candidate_evidence_context(result, market, now_dt)
-            samples.append({
-                "id": f"SHADOW-{market}-{symbol}-{int(time.time() * 1000)}",
-                "mode": "SIGNAL_ONLY_NO_CAPITAL", "status": "OPEN",
-                "market": market, "session": session, "symbol": symbol,
-                "name": result.get("name") or symbol, "openedAt": now_text,
-                "entryPrice": price, "highWaterPrice": price, "lowWaterPrice": price,
-                "lastObservedPrice": price, "lastObservedAt": now_text,
-                "dailyRate": result.get("dailyRate"),
-                "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
-                "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
-                "entryPatternEvidence": result.get("entryPatternEvidence"),
-                "relativeStrengthEvidence": result.get("relativeStrengthEvidence"),
-                "marketBreadthEvidence": result.get("marketBreadthEvidence"),
-                "instrumentRisk": instrument_risk_policy(result),
-                "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
-                "entryContext": entry_context,
-                "exitPolicy": "STOP_-0.5_TARGET_+1_TRAILING_CLOSE_NO_FIXED_TIME_EXIT",
-                "strategyKey": strategy_key, "strategyIds": list(policy.get("enabledIds") or []),
-                "strategyRevision": policy.get("revision"), "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
-                "excludedFromCapitalLedger": True, "excludedFromBillionGoal": True,
-            })
-            active_keys.add(key)
+            for exit_variant in SHADOW_EXIT_VARIANTS:
+                key = (market, symbol, exit_variant)
+                if key in active_keys:
+                    continue
+                last_closed = recent_closed.get(key)
+                if (
+                    last_closed
+                    and (now_dt - last_closed).total_seconds()
+                    < SHADOW_PAPER_COOLDOWN_SECONDS
+                ):
+                    continue
+                target_rate = shadow_exit_target_rate(
+                    market, exit_variant, configured_target_rate
+                )
+                variant_context = {
+                    **entry_context,
+                    "exitVariant": exit_variant,
+                }
+                samples.append({
+                    "id": (
+                        f"SHADOW-{market}-{symbol}-{exit_variant}-"
+                        f"{int(time.time() * 1000)}"
+                    ),
+                    "mode": "SIGNAL_ONLY_NO_CAPITAL", "status": "OPEN",
+                    "market": market, "session": session, "symbol": symbol,
+                    "name": result.get("name") or symbol, "openedAt": now_text,
+                    "entryPrice": price, "highWaterPrice": price, "lowWaterPrice": price,
+                    "lastObservedPrice": price, "lastObservedAt": now_text,
+                    "dailyRate": result.get("dailyRate"),
+                    "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
+                    "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
+                    "entryPatternEvidence": result.get("entryPatternEvidence"),
+                    "relativeStrengthEvidence": result.get("relativeStrengthEvidence"),
+                    "marketBreadthEvidence": result.get("marketBreadthEvidence"),
+                    "instrumentRisk": instrument_risk_policy(result),
+                    "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                    "experimentVariant": exit_variant,
+                    "targetRate": target_rate,
+                    "entryContext": variant_context,
+                    "exitPolicy": (
+                        "STOP_-0.5_FIXED_NET_RR_TARGET_CLOSE"
+                        if exit_variant == SHADOW_FIXED_TARGET_VARIANT
+                        else "STOP_-0.5_TARGET_PARTIAL_TRAILING_CLOSE"
+                    ),
+                    "strategyKey": f"{strategy_key}-{exit_variant}",
+                    "strategyIds": list(policy.get("enabledIds") or []),
+                    "strategyRevision": policy.get("revision"),
+                    "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
+                    "excludedFromCapitalLedger": True,
+                    "excludedFromBillionGoal": True,
+                })
+                active_keys.add(key)
         closed_samples = [item for item in samples if item.get("status") == "CLOSED"][-SHADOW_PAPER_MAX_CLOSED_SAMPLES:]
         open_samples = [item for item in samples if item.get("status") == "OPEN"]
         state["samples"] = closed_samples + open_samples

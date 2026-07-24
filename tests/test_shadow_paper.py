@@ -25,19 +25,29 @@ class ShadowPaperTests(unittest.TestCase):
     @patch("server.market_minutes_to_close", return_value=120)
     def test_unlimited_signal_sample_is_separate_from_capital(self, _close):
         summary = server.update_shadow_paper([self.candidate()], "KR", "KR 정규장")
-        self.assertEqual(summary["activeCount"], 1)
+        self.assertEqual(summary["activeCount"], len(server.SHADOW_EXIT_VARIANTS))
         self.assertTrue(summary["excludedFromCapitalLedger"])
         state = server.load_shadow_paper_state()
         self.assertTrue(state["samples"][0]["excludedFromBillionGoal"])
+        self.assertEqual(
+            {item["experimentVariant"] for item in state["samples"]},
+            set(server.SHADOW_EXIT_VARIANTS),
+        )
         server.update_shadow_paper([self.candidate()], "KR", "KR 정규장")
-        self.assertEqual(len(server.load_shadow_paper_state()["samples"]), 1)
+        self.assertEqual(
+            len(server.load_shadow_paper_state()["samples"]),
+            len(server.SHADOW_EXIT_VARIANTS),
+        )
 
     @patch("server.market_minutes_to_close", return_value=120)
     def test_stop_and_cost_are_recorded(self, _close):
         server.update_shadow_paper([self.candidate()], "KR", "KR 정규장")
         summary = server.update_shadow_paper([self.candidate(99.0)], "KR", "KR 정규장")
         self.assertEqual(summary["activeCount"], 0)
-        sample = server.load_shadow_paper_state()["samples"][0]
+        sample = next(
+            item for item in server.load_shadow_paper_state()["samples"]
+            if item["experimentVariant"] == server.SHADOW_MAIN_EXIT_VARIANT
+        )
         self.assertEqual(sample["exitKind"], "손실선")
         self.assertLess(sample["netReturnRate"], server.PAPER_STOP_RATE)
         self.assertAlmostEqual(sample["maximumFavorableExcursionRate"], 0.0)
@@ -47,6 +57,31 @@ class ShadowPaperTests(unittest.TestCase):
         summary = server.update_shadow_paper([self.candidate()], "US", "US 데이마켓")
         self.assertEqual(summary["sampleCount"], 0)
         self.assertEqual(summary["activeCount"], 0)
+
+    @patch("server.market_minutes_to_close", return_value=120)
+    def test_fixed_net_reward_variant_runs_beside_partial_trailing(self, _close):
+        server.update_shadow_paper([self.candidate()], "KR", "KR 정규장")
+        server.update_shadow_paper([self.candidate(101.1)], "KR", "KR 정규장")
+        samples = server.load_shadow_paper_state()["samples"]
+        main = next(
+            item for item in samples
+            if item["experimentVariant"] == server.SHADOW_MAIN_EXIT_VARIANT
+        )
+        fixed = next(
+            item for item in samples
+            if item["experimentVariant"] == server.SHADOW_FIXED_TARGET_VARIANT
+        )
+        self.assertTrue(main["partialTaken"])
+        self.assertEqual(fixed["status"], "OPEN")
+        self.assertGreater(fixed["targetRate"], server.PAPER_TARGET_RATE)
+
+        server.update_shadow_paper([self.candidate(101.4)], "KR", "KR 정규장")
+        fixed = next(
+            item for item in server.load_shadow_paper_state()["samples"]
+            if item["experimentVariant"] == server.SHADOW_FIXED_TARGET_VARIANT
+        )
+        self.assertEqual(fixed["status"], "CLOSED")
+        self.assertEqual(fixed["exitKind"], "목표")
 
     def test_stale_cross_market_position_is_closed_at_last_observed_price(self):
         state = server.new_shadow_paper_state()
