@@ -46,6 +46,34 @@ class ShadowPaperTests(unittest.TestCase):
         self.assertEqual(summary["sampleCount"], 0)
         self.assertEqual(summary["activeCount"], 0)
 
+    def test_stale_cross_market_position_is_closed_at_last_observed_price(self):
+        state = server.new_shadow_paper_state()
+        state["samples"] = [
+            {
+                "status": "OPEN",
+                "market": "US",
+                "symbol": "TEST",
+                "openedAt": "2026-07-22T23:00:00+0900",
+                "entryPrice": 100.0,
+                "lastObservedPrice": 100.4,
+                "engineVersion": server.PAPER_STRATEGY_ENGINE_VERSION,
+            }
+        ]
+        server.save_shadow_paper_state(state)
+        summary = server.update_shadow_paper(
+            [],
+            "KR",
+            "시장 휴장",
+            now=datetime.fromisoformat("2026-07-24T10:00:00+09:00"),
+        )
+        self.assertEqual(summary["activeCount"], 0)
+        sample = server.load_shadow_paper_state()["samples"][0]
+        self.assertEqual(sample["exitKind"], "마감청산")
+        self.assertTrue(sample["stalePositionRecovered"])
+        self.assertEqual(
+            sample["fillPolicy"], "LAST_OBSERVED_SESSION_CLOSE_FALLBACK"
+        )
+
     def test_summary_keeps_kr_and_us_results_on_the_same_trading_day(self):
         state = server.new_shadow_paper_state()
         state["samples"] = [
@@ -63,4 +91,25 @@ class ShadowPaperTests(unittest.TestCase):
         self.assertEqual(day["tradingDay"], "2026-07-22")
         self.assertEqual(day["byMarket"]["KR"]["sampleCount"], 1)
         self.assertEqual(day["byMarket"]["US"]["sampleCount"], 1)
+
+    def test_current_strategy_summary_is_split_by_market(self):
+        state = server.new_shadow_paper_state()
+        state["samples"] = [
+            {
+                "status": "CLOSED",
+                "market": market,
+                "engineVersion": server.PAPER_STRATEGY_ENGINE_VERSION,
+                "closedAt": closed_at,
+                "exitKind": exit_kind,
+                "netReturnRate": rate,
+            }
+            for market, closed_at, exit_kind, rate in (
+                ("KR", "2026-07-23T14:00:00+0900", "손실선", -0.006),
+                ("US", "2026-07-24T03:00:00+0900", "추적손절", 0.004),
+            )
+        ]
+        current = server.shadow_paper_summary(state)["currentStrategy"]
+        self.assertEqual(current["byMarket"]["KR"]["sampleCount"], 1)
+        self.assertEqual(current["byMarket"]["US"]["sampleCount"], 1)
+        self.assertEqual(current["exitKinds"]["손실선"], 1)
 

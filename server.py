@@ -121,15 +121,29 @@ PAPER_COST_EVIDENCE_RECENT_SAMPLES = 5
 PAPER_LEVERAGED_SCORE_PENALTY = 4
 PAPER_LEVERAGED_ALLOCATION_SCALE = 0.50
 PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 20
-PAPER_STRATEGY_ENGINE_VERSION = "relative-strength-v5"
+PAPER_STRATEGY_ENGINE_VERSION = "pullback-resumption-v6"
 PAPER_CONTEXT_MIN_SAMPLES = 12
 PAPER_CONTEXT_RECENT_SAMPLES = 8
 PAPER_CONTEXT_HISTORY_LIMIT = 40
 PAPER_CONTEXT_MIN_WIN_RATE = 0.40
 PAPER_CONTEXT_MIN_PROFIT_FACTOR = 1.15
-RELATIVE_STRENGTH_CONFIRMATION_SAMPLES = 4
-RELATIVE_STRENGTH_CONFIRMATION_SECONDS = 25
-RELATIVE_STRENGTH_HISTORY_SECONDS = 180
+PULLBACK_CONFIRMATION_SECONDS = 25
+PULLBACK_HISTORY_SECONDS = 300
+PULLBACK_MAX_OBSERVATION_GAP_SECONDS = 90
+PULLBACK_MARKET_RULES = {
+    "KR": {
+        "relativeMinimum": 0.005,
+        "minimumPullback": 0.002,
+        "maximumPullback": 0.008,
+        "minimumRecovery": 0.0015,
+    },
+    "US": {
+        "relativeMinimum": 0.008,
+        "minimumPullback": 0.003,
+        "maximumPullback": 0.010,
+        "minimumRecovery": 0.002,
+    },
+}
 PAPER_LEVERAGED_MIN_WIN_RATE = 0.45
 PAPER_LEVERAGED_MIN_PROFIT_FACTOR = 1.30
 KNOWN_LEVERAGED_OR_INVERSE_SYMBOLS = {
@@ -178,9 +192,9 @@ DEFAULT_STRATEGY_CONFIG = {
 DEFAULT_STRATEGIES = [
     {
         "id": "liquidity-momentum-filter",
-        "title": "유동성·모멘텀 후보 필터",
-        "description": "한국·미국 거래대금 상위 종목 중 시장 중앙값보다 강한 상위 25%를 찾고, 상대강도·거래대금·순위가 최소 30초 동안 유지될 때만 후보로 올립니다. 단일 상승 스냅샷과 이미 무너지는 급등 추격은 제외합니다.",
-        "judge": "상대강도·거래대금 지속 확인 전 진입 금지",
+        "title": "상대강도·눌림·재상승 상태 필터",
+        "description": "한국·미국 거래대금 상위 종목에서 시장보다 강한 종목을 먼저 찾은 뒤, 시장별 통제 범위의 눌림과 거래대금을 동반한 재상승이 순서대로 확인될 때만 후보로 올립니다. 강한 종목을 고점에서 바로 추격하지 않습니다.",
+        "judge": "선도 확인 → 통제 눌림 → 재상승 전 진입 금지",
         "enabled": True,
     },
     {
@@ -592,7 +606,7 @@ def strategy_ai_advice(strategy: dict[str, Any], analysis: dict[str, Any] | None
     if active_market == "CLOSED":
         return "현재 시장 휴장입니다. 다음 장에서는 기존 기준을 유지하고 결과만 관찰하세요."
     if sid == "liquidity-momentum-filter":
-        return f"후보 {len(results)}개 중 정밀 분석 {verdict_counts.get('정밀 분석', 0)}개입니다. 후보가 적으면 필터 완화보다 거래대금 품질 유지가 우선입니다."
+        return f"후보 {len(results)}개 중 눌림 후 재상승 완료 {verdict_counts.get('정밀 분석', 0)}개입니다. 신호가 적어도 고점 추격으로 되돌아가면 안 됩니다."
     if sid == "score-entry-80":
         return "장중 추세가 강한 종목만 선별하세요. 100건 검증 전에는 80점 기준을 낮추지 않는 편이 안전합니다."
     if sid == "hard-stop-loss":
@@ -1831,6 +1845,22 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
     current_strategy_evidence = return_evidence(
         current_strategy_closed[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES
     )
+    current_strategy_by_market = {
+        market: return_evidence(
+            [
+                item for item in current_strategy_closed
+                if item.get("market") == market
+            ][-PAPER_CONTEXT_HISTORY_LIMIT:],
+            PAPER_CONTEXT_RECENT_SAMPLES,
+        )
+        for market in ("KR", "US")
+    }
+    current_strategy_exit_kinds: dict[str, int] = {}
+    for item in current_strategy_closed:
+        exit_kind = str(item.get("exitKind") or "기타")
+        current_strategy_exit_kinds[exit_kind] = (
+            current_strategy_exit_kinds.get(exit_kind, 0) + 1
+        )
     by_market = {}
     for market in ("KR", "US"):
         market_closed = [item for item in closed if item.get("market") == market]
@@ -1881,6 +1911,8 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
         "currentStrategy": {
             "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
             **current_strategy_evidence,
+            "byMarket": current_strategy_by_market,
+            "exitKinds": current_strategy_exit_kinds,
             "requiredContextSamples": PAPER_CONTEXT_MIN_SAMPLES,
             "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
             "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
@@ -2715,6 +2747,30 @@ def market_minutes_to_close(market: str, now: datetime | None = None) -> float |
         return None
 
 
+def regular_market_session_has_ended(
+    market: str, now: datetime | None = None
+) -> bool:
+    """Return whether the cached official regular session has ended."""
+    current = now or datetime.now().astimezone()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=KST)
+    try:
+        if market == "KR":
+            session = (
+                (((CALENDAR_CACHE.get("KR") or {}).get("today") or {}).get("integrated") or {})
+                .get("regularMarket") or {}
+            )
+        else:
+            session = (
+                ((CALENDAR_CACHE.get("US") or {}).get("today") or {})
+                .get("regularMarket") or {}
+            )
+        end = datetime.fromisoformat(str(session.get("endTime") or ""))
+        return current >= end
+    except (TypeError, ValueError):
+        return False
+
+
 def stop_reentry_cooldown_symbols(
     orders: list[dict[str, Any]], market: str, now: datetime | None = None,
     cooldown_seconds: int = PAPER_STOP_REENTRY_COOLDOWN_SECONDS,
@@ -2907,13 +2963,18 @@ def distribution_value(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
-def apply_relative_strength_confirmation(
+def apply_pullback_resumption_confirmation(
     results: list[dict[str, Any]],
     market: str,
     now: datetime | None = None,
     history: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Require cross-sectional leadership to persist across several live scans."""
+    """Require leadership, a controlled pullback, then a fresh resumption.
+
+    The state machine deliberately emits a one-scan confirmation. A high score
+    cannot turn a leader into an entry before its price path completes all
+    three phases.
+    """
     if not results:
         return results
     now = now or datetime.now().astimezone()
@@ -2921,7 +2982,11 @@ def apply_relative_strength_confirmation(
     rates = [decimal(item.get("dailyRate")) for item in results]
     market_median = distribution_value(rates, 0.50)
     upper_quartile = distribution_value(rates, 0.75)
-    relative_minimum = 0.008 if market == "US" else 0.005
+    rules = PULLBACK_MARKET_RULES.get(market, PULLBACK_MARKET_RULES["KR"])
+    relative_minimum = decimal(rules.get("relativeMinimum"))
+    minimum_pullback = decimal(rules.get("minimumPullback"))
+    maximum_pullback = decimal(rules.get("maximumPullback"))
+    minimum_recovery = decimal(rules.get("minimumRecovery"))
     momentum_minimum, momentum_maximum = candidate_momentum_range(market)
     target_history = RELATIVE_STRENGTH_HISTORY if history is None else history
 
@@ -2937,92 +3002,217 @@ def apply_relative_strength_confirmation(
             relative = rate - market_median
             observations = [
                 entry for entry in target_history.get(key, [])
-                if timestamp - decimal(entry.get("timestamp")) <= RELATIVE_STRENGTH_HISTORY_SECONDS
+                if timestamp - decimal(entry.get("timestamp")) <= PULLBACK_HISTORY_SECONDS
             ]
-            observations.append(
-                {
-                    "timestamp": timestamp,
-                    "dailyRate": rate,
-                    "relativeStrength": relative,
-                    "tradingAmount": decimal(item.get("tradingAmount")),
-                    "rank": int(item.get("rank") or 9999),
-                    "upperQuartile": rate >= upper_quartile,
-                }
-            )
-            observations = observations[-8:]
-            target_history[key] = observations
-            recent = observations[-RELATIVE_STRENGTH_CONFIRMATION_SAMPLES:]
-            elapsed = (
-                decimal(recent[-1].get("timestamp")) - decimal(recent[0].get("timestamp"))
-                if len(recent) >= 2 else 0.0
-            )
-            strength_held = bool(recent) and all(
-                decimal(entry.get("relativeStrength")) >= relative_minimum
-                and bool(entry.get("upperQuartile"))
-                for entry in recent
-            )
-            rate_not_fading = bool(recent) and (
-                rate >= decimal(recent[0].get("dailyRate")) - 0.001
-            )
-            turnover_rising = len(recent) >= 2 and (
-                decimal(recent[-1].get("tradingAmount"))
-                > decimal(recent[0].get("tradingAmount"))
-            )
-            rank_stable = bool(recent) and (
-                int(recent[-1].get("rank") or 9999)
-                <= int(recent[0].get("rank") or 9999) + 3
-            )
+            previous = observations[-1] if observations else {}
+            if (
+                previous
+                and timestamp - decimal(previous.get("timestamp"))
+                > PULLBACK_MAX_OBSERVATION_GAP_SECONDS
+            ):
+                observations = []
+                previous = {}
+
             controlled_momentum = momentum_minimum <= rate < momentum_maximum
-            enough_observations = (
-                len(recent) >= RELATIVE_STRENGTH_CONFIRMATION_SAMPLES
-                and elapsed >= RELATIVE_STRENGTH_CONFIRMATION_SECONDS
+            upper_quartile_now = rate >= upper_quartile
+            leader_now = (
+                controlled_momentum
+                and relative >= relative_minimum
+                and upper_quartile_now
             )
-            confirmed = all(
-                (
-                    controlled_momentum,
-                    enough_observations,
-                    strength_held,
-                    rate_not_fading,
-                    turnover_rising,
-                    rank_stable,
-                )
+            phase = str(previous.get("phase") or "WATCHING_LEADER")
+            previous_phase = phase
+            leader_streak = int(previous.get("leaderStreak") or 0)
+            leader_started_at = decimal(previous.get("leaderStartedAt"))
+            peak_rate = decimal(previous.get("peakRate") or rate)
+            peak_price = decimal(
+                previous.get("peakPrice")
+                or item.get("sourcePrice")
+                or item.get("lastPrice")
             )
-            failed_reasons = []
-            if not controlled_momentum:
-                failed_reasons.append("통제 상승범위 이탈")
-            if not enough_observations:
-                failed_reasons.append(
-                    f"지속 확인 {len(recent)}/{RELATIVE_STRENGTH_CONFIRMATION_SAMPLES}회·{int(elapsed)}초"
+            peak_rank = int(previous.get("peakRank") or item.get("rank") or 9999)
+            peak_timestamp = decimal(previous.get("peakTimestamp") or timestamp)
+            trough_rate = decimal(previous.get("troughRate") or rate)
+            trough_turnover = decimal(
+                previous.get("troughTurnover") or item.get("tradingAmount")
+            )
+            pullback_depth = max(0.0, peak_rate - rate)
+            recovery_rate = max(0.0, rate - trough_rate)
+
+            if phase == "RESUMPTION_CONFIRMED":
+                # The previous scan already emitted the entry event. A new
+                # cycle must form before this symbol can confirm again.
+                phase = "LEADER_CONFIRMED" if leader_now else "WATCHING_LEADER"
+                leader_streak = 2 if leader_now else 0
+                leader_started_at = timestamp if leader_now else 0.0
+                peak_rate = rate
+                peak_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+                peak_rank = int(item.get("rank") or 9999)
+                peak_timestamp = timestamp
+                trough_rate = rate
+                trough_turnover = decimal(item.get("tradingAmount"))
+            elif phase == "WATCHING_LEADER":
+                if leader_now:
+                    if previous_phase == "WATCHING_LEADER" and leader_streak > 0:
+                        leader_streak += 1
+                    else:
+                        leader_streak = 1
+                        leader_started_at = timestamp
+                    peak_rate = max(peak_rate, rate) if leader_streak > 1 else rate
+                    if rate >= peak_rate:
+                        peak_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+                        peak_rank = int(item.get("rank") or 9999)
+                        peak_timestamp = timestamp
+                    leader_elapsed = timestamp - leader_started_at
+                    if leader_streak >= 2 and leader_elapsed >= 10:
+                        phase = "LEADER_CONFIRMED"
+                else:
+                    leader_streak = 0
+                    leader_started_at = 0.0
+                    peak_rate = rate
+                    peak_timestamp = timestamp
+            elif phase == "LEADER_CONFIRMED":
+                if not controlled_momentum or relative < 0:
+                    phase = "WATCHING_LEADER"
+                    leader_streak = 1 if leader_now else 0
+                    leader_started_at = timestamp if leader_now else 0.0
+                    peak_rate = rate
+                    peak_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+                    peak_rank = int(item.get("rank") or 9999)
+                    peak_timestamp = timestamp
+                elif rate >= peak_rate:
+                    peak_rate = rate
+                    peak_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+                    peak_rank = int(item.get("rank") or 9999)
+                    peak_timestamp = timestamp
+                    pullback_depth = 0.0
+                else:
+                    pullback_depth = peak_rate - rate
+                    if pullback_depth > maximum_pullback:
+                        phase = "WATCHING_LEADER"
+                        leader_streak = 1 if leader_now else 0
+                        leader_started_at = timestamp if leader_now else 0.0
+                        peak_rate = rate
+                        peak_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+                        peak_rank = int(item.get("rank") or 9999)
+                        peak_timestamp = timestamp
+                    elif pullback_depth >= minimum_pullback:
+                        phase = "PULLBACK_SEEN"
+                        trough_rate = rate
+                        trough_turnover = decimal(item.get("tradingAmount"))
+            elif phase == "PULLBACK_SEEN":
+                if rate < trough_rate:
+                    trough_rate = rate
+                    trough_turnover = decimal(item.get("tradingAmount"))
+                pullback_depth = peak_rate - trough_rate
+                recovery_rate = rate - trough_rate
+                if (
+                    not controlled_momentum
+                    or relative < 0
+                    or pullback_depth > maximum_pullback
+                ):
+                    phase = "WATCHING_LEADER"
+                    leader_streak = 1 if leader_now else 0
+                    leader_started_at = timestamp if leader_now else 0.0
+                    peak_rate = rate
+                    peak_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+                    peak_rank = int(item.get("rank") or 9999)
+                    peak_timestamp = timestamp
+
+            cycle_elapsed = (
+                timestamp - leader_started_at if leader_started_at else 0.0
+            )
+            turnover_rising = (
+                decimal(item.get("tradingAmount")) > trough_turnover
+            )
+            rank_stable = (
+                int(item.get("rank") or 9999) <= peak_rank + 3
+            )
+            if phase == "PULLBACK_SEEN":
+                pullback_depth = peak_rate - trough_rate
+                recovery_rate = rate - trough_rate
+                if (
+                    leader_now
+                    and minimum_pullback <= pullback_depth <= maximum_pullback
+                    and recovery_rate >= minimum_recovery
+                    and turnover_rising
+                    and rank_stable
+                    and cycle_elapsed >= PULLBACK_CONFIRMATION_SECONDS
+                ):
+                    phase = "RESUMPTION_CONFIRMED"
+
+            observation = {
+                "timestamp": timestamp,
+                "dailyRate": rate,
+                "sourcePrice": decimal(item.get("sourcePrice") or item.get("lastPrice")),
+                "relativeStrength": relative,
+                "tradingAmount": decimal(item.get("tradingAmount")),
+                "rank": int(item.get("rank") or 9999),
+                "upperQuartile": upper_quartile_now,
+                "phase": phase,
+                "leaderStreak": leader_streak,
+                "leaderStartedAt": leader_started_at,
+                "peakRate": peak_rate,
+                "peakPrice": peak_price,
+                "peakRank": peak_rank,
+                "peakTimestamp": peak_timestamp,
+                "troughRate": trough_rate,
+                "troughTurnover": trough_turnover,
+            }
+            observations.append(observation)
+            observations = observations[-20:]
+            target_history[key] = observations
+
+            confirmed = phase == "RESUMPTION_CONFIRMED"
+            phase_reasons = {
+                "WATCHING_LEADER": (
+                    "시장 상위 25% 선도주 지속 확인 중"
+                    if leader_now
+                    else "시장 상위 25% 상대강도 미달"
+                ),
+                "LEADER_CONFIRMED": (
+                    f"선도 확인 · 눌림 대기 "
+                    f"{pullback_depth * 100:.2f}%/"
+                    f"{minimum_pullback * 100:.2f}~{maximum_pullback * 100:.2f}%"
+                ),
+                "PULLBACK_SEEN": (
+                    f"눌림 {pullback_depth * 100:.2f}% 확인 · "
+                    f"재상승 {recovery_rate * 100:.2f}%/"
+                    f"{minimum_recovery * 100:.2f}% 대기"
+                ),
+                "RESUMPTION_CONFIRMED": (
+                    f"선도→눌림 {pullback_depth * 100:.2f}%→"
+                    f"재상승 {recovery_rate * 100:.2f}% 확인"
                 )
-            if not strength_held:
-                failed_reasons.append("시장 상위 25% 상대강도 미유지")
-            if not rate_not_fading:
-                failed_reasons.append("상승률 둔화")
-            if not turnover_rising:
-                failed_reasons.append("거래대금 증가 미확인")
-            if not rank_stable:
-                failed_reasons.append("거래대금 순위 하락")
-            item["relativeStrengthEvidence"] = {
+            }
+            evidence = {
                 "allowed": confirmed,
+                "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                "phase": phase,
                 "marketMedianRate": market_median,
                 "upperQuartileRate": upper_quartile,
                 "relativeStrength": relative,
                 "minimumRelativeStrength": relative_minimum,
-                "observationCount": len(recent),
-                "requiredObservations": RELATIVE_STRENGTH_CONFIRMATION_SAMPLES,
-                "elapsedSeconds": int(elapsed),
-                "requiredSeconds": RELATIVE_STRENGTH_CONFIRMATION_SECONDS,
+                "observationCount": len(observations),
+                "elapsedSeconds": int(cycle_elapsed),
+                "requiredSeconds": PULLBACK_CONFIRMATION_SECONDS,
                 "controlledMomentum": controlled_momentum,
-                "topQuartileHeld": strength_held,
-                "rateNotFading": rate_not_fading,
+                "topQuartileNow": upper_quartile_now,
+                "leaderConfirmed": phase in (
+                    "LEADER_CONFIRMED", "PULLBACK_SEEN", "RESUMPTION_CONFIRMED"
+                ),
+                "pullbackDepth": pullback_depth,
+                "minimumPullback": minimum_pullback,
+                "maximumPullback": maximum_pullback,
+                "recoveryRate": recovery_rate,
+                "minimumRecovery": minimum_recovery,
                 "turnoverRising": turnover_rising,
                 "rankStable": rank_stable,
-                "reason": (
-                    "시장 대비 상대강도 지속 확인"
-                    if confirmed
-                    else " · ".join(failed_reasons)
-                ),
+                "reason": phase_reasons.get(phase, "가격 경로 확인 중"),
             }
+            item["entryPatternEvidence"] = evidence
+            # Kept as a compatibility alias for existing journal/API consumers.
+            item["relativeStrengthEvidence"] = evidence
         if history is None:
             stale = [
                 key for key, entries in target_history.items()
@@ -3030,7 +3220,7 @@ def apply_relative_strength_confirmation(
                 and (
                     not entries
                     or timestamp - decimal(entries[-1].get("timestamp"))
-                    > RELATIVE_STRENGTH_HISTORY_SECONDS
+                    > PULLBACK_HISTORY_SECONDS
                 )
             ]
             for key in stale:
@@ -3042,6 +3232,16 @@ def apply_relative_strength_confirmation(
     else:
         update()
     return results
+
+
+def apply_relative_strength_confirmation(
+    results: list[dict[str, Any]],
+    market: str,
+    now: datetime | None = None,
+    history: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    """Backward-compatible entry point for the v6 price-path state machine."""
+    return apply_pullback_resumption_confirmation(results, market, now, history)
 
 
 def candidate_evidence_context(
@@ -3790,14 +3990,65 @@ def paper_trade(
         return paper_trade_locked(env, results, market, session)
 
 
+def close_stale_shadow_positions(
+    samples: list[dict[str, Any]], now_dt: datetime
+) -> bool:
+    """Close SHADOW positions left open after their official regular session."""
+    changed = False
+    now = now_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+    current_trading_day = paper_trading_day(now)
+    for item in samples:
+        if item.get("status") != "OPEN":
+            continue
+        sample_market = str(item.get("market") or "")
+        opened_at = parse_order_time(item.get("openedAt"))
+        if not sample_market or not opened_at:
+            continue
+        stale_trading_day = paper_trading_day(item.get("openedAt")) != current_trading_day
+        session_ended = regular_market_session_has_ended(sample_market, now_dt)
+        if not stale_trading_day and not session_ended:
+            continue
+        entry = decimal(item.get("entryPrice"))
+        last = decimal(item.get("lastObservedPrice") or entry)
+        if entry <= 0 or last <= 0:
+            continue
+        observed_rate = (last - entry) / entry
+        gross_return = observed_rate
+        if item.get("partialTaken"):
+            gross_return = (
+                decimal(item.get("partialReturnRate")) * PAPER_PARTIAL_TAKE_PROFIT_RATE
+                + observed_rate * (1 - PAPER_PARTIAL_TAKE_PROFIT_RATE)
+            )
+        cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(sample_market))
+        item.update(
+            {
+                "status": "CLOSED",
+                "closedAt": now,
+                "exitPrice": last,
+                "exitKind": "마감청산",
+                "grossReturnRate": gross_return,
+                "estimatedCostRate": cost_rate,
+                "netReturnRate": gross_return - cost_rate,
+                "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
+                "fillPolicy": "LAST_OBSERVED_SESSION_CLOSE_FALLBACK",
+                "stalePositionRecovered": True,
+            }
+        )
+        changed = True
+    return changed
+
+
 def update_shadow_paper(
-    results: list[dict[str, Any]], market: str, session: str
+    results: list[dict[str, Any]],
+    market: str,
+    session: str,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Track every qualified regular-session signal without capital or risk effects."""
-    if session not in ("KR 정규장", "US 정규장"):
-        return shadow_paper_summary()
-    now_dt = datetime.now().astimezone()
-    now = now_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+    now_dt = now or datetime.now().astimezone()
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=KST)
+    now_text = now_dt.strftime("%Y-%m-%dT%H:%M:%S%z")
     config = strategy_config()
     policy = strategy_execution_policy(config)
     runtime = policy.get("parameters") or {}
@@ -3807,6 +4058,13 @@ def update_shadow_paper(
     with SHADOW_PAPER_LOCK:
         state = load_shadow_paper_state()
         samples = [item for item in state.get("samples") or [] if isinstance(item, dict)]
+        stale_closed = close_stale_shadow_positions(samples, now_dt)
+        if session not in ("KR 정규장", "US 정규장"):
+            if stale_closed:
+                state["samples"] = samples
+                state["updatedAt"] = now_text
+                save_shadow_paper_state(state)
+            return shadow_paper_summary(state)
         prices = {
             str(item.get("symbol") or ""): decimal(item.get("lastPrice"))
             for item in results if item.get("symbol") and decimal(item.get("lastPrice")) > 0
@@ -3823,11 +4081,13 @@ def update_shadow_paper(
             if not last or not entry:
                 continue
             observed_rate = (last - entry) / entry
+            item["lastObservedPrice"] = last
+            item["lastObservedAt"] = now_text
             item["highWaterPrice"] = max(decimal(item.get("highWaterPrice") or entry), last)
             if not item.get("partialTaken") and observed_rate >= target_rate:
                 item["partialTaken"] = True
                 item["partialReturnRate"] = observed_rate
-                item["partialAt"] = now
+                item["partialAt"] = now_text
             exit_kind = None
             gross_return = observed_rate
             if observed_rate <= PAPER_STOP_RATE:
@@ -3851,12 +4111,12 @@ def update_shadow_paper(
                 and observed_rate < 0.001
             ):
                 exit_kind = "시간청산"
-            minutes_to_close = market_minutes_to_close(market)
+            minutes_to_close = market_minutes_to_close(market, now_dt)
             if not exit_kind and minutes_to_close is not None and minutes_to_close <= PAPER_MARKET_CLOSE_EXIT_MINUTES:
                 exit_kind = "마감청산"
             if exit_kind:
                 item.update({
-                    "status": "CLOSED", "closedAt": now, "exitPrice": last,
+                    "status": "CLOSED", "closedAt": now_text, "exitPrice": last,
                     "exitKind": exit_kind, "grossReturnRate": gross_return,
                     "estimatedCostRate": cost_rate, "netReturnRate": gross_return - cost_rate,
                     "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
@@ -3895,11 +4155,13 @@ def update_shadow_paper(
                 "id": f"SHADOW-{market}-{symbol}-{int(time.time() * 1000)}",
                 "mode": "SIGNAL_ONLY_NO_CAPITAL", "status": "OPEN",
                 "market": market, "session": session, "symbol": symbol,
-                "name": result.get("name") or symbol, "openedAt": now,
+                "name": result.get("name") or symbol, "openedAt": now_text,
                 "entryPrice": price, "highWaterPrice": price,
+                "lastObservedPrice": price, "lastObservedAt": now_text,
                 "dailyRate": result.get("dailyRate"),
                 "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
                 "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
+                "entryPatternEvidence": result.get("entryPatternEvidence"),
                 "relativeStrengthEvidence": result.get("relativeStrengthEvidence"),
                 "instrumentRisk": instrument_risk_policy(result),
                 "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
@@ -3913,7 +4175,7 @@ def update_shadow_paper(
         closed_samples = [item for item in samples if item.get("status") == "CLOSED"][-SHADOW_PAPER_MAX_CLOSED_SAMPLES:]
         open_samples = [item for item in samples if item.get("status") == "OPEN"]
         state["samples"] = closed_samples + open_samples
-        state["updatedAt"] = now
+        state["updatedAt"] = now_text
         save_shadow_paper_state(state)
         return shadow_paper_summary(state)
 
@@ -4219,6 +4481,7 @@ def paper_trade_locked(
                 "baseEntryScore": candidate.get("baseScore"),
                 "scoreFeatures": candidate.get("scoreFeatures"),
                 "scoreAudit": candidate.get("scoreAudit"),
+                "entryPatternEvidence": candidate.get("entryPatternEvidence"),
                 "relativeStrengthEvidence": candidate.get("relativeStrengthEvidence"),
                 "learningPolicy": {
                     "requiredScore": candidate_policy.get("requiredScore") if candidate_policy else LEARNING_BASE_ENTRY_SCORE,
@@ -4357,7 +4620,7 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
                 },
             }
         results.append(apply_global_score_to_candidate(result, score_model))
-    apply_relative_strength_confirmation(results, market)
+    apply_pullback_resumption_confirmation(results, market)
     for item in results:
         apply_global_score_to_candidate(item, score_model)
     return results
@@ -6184,6 +6447,10 @@ def analysis_loop() -> None:
                 else:
                     orders = load_paper_orders()
                     paper_stats = paper_summary(orders, results)
+                if review_mode or not market:
+                    paper_stats["shadowPaper"] = update_shadow_paper(
+                        [], str(market or ""), session
+                    )
                 if not review_mode:
                     handle_paper_alert(env, market, paper_stats)
                 report_state = load_report_state()
@@ -6837,8 +7104,10 @@ def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any])
     source_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
     minimum_price = 5.0 if market == "US" else 5000.0 if market == "KR" else 0.0
     momentum_min, momentum_max = candidate_momentum_range(market)
-    relative_evidence = (
-        item.get("relativeStrengthEvidence")
+    entry_pattern_evidence = (
+        item.get("entryPatternEvidence")
+        if isinstance(item.get("entryPatternEvidence"), dict)
+        else item.get("relativeStrengthEvidence")
         if isinstance(item.get("relativeStrengthEvidence"), dict)
         else None
     )
@@ -6846,8 +7115,10 @@ def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any])
         "minimumPrice": source_price >= minimum_price,
         "controlledMomentum": momentum_min <= rate < momentum_max,
     }
-    if relative_evidence is not None:
-        gate_checks["relativeStrengthConfirmed"] = bool(relative_evidence.get("allowed"))
+    if entry_pattern_evidence is not None:
+        gate_checks["pullbackResumptionConfirmed"] = bool(
+            entry_pattern_evidence.get("allowed")
+        )
     gates_passed = all(gate_checks.values())
     if not gate_checks["minimumPrice"]:
         verdict, reason = "진입 불가", f"{market or '공통'} 최소가격 기준 미달"
@@ -6857,11 +7128,11 @@ def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any])
             f"통제 추세 범위 {momentum_min * 100:.1f}~{momentum_max * 100:.1f}% 밖 · "
             f"{market or '공통'} 전략 평가 {score:.1f}점",
         )
-    elif not gate_checks.get("relativeStrengthConfirmed", True):
+    elif not gate_checks.get("pullbackResumptionConfirmed", True):
         verdict, reason = (
             "관찰",
-            f"{relative_evidence.get('reason') or '상대강도 지속 확인 전'} · "
-            f"시장 대비 {decimal(relative_evidence.get('relativeStrength')) * 100:+.2f}%p",
+            f"{entry_pattern_evidence.get('reason') or '눌림 후 재상승 확인 전'} · "
+            f"시장 대비 {decimal(entry_pattern_evidence.get('relativeStrength')) * 100:+.2f}%p",
         )
     elif score >= threshold:
         verdict, reason = "정밀 분석", f"{market or '공통'} 전략 {threshold}점 통과 · {score:.1f}점"
