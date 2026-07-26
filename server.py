@@ -171,7 +171,7 @@ INTRADAY_BACKTEST_CANDLE_PAGES = 4
 INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
 INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
 INTRADAY_BACKTEST_POLL_SECONDS = 900
-INTRADAY_BACKTEST_VERSION = "minute-replay-v2"
+INTRADAY_BACKTEST_VERSION = "minute-replay-v3"
 INTRADAY_BACKTEST_AUTO_ENABLED = False
 STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
@@ -5067,7 +5067,14 @@ def intraday_regular_session_key(market: str, moment: datetime) -> str | None:
 def intraday_entry_snapshot(
     rows: list[dict[str, Any]], index: int, market: str, session_open: float
 ) -> dict[str, Any]:
-    """Evaluate a non-lookahead breakout using only bars known at entry."""
+    """Evaluate a non-lookahead pullback resumption using only known bars.
+
+    Historical minute candles do not contain the full cross-sectional ranking
+    snapshots used by the live relative-strength state machine. Liquidity rank
+    is therefore evaluated separately by the caller, while this function
+    reproduces the price path: established trend, controlled pullback, then a
+    fresh recovery with returning volume.
+    """
     if index < 20 or index >= len(rows):
         return {"allowed": False, "reason": "정규장 20분 확인 전"}
     current = rows[index]
@@ -5092,7 +5099,26 @@ def intraday_entry_snapshot(
     volume_ratio = decimal(current.get("volume")) / prior_volume if prior_volume else 0.0
     short_momentum = entry / closes[-5] - 1 if closes[-5] else 0.0
     daily_rate = entry / session_open - 1
-    prior_breakout = max(decimal(item.get("high")) for item in previous[-5:])
+    rules = PULLBACK_MARKET_RULES.get(market, PULLBACK_MARKET_RULES["KR"])
+    minimum_pullback = decimal(rules.get("minimumPullback"))
+    maximum_pullback = decimal(rules.get("maximumPullback"))
+    minimum_recovery = decimal(rules.get("minimumRecovery"))
+    path = previous[-12:]
+    peak_offset, peak_bar = max(
+        enumerate(path), key=lambda pair: decimal(pair[1].get("high"))
+    )
+    peak_price = decimal(peak_bar.get("high"))
+    bars_after_peak = path[peak_offset + 1:]
+    trough_bar = min(
+        bars_after_peak, key=lambda item: decimal(item.get("low"))
+    ) if bars_after_peak else None
+    trough_price = decimal(trough_bar.get("low")) if trough_bar else peak_price
+    pullback_depth = (peak_price - trough_price) / peak_price if peak_price else 0.0
+    recovery_rate = (entry - trough_price) / trough_price if trough_price else 0.0
+    trough_volume = decimal(trough_bar.get("volume")) if trough_bar else 0.0
+    turnover_returning = decimal(current.get("volume")) > trough_volume
+    price_below_peak = entry < peak_price
+    fresh_recovery = entry > decimal(rows[index - 1].get("close"))
     bar_high = decimal(current.get("high"))
     bar_low = decimal(current.get("low"))
     close_position = (entry - bar_low) / (bar_high - bar_low) if bar_high > bar_low else 0.5
@@ -5103,8 +5129,17 @@ def intraday_entry_snapshot(
         "controlledDailyMomentum": momentum_min <= daily_rate < momentum_max,
         "trendAligned": sma5 > sma20 and entry > vwap,
         "fiveMinuteMomentum": short_min <= short_momentum <= 0.025,
-        "breakout": entry >= prior_breakout,
+        "controlledPullback": (
+            trough_bar is not None
+            and minimum_pullback <= pullback_depth <= maximum_pullback
+        ),
+        "freshRecovery": (
+            fresh_recovery
+            and recovery_rate >= minimum_recovery
+            and price_below_peak
+        ),
         "relativeVolume": volume_ratio >= volume_min,
+        "turnoverReturning": turnover_returning,
         "strongClose": close_position >= 0.70,
     }
     return {
@@ -5113,18 +5148,24 @@ def intraday_entry_snapshot(
         "dailyRate": daily_rate,
         "shortMomentum": short_momentum,
         "volumeRatio": volume_ratio,
+        "pullbackDepth": pullback_depth,
+        "minimumPullback": minimum_pullback,
+        "maximumPullback": maximum_pullback,
+        "recoveryRate": recovery_rate,
+        "minimumRecovery": minimum_recovery,
+        "turnoverReturning": turnover_returning,
         "sma5": sma5,
         "sma20": sma20,
         "vwap": vwap,
         "closePosition": close_position,
-        "reason": "통제 돌파 확인" if all(checks.values()) else "장중 확인 조건 미달",
+        "reason": "눌림 후 재상승 확인" if all(checks.values()) else "눌림 재상승 조건 미달",
     }
 
 
 def simulate_intraday_strategy(
     candles: list[dict[str, Any]], market: str, symbol: str, name: str, rank: int
 ) -> list[dict[str, Any]]:
-    """Conservative minute-bar replay of context-edge-v3 entry and exit rules."""
+    """Conservative minute-bar replay of the cost-aware pullback strategy."""
     grouped: dict[str, list[dict[str, Any]]] = {}
     for candle in candles:
         moment = parse_study_candle_time(candle.get("timestamp"))
@@ -5352,7 +5393,11 @@ def run_intraday_backtest_cycle(
         "errors": errors[-12:], "autoPromotion": False,
         "selectionBias": "CURRENT_LIQUIDITY_UNIVERSE",
         "intrabarPolicy": "STOP_FIRST_WHEN_TARGET_AND_STOP_SHARE_MINUTE",
-        "note": "VWAP·단기추세·돌파·상대거래량을 확인하는 보수형 v2이며 실시간 SHADOW 검증을 대체하지 않음",
+        "note": (
+            "VWAP·단기추세·통제 눌림·재상승·상대거래량을 확인하는 보수형 v3. "
+            "과거 시점의 횡단면 순위가 없어 현재 유동성 순위를 선도주 대용치로 사용하며 "
+            "실시간 SHADOW 검증을 대체하지 않음"
+        ),
     }
     with LEARNING_LOCK:
         state = load_learning_state_unlocked()

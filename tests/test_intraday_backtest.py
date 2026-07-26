@@ -19,11 +19,30 @@ class IntradayBacktestTests(unittest.TestCase):
 
     def qualifying_prefix(self):
         rows = []
-        for index in range(20):
+        for index in range(17):
             close = 100 + (index * 0.05)
             rows.append((close - 0.03, close + 0.05, close - 0.05, close, 1000))
-        rows.append((100.95, 101.40, 100.90, 101.30, 1800))
+        rows.extend([
+            (100.80, 101.35, 100.75, 101.25, 1500),
+            (101.20, 101.22, 100.75, 100.82, 700),
+            (100.82, 101.02, 100.80, 100.98, 900),
+            (100.98, 101.32, 100.96, 101.28, 1800),
+        ])
         return rows
+
+    def test_breakout_without_pullback_is_rejected(self):
+        prices = []
+        for index in range(20):
+            close = 100 + (index * 0.05)
+            prices.append((close - 0.03, close + 0.05, close - 0.05, close, 1000))
+        prices.extend([
+            (100.95, 101.40, 100.90, 101.30, 1800),
+            (101.30, 101.50, 101.25, 101.45, 1500),
+        ])
+        trades = server.simulate_intraday_strategy(
+            self.candles(prices), "US", "TEST", "Test", 1,
+        )
+        self.assertEqual(trades, [])
 
     def test_flat_high_rank_signal_is_rejected(self):
         trades = server.simulate_intraday_strategy(
@@ -103,4 +122,3 @@ class IntradayBacktestTests(unittest.TestCase):
         self.assertEqual(metrics["splits"]["train"]["sampleCount"], 6)
         self.assertEqual(metrics["splits"]["validation"]["sampleCount"], 2)
         self.assertEqual(metrics["splits"]["holdout"]["sampleCount"], 2)
-
