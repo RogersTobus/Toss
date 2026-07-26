@@ -96,7 +96,7 @@ class IntradayBacktestTests(unittest.TestCase):
         self.assertLessEqual(server.INTRADAY_BACKTEST_BATCH_PER_MARKET, 1)
         self.assertLessEqual(server.INTRADAY_BACKTEST_CANDLE_PAGES, 4)
         self.assertLessEqual(server.INTRADAY_BACKTEST_HISTORY_LIMIT, 1200)
-        self.assertFalse(server.INTRADAY_BACKTEST_AUTO_ENABLED)
+        self.assertTrue(server.INTRADAY_BACKTEST_AUTO_ENABLED)
         self.assertFalse(server.OFF_MARKET_STUDY_AUTO_ENABLED)
         self.assertFalse(server.DOMESTIC_DAY_REVIEW_AUTO_ENABLED)
 
