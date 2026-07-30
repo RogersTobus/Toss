@@ -104,7 +104,7 @@ class WorkerState:
             "pid": os.getpid(),
             "separateProcess": True,
             "memoryHighMb": 384,
-            "memoryLimitMb": 600,
+            "memoryLimitMb": 650,
             "scheduleSeconds": SCHEDULE_SECONDS,
         }
         self.stop_event = threading.Event()

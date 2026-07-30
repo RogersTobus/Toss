@@ -8,12 +8,13 @@ Type=oneshot
 User=ubuntu
 WorkingDirectory=/home/ubuntu/Toss
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/ubuntu/Toss/research_worker.py
+Environment=MALLOC_ARENA_MAX=2
+ExecStart=/usr/bin/python3 /home/ubuntu/Toss/research_supervisor.py
 Nice=10
 CPUQuota=45%
 MemoryHigh=384M
-MemoryMax=600M
-OOMPolicy=stop
+MemoryMax=650M
+OOMPolicy=continue
 TimeoutStartSec=540
 PrivateTmp=true
 NoNewPrivileges=true

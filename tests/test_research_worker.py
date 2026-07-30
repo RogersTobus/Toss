@@ -101,7 +101,9 @@ class ResearchWorkerTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("CPUQuota=45%", unit)
         self.assertIn("MemoryHigh=384M", unit)
-        self.assertIn("MemoryMax=600M", unit)
+        self.assertIn("research_supervisor.py", unit)
+        self.assertIn("MemoryMax=650M", unit)
+        self.assertIn("OOMPolicy=continue", unit)
 
     def test_dashboard_prefers_separate_research_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -122,6 +124,48 @@ class ResearchWorkerTests(unittest.TestCase):
                 payload = server.learning_brain_payload(live)
             self.assertEqual(payload["offlineStudy"]["analyzedSymbolCount"], 16)
             self.assertEqual(payload["intradayBacktest"]["tradeCount"], 7)
+
+    def test_research_compaction_keeps_aggregates_and_bounds_raw_rows(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            research_path = root / "research_learning_state.json"
+            lock_path = root / ".research_learning_state.lock"
+            state = server.default_learning_state()
+            state["offlineStudy"] = {
+                "summary": {"tradeCount": 321, "winRate": 0.57},
+                "analyses": [{"id": index} for index in range(40)],
+                "symbolStudies": [{"symbol": str(index)} for index in range(40)],
+            }
+            state["intradayBacktest"] = {
+                "metrics": {"tradeCount": 500, "winRate": 0.52},
+                "trades": [{"id": index} for index in range(500)],
+            }
+            state["candidateStrategyRegistry"] = {
+                "candidates": {"alpha": {"observationCount": 120}}
+            }
+            research_path.write_text(json.dumps(state), encoding="utf-8")
+            with (
+                mock.patch.object(server, "RESEARCH_LEARNING_PATH", research_path),
+                mock.patch.object(
+                    server,
+                    "RESEARCH_LEARNING_FILE_LOCK_PATH",
+                    lock_path,
+                ),
+            ):
+                result = server.compact_research_learning_state_once()
+                compacted = server.load_learning_state_unlocked(research_path)
+
+            self.assertTrue(result["changed"])
+            self.assertEqual(len(compacted["offlineStudy"]["analyses"]), 24)
+            self.assertEqual(len(compacted["offlineStudy"]["symbolStudies"]), 24)
+            self.assertEqual(len(compacted["intradayBacktest"]["trades"]), 200)
+            self.assertEqual(compacted["intradayBacktest"]["metrics"]["winRate"], 0.52)
+            self.assertEqual(
+                compacted["candidateStrategyRegistry"]["candidates"]["alpha"][
+                    "observationCount"
+                ],
+                120,
+            )
 
 
 if __name__ == "__main__":

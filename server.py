@@ -190,6 +190,9 @@ DOMESTIC_DAY_REVIEW_AUTO_ENABLED = False
 INTRADAY_BACKTEST_BATCH_PER_MARKET = 1
 INTRADAY_BACKTEST_CANDLE_PAGES = 2
 INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
+RESEARCH_INTRADAY_RAW_TRADE_LIMIT = 200
+RESEARCH_RAW_ANALYSIS_LIMIT = 24
+RESEARCH_SYMBOL_STUDY_LIMIT = 24
 INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
 INTRADAY_BACKTEST_POLL_SECONDS = 900
 INTRADAY_BACKTEST_VERSION = "three-minute-box-retest-v4"
@@ -8487,6 +8490,61 @@ def seed_research_learning_state_once() -> dict[str, Any]:
     }
 
 
+def compact_research_learning_state_once() -> dict[str, Any]:
+    """Bound research-only raw rows while preserving all aggregate evidence."""
+    if not RESEARCH_LEARNING_PATH.exists():
+        return {"changed": False, "reason": "missing"}
+    try:
+        before_bytes = RESEARCH_LEARNING_PATH.stat().st_size
+    except OSError:
+        before_bytes = 0
+    removed_analyses = 0
+    removed_trades = 0
+    with learning_state_lock(lock_path=RESEARCH_LEARNING_FILE_LOCK_PATH):
+        state = load_learning_state_unlocked(RESEARCH_LEARNING_PATH)
+        changed = False
+        for key in ("domesticDayReview", "offlineStudy"):
+            study = dict(state.get(key) or {})
+            analyses = list(study.get("analyses") or [])
+            retained_analyses = analyses[-RESEARCH_RAW_ANALYSIS_LIMIT:]
+            if retained_analyses != analyses:
+                removed_analyses += len(analyses) - len(retained_analyses)
+                study["analyses"] = retained_analyses
+                changed = True
+            symbol_studies = list(study.get("symbolStudies") or [])
+            retained_symbols = symbol_studies[:RESEARCH_SYMBOL_STUDY_LIMIT]
+            if retained_symbols != symbol_studies:
+                study["symbolStudies"] = retained_symbols
+                changed = True
+            state[key] = study
+        replay = dict(state.get("intradayBacktest") or {})
+        trades = list(replay.get("trades") or [])
+        retained_trades = trades[-RESEARCH_INTRADAY_RAW_TRADE_LIMIT:]
+        if retained_trades != trades:
+            removed_trades = len(trades) - len(retained_trades)
+            replay["trades"] = retained_trades
+            replay["rawTradesCompactedCount"] = int(
+                replay.get("rawTradesCompactedCount") or 0
+            ) + removed_trades
+            replay["rawTradesCompactedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            changed = True
+        state["intradayBacktest"] = replay
+        if changed:
+            state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            save_learning_state_unlocked(state, RESEARCH_LEARNING_PATH)
+    try:
+        after_bytes = RESEARCH_LEARNING_PATH.stat().st_size
+    except OSError:
+        after_bytes = before_bytes
+    return {
+        "changed": changed,
+        "removedAnalyses": removed_analyses,
+        "removedTrades": removed_trades,
+        "beforeBytes": before_bytes,
+        "afterBytes": after_bytes,
+    }
+
+
 def research_worker_snapshot() -> dict[str, Any]:
     default = {
         "status": "not_started",
@@ -8497,7 +8555,7 @@ def research_worker_snapshot() -> dict[str, Any]:
         "lastError": None,
         "separateProcess": True,
         "memoryHighMb": 384,
-        "memoryLimitMb": 600,
+        "memoryLimitMb": 650,
         "scheduleSeconds": 600,
     }
     try:
@@ -8521,6 +8579,12 @@ def research_worker_snapshot() -> dict[str, Any]:
         except (OSError, ProcessLookupError):
             process_alive = False
     snapshot["processAlive"] = process_alive
+    try:
+        research_bytes = RESEARCH_LEARNING_PATH.stat().st_size
+    except OSError:
+        research_bytes = 0
+    snapshot["researchStateBytes"] = research_bytes
+    snapshot["researchStateMb"] = round(research_bytes / (1024 * 1024), 2)
     if snapshot.get("status") == "running" and process_alive is False:
         snapshot["status"] = "error"
         snapshot["lastError"] = snapshot.get("lastError") or "연구 프로세스가 완료 기록 없이 종료됐습니다."
@@ -9852,6 +9916,14 @@ if __name__ == "__main__":
             "Research state separated: "
             f"{research_seed.get('intradayVersion') or 'no replay'} · "
             f"{research_seed.get('offlineCursorCount', 0)} market cursors preserved"
+        )
+    research_compaction = compact_research_learning_state_once()
+    if research_compaction.get("changed"):
+        print(
+            "Research state compaction: "
+            f"{research_compaction.get('removedAnalyses', 0)} detailed analyses · "
+            f"{research_compaction.get('removedTrades', 0)} raw trades removed · "
+            f"{research_compaction.get('afterBytes', 0) / 1048576:.2f}MB retained"
         )
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
