@@ -110,7 +110,7 @@ class IntradayBacktestTests(unittest.TestCase):
 
     def test_worker_resource_budget_is_bounded(self):
         self.assertLessEqual(server.INTRADAY_BACKTEST_BATCH_PER_MARKET, 1)
-        self.assertLessEqual(server.INTRADAY_BACKTEST_CANDLE_PAGES, 4)
+        self.assertLessEqual(server.INTRADAY_BACKTEST_CANDLE_PAGES, 2)
         self.assertLessEqual(server.INTRADAY_BACKTEST_HISTORY_LIMIT, 1200)
         # The bounded replay now runs in toss-research.service, never inside
         # the long-lived dashboard process.

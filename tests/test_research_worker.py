@@ -94,6 +94,14 @@ class ResearchWorkerTests(unittest.TestCase):
         self.assertFalse(server.INTRADAY_BACKTEST_AUTO_ENABLED)
         self.assertFalse(server.OFF_MARKET_STUDY_AUTO_ENABLED)
         self.assertFalse(server.DOMESTIC_DAY_REVIEW_AUTO_ENABLED)
+        unit = (
+            Path(__file__).resolve().parents[1]
+            / "scripts"
+            / "toss-research.service"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CPUQuota=45%", unit)
+        self.assertIn("MemoryHigh=384M", unit)
+        self.assertIn("MemoryMax=600M", unit)
 
     def test_dashboard_prefers_separate_research_state(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -25,8 +25,8 @@ sudo journalctl -u toss-research.service -f
 
 The `.env` file stays only on the server and is not committed to Git.
 
-The research timer starts a separate oneshot process every ten minutes. It has
-a 384 MB memory ceiling and a 45% CPU quota, pauses during KR/US regular
+The research timer starts a separate oneshot process every ten minutes. It is
+throttled from 384 MB with a 600 MB hard ceiling and a 45% CPU quota, pauses during KR/US regular
 trading, and runs intraday replay and daily/weekly/monthly research
 sequentially. The dashboard reads `research_worker_state.json` for its
 heartbeat and progress. Bulky replay and chart results live in the separate

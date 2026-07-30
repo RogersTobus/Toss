@@ -103,7 +103,8 @@ class WorkerState:
             **read_state(),
             "pid": os.getpid(),
             "separateProcess": True,
-            "memoryLimitMb": 384,
+            "memoryHighMb": 384,
+            "memoryLimitMb": 600,
             "scheduleSeconds": SCHEDULE_SECONDS,
         }
         self.stop_event = threading.Event()

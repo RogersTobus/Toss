@@ -11,10 +11,10 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /home/ubuntu/Toss/research_worker.py
 Nice=10
 CPUQuota=45%
-MemoryMax=384M
+MemoryHigh=384M
+MemoryMax=600M
 OOMPolicy=stop
 TimeoutStartSec=540
 PrivateTmp=true
 NoNewPrivileges=true
 ProtectSystem=full
-

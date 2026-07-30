@@ -188,7 +188,7 @@ OFF_MARKET_STUDY_POLL_SECONDS = 300
 OFF_MARKET_STUDY_AUTO_ENABLED = False
 DOMESTIC_DAY_REVIEW_AUTO_ENABLED = False
 INTRADAY_BACKTEST_BATCH_PER_MARKET = 1
-INTRADAY_BACKTEST_CANDLE_PAGES = 4
+INTRADAY_BACKTEST_CANDLE_PAGES = 2
 INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
 INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
 INTRADAY_BACKTEST_POLL_SECONDS = 900
@@ -8496,7 +8496,8 @@ def research_worker_snapshot() -> dict[str, Any]:
         "totalIntradayAnalyzedSymbolCount": 0,
         "lastError": None,
         "separateProcess": True,
-        "memoryLimitMb": 384,
+        "memoryHighMb": 384,
+        "memoryLimitMb": 600,
         "scheduleSeconds": 600,
     }
     try:
