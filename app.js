@@ -1612,7 +1612,12 @@ function renderPaperSummary(state) {
   if (shadowToday) shadowToday.textContent = `v8 ${Number(shadowPaper.currentTodayCompletedCount || 0).toLocaleString("ko-KR")}건`;
   const currentShadowCount = Number(currentShadow.sampleCount || 0);
   const requiredContextSamples = Number(currentShadow.requiredContextSamples || 60);
-  if (shadowSamples) shadowSamples.textContent = `${currentShadowCount.toLocaleString("ko-KR")}/${requiredContextSamples}건`;
+  const currentShadowByMarket = currentShadow.byMarket || {};
+  const krShadowCount = Number(currentShadowByMarket.KR?.sampleCount || 0);
+  const usShadowCount = Number(currentShadowByMarket.US?.sampleCount || 0);
+  if (shadowSamples) {
+    shadowSamples.textContent = `KR ${krShadowCount.toLocaleString("ko-KR")}/${requiredContextSamples} · US ${usShadowCount.toLocaleString("ko-KR")}/${requiredContextSamples}`;
+  }
   if (shadowPerformance) {
     shadowPerformance.textContent = currentShadowCount
       ? `v8 승률 ${(Number(currentShadow.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(currentShadow.averageNetReturn || 0))} · PF ${Number(currentShadow.profitFactor || 0).toFixed(2)} / v7 비교 승률 ${(Number(baselineShadow.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(baselineShadow.averageNetReturn || 0))}`
