@@ -334,10 +334,10 @@ function renderCurrentStrategySummary(payload = {}) {
   const enabled = strategies.filter((strategy) => strategy.enabled !== false);
   const marketSummaries = payload.marketSummaries || config.marketSummaries || {};
   const marketDefinitions = [
-    { market: "KR", label: "한국 정규장 전략", id: "kr_regular_momentum_champion", version: "1.0.0", session: "한국 정규장" },
-    { market: "US", label: "미국 정규장 전략", id: "us_regular_momentum_champion", version: "1.0.0", session: "미국 정규장" },
+    { market: "KR", label: "한국 3분봉 박스 돌파", id: "kr_box_breakout_retest", version: "8.0.0", session: "한국 정규장 전체" },
+    { market: "US", label: "미국 3분봉 박스 돌파", id: "us_box_breakout_retest", version: "8.0.0", session: "미국 정규장 전체" },
   ];
-  if (status) status.textContent = "정규장 주전 2개";
+  if (status) status.textContent = "v8 SHADOW 검증";
   target.replaceChildren();
   marketDefinitions.forEach((definition) => {
     const marketStrategies = enabled.filter((strategy) => {
@@ -1591,6 +1591,7 @@ function renderPaperSummary(state) {
   const billionGoal = summary.billionGoal || {};
   const shadowPaper = summary.shadowPaper || {};
   const currentShadow = shadowPaper.currentStrategy || {};
+  const baselineShadow = shadowPaper.baselineStrategy || {};
   const accountReturn = Number(dailyAccountRisk.returnRate ?? averageReturn);
   const targetRate = Number(summary.targetRate || 0.01);
   const stopRate = Number(summary.stopRate || -0.0045);
@@ -1607,15 +1608,15 @@ function renderPaperSummary(state) {
   const shadowToday = document.querySelector("#shadowTodayCount");
   const shadowSamples = document.querySelector("#shadowSampleCount");
   const shadowPerformance = document.querySelector("#shadowPerformance");
-  if (shadowActive) shadowActive.textContent = `활성 ${Number(shadowPaper.activeCount || 0).toLocaleString("ko-KR")}개`;
-  if (shadowToday) shadowToday.textContent = `${Number(shadowPaper.todayCompletedCount || 0).toLocaleString("ko-KR")}건`;
+  if (shadowActive) shadowActive.textContent = `v8 활성 ${Number(shadowPaper.currentActiveCount || 0).toLocaleString("ko-KR")}개`;
+  if (shadowToday) shadowToday.textContent = `v8 ${Number(shadowPaper.currentTodayCompletedCount || 0).toLocaleString("ko-KR")}건`;
   const currentShadowCount = Number(currentShadow.sampleCount || 0);
-  const requiredContextSamples = Number(currentShadow.requiredContextSamples || 12);
+  const requiredContextSamples = Number(currentShadow.requiredContextSamples || 60);
   if (shadowSamples) shadowSamples.textContent = `${currentShadowCount.toLocaleString("ko-KR")}/${requiredContextSamples}건`;
   if (shadowPerformance) {
     shadowPerformance.textContent = currentShadowCount
-      ? `승률 ${(Number(currentShadow.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(currentShadow.averageNetReturn || 0))} · PF ${Number(currentShadow.profitFactor || 0).toFixed(2)}`
-      : "새 전략 검증 표본 수집 중";
+      ? `v8 승률 ${(Number(currentShadow.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(currentShadow.averageNetReturn || 0))} · PF ${Number(currentShadow.profitFactor || 0).toFixed(2)} / v7 비교 승률 ${(Number(baselineShadow.winRate || 0) * 100).toFixed(1)}% · 평균 ${signedPercent(Number(baselineShadow.averageNetReturn || 0))}`
+      : "v8 새 장부 검증 중 · v7은 무자본 비교군";
   }
 
   const goalProbabilityRate = Number(billionGoal.probabilityRate ?? 0.0005);

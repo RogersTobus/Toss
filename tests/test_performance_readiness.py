@@ -93,7 +93,10 @@ class PerformanceAnalyticsTests(unittest.TestCase):
         self.assertTrue(risk["entryLockThresholdBreached"])
         self.assertFalse(risk["entryLocked"])
         self.assertFalse(risk["liquidationRequired"])
-        self.assertAlmostEqual(risk["openRiskRate"], 0.0015)
+        self.assertAlmostEqual(risk["openRiskRate"], 0.0027)
+        self.assertAlmostEqual(
+            risk["perTradeRiskRate"], server.PAPER_PER_TRADE_ACCOUNT_RISK_RATE
+        )
 
     def test_existing_positions_above_limit_block_new_entries(self):
         orders = []

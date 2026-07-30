@@ -41,8 +41,19 @@ class StrategyExecutionTests(unittest.TestCase):
             "strategies": server.normalize_strategies(),
         }
         parameters = server.strategy_runtime_parameters(config)
-        self.assertEqual(parameters["reentryCooldownSeconds"], 600)
+        self.assertEqual(
+            parameters["reentryCooldownSeconds"],
+            server.PAPER_STOP_REENTRY_COOLDOWN_SECONDS,
+        )
         self.assertEqual(parameters["maxAllocationRate"], 0.30)
+
+    def test_legacy_config_cannot_widen_v8_position_cap(self):
+        config = server.strategy_config()
+        config["maxOpenPositions"] = 20
+        self.assertEqual(
+            server.strategy_execution_policy(config)["riskModel"]["maxOpenPositions"],
+            server.PAPER_MAX_OPEN_POSITIONS,
+        )
 
     def test_risk_refresh_preserves_shadow_only_entry_decision(self):
         previous = {

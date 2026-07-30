@@ -51,6 +51,9 @@ STRATEGY_LOCK = threading.RLock()
 RESEARCH_WORKER_LOCK = threading.Lock()
 RELATIVE_STRENGTH_LOCK = threading.Lock()
 RELATIVE_STRENGTH_HISTORY: dict[str, list[dict[str, Any]]] = {}
+V7_BASELINE_HISTORY: dict[str, list[dict[str, Any]]] = {}
+BREAKOUT_BAR_LOCK = threading.RLock()
+BREAKOUT_BAR_HISTORY: dict[str, dict[str, Any]] = {}
 TOKEN: dict[str, Any] = {"value": None, "expires_at": 0.0}
 STARTED_AT = time.time()
 KST = ZoneInfo("Asia/Seoul")
@@ -64,7 +67,7 @@ PAPER_TRAILING_RATE = -0.005
 PAPER_PARTIAL_TAKE_PROFIT_RATE = 0.50
 PAPER_MARKET_CLOSE_EXIT_MINUTES = 5
 PAPER_STOP_MONITOR_INTERVAL_SECONDS = 1.0
-PAPER_STOP_REENTRY_COOLDOWN_SECONDS = 60
+PAPER_STOP_REENTRY_COOLDOWN_SECONDS = 1800
 PAPER_REPEATED_SYMBOL_LOSS_COOLDOWN_SECONDS = 3600
 POST_EXIT_OBSERVATION_HORIZONS = (("5m", 300), ("10m", 600), ("30m", 1800))
 POST_EXIT_OBSERVATION_TOLERANCE_SECONDS = 120
@@ -78,7 +81,8 @@ PAPER_DAILY_ENTRY_LOCK_RATE = -0.008
 PAPER_DAILY_LIQUIDATION_RATE = -0.01
 PAPER_DAILY_LOSS_LOCK_ENABLED = False
 PAPER_DAILY_LIQUIDATION_ENABLED = False
-PAPER_TOTAL_OPEN_RISK_RATE = 0.01
+PAPER_PER_TRADE_ACCOUNT_RISK_RATE = 0.0025
+PAPER_TOTAL_OPEN_RISK_RATE = 0.0075
 PAPER_LOSS_STREAK_COOLDOWN_SECONDS = 600
 PAPER_CAPITAL_TARGET_RATE = 0.90
 PAPER_CASH_RESERVE_RATE = 0.10
@@ -88,15 +92,14 @@ PAPER_UNLIMITED_VIRTUAL_CAPITAL = False
 PAPER_UNLIMITED_OPEN_POSITIONS = False
 PAPER_MIN_EXPERIENCE_ENTRY_RATE = 0.10
 SHADOW_PAPER_SCHEMA_VERSION = 1
-SHADOW_PAPER_COOLDOWN_SECONDS = 600
+SHADOW_PAPER_COOLDOWN_SECONDS = 1800
 SHADOW_PAPER_MAX_CLOSED_SAMPLES = 5000
 SHADOW_PAPER_LEARNING_WEIGHT = 0.30
-SHADOW_MAIN_EXIT_VARIANT = "partial-trailing"
+SHADOW_MAIN_EXIT_VARIANT = "net-2r-full"
+SHADOW_V7_EXIT_VARIANT = "partial-trailing"
 SHADOW_FIXED_TARGET_VARIANT = "fixed-net-rr"
-SHADOW_EXIT_VARIANTS = (
-    SHADOW_MAIN_EXIT_VARIANT,
-    SHADOW_FIXED_TARGET_VARIANT,
-)
+SHADOW_EXIT_VARIANTS = (SHADOW_MAIN_EXIT_VARIANT,)
+SHADOW_NET_REWARD_RISK = 2.0
 SHADOW_FIXED_NET_REWARD_RISK = 1.25
 LEARNING_SCHEMA_VERSION = 2
 GLOBAL_SCORE_MODEL_VERSION = 2
@@ -128,14 +131,26 @@ PAPER_COST_EVIDENCE_RECENT_SAMPLES = 5
 PAPER_LEVERAGED_SCORE_PENALTY = 4
 PAPER_LEVERAGED_ALLOCATION_SCALE = 0.50
 PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES = 40
-PAPER_STRATEGY_ENGINE_VERSION = "cost-aware-pullback-v7"
-PAPER_CONTEXT_MIN_SAMPLES = 30
-PAPER_CONTEXT_RECENT_SAMPLES = 12
-PAPER_CONTEXT_HISTORY_LIMIT = 60
-PAPER_CONTEXT_MIN_TRADING_DAYS = 2
-PAPER_CONTEXT_MIN_WIN_RATE = 0.40
-PAPER_CONTEXT_MIN_PROFIT_FACTOR = 1.25
+PAPER_STRATEGY_ENGINE_VERSION = "box-breakout-retest-v8"
+PAPER_BASELINE_ENGINE_VERSION = "cost-aware-pullback-v7"
+PAPER_CONTEXT_MIN_SAMPLES = 60
+PAPER_CONTEXT_RECENT_SAMPLES = 20
+PAPER_CONTEXT_HISTORY_LIMIT = 120
+PAPER_CONTEXT_MIN_TRADING_DAYS = 5
+PAPER_CONTEXT_MIN_WIN_RATE = 0.0
+PAPER_CONTEXT_MIN_PROFIT_FACTOR = 1.30
 PAPER_CONTEXT_CONFIDENCE_Z = 1.645
+BREAKOUT_BAR_SECONDS = 180
+BREAKOUT_MIN_BOX_BARS = 5
+BREAKOUT_MAX_BOX_BARS = 10
+BREAKOUT_MAX_HISTORY_BARS = 20
+BREAKOUT_MAX_HOLD_SECONDS = 1800
+BREAKOUT_MAX_DAILY_SYMBOL_ENTRIES = 2
+BREAKOUT_VOLUME_RATIO = 1.50
+BREAKOUT_RETEST_VOLUME_MAX_RATIO = 0.80
+BREAKOUT_CONFIRM_VOLUME_MIN_RATIO = 1.20
+BREAKOUT_MARKET_ADVANCE_MINIMUM = 0.35
+BREAKOUT_MARKET_MEDIAN_MINIMUM = -0.005
 PULLBACK_CONFIRMATION_SECONDS = 25
 PULLBACK_HISTORY_SECONDS = 300
 PULLBACK_MAX_OBSERVATION_GAP_SECONDS = 90
@@ -171,7 +186,7 @@ INTRADAY_BACKTEST_CANDLE_PAGES = 4
 INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
 INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
 INTRADAY_BACKTEST_POLL_SECONDS = 900
-INTRADAY_BACKTEST_VERSION = "minute-replay-v3"
+INTRADAY_BACKTEST_VERSION = "three-minute-box-retest-v4"
 INTRADAY_BACKTEST_AUTO_ENABLED = True
 STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
@@ -201,23 +216,23 @@ DEFAULT_STRATEGY_CONFIG = {
 DEFAULT_STRATEGIES = [
     {
         "id": "liquidity-momentum-filter",
-        "title": "상대강도·눌림·재상승 상태 필터",
-        "description": "한국·미국 거래대금 상위 종목에서 시장보다 강한 종목을 먼저 찾은 뒤, 시장별 통제 범위의 눌림과 거래대금을 동반한 재상승이 순서대로 확인될 때만 후보로 올립니다. 강한 종목을 고점에서 바로 추격하지 않습니다.",
-        "judge": "선도 확인 → 통제 눌림 → 재상승 전 진입 금지",
+        "title": "3분봉 박스 돌파·재확인",
+        "description": "한국·미국 거래대금 상위 30개 일반 종목에서 15~30분 변동성 적응형 박스를 찾습니다. 돌파 거래량 증가, 되돌림 거래량 감소, 박스 상단 지지, 다음 3분봉의 거래량 재증가와 상승 마감을 모두 확인한 뒤에만 진입합니다.",
+        "judge": "박스 돌파 → 상단 지지 → 다음 3분봉 재상승",
         "enabled": True,
     },
     {
         "id": "score-entry-80",
-        "title": "상황별 검증형 100점 평가",
-        "description": "표시 점수는 후보 순위에만 사용합니다. 실제 진입은 같은 시장·시간대·상품군·당일 등락 구간에서 그림자 PAPER 30건과 2거래일 이상을 모은 뒤, 비용 후 평균·최근 평균·PF와 90% 신뢰하한이 모두 양수일 때만 허용합니다.",
-        "judge": "점수는 순위 · 비용 후 신뢰구간으로 진입",
+        "title": "시장별 60건·5일 증거 게이트",
+        "description": "점수는 후보 순위에만 사용합니다. 실제 진입은 한국·미국 시장별 SHADOW 60건과 5거래일 이상, 비용 후 평균과 최근 평균 양수, PF 1.30 이상, 90% 신뢰하한 양수를 모두 충족한 뒤에만 허용합니다.",
+        "judge": "점수는 순위 · 비용 후 기대값으로 승격",
         "enabled": True,
     },
     {
         "id": "adaptive-capital-utilization",
-        "title": "100만 원 한도·점수 비중 자동배분",
-        "description": "총 PAPER 자금 100만 원 안에서 종목당 최대 30%를 배정하고, 전체 미청산 위험을 계좌의 1% 이내로 제한합니다. 레버리지·인버스는 별도 그림자 표본의 비용 후 기대값이 양수로 검증된 경우에만 절반 비중으로 진입합니다.",
-        "judge": "종목당 30% · 총위험 1% · 레버리지 별도 검증",
+        "title": "거래당 0.25% 비용 포함 위험배분",
+        "description": "100만 원 PAPER 자금에서 손절과 시장별 추정비용을 합친 거래당 최대 계좌손실을 0.25%로 맞춥니다. 종목당 최대 30%, 최대 3종목, 같은 업종 1종목, 전체 계획손실 0.75%를 넘지 않습니다.",
+        "judge": "거래당 0.25% · 최대 3종목 · 같은 업종 1종목",
         "enabled": True,
     },
     {
@@ -243,16 +258,16 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "profit-trailing",
-        "title": "+1% 부분익절·추적손절",
-        "description": "+1% 도달 시 50%를 익절하고, 잔여 물량은 고점 대비 −0.5% 추적손절로 관리합니다.",
-        "judge": "정상 수익은 +1% 이상",
+        "title": "비용 후 순수익 2R 전량익절",
+        "description": "시장별 추정 거래비용을 포함한 순손실 위험의 2배가 순수익으로 확보되는 가격에서 전량 익절합니다. 부분익절과 추적손절은 v8 주전에서 사용하지 않습니다.",
+        "judge": "KR·US 비용 차등 반영 · 순수익 2R 전량청산",
         "enabled": True,
     },
     {
         "id": "three-minute-exit",
-        "title": "고정 3분 청산 폐기",
-        "description": "비용 후 8전 8패였던 고정 3분 청산은 새 전략에서 사용하지 않습니다. 진입 후에는 −0.5% 보호매도, +1% 부분익절·추적손절, 정규장 마감 청산만 적용합니다.",
-        "judge": "시간만으로 손실 확정 금지",
+        "title": "박스 실패 즉시·최대 30분 청산",
+        "description": "진입 뒤 완성된 3분봉이 박스 상단 아래로 다시 마감하면 즉시 실패 청산합니다. 박스 지지는 유지돼도 30분 안에 손절 또는 2R 목표에 도달하지 못하면 전량 청산합니다.",
+        "judge": "박스 재진입 즉시 · 그 외 최대 30분",
         "enabled": True,
     },
     {
@@ -264,9 +279,9 @@ DEFAULT_STRATEGIES = [
     },
     {
         "id": "reentry-cooldown",
-        "title": "표본 균형 회전·재진입 대기",
-        "description": "모든 청산 후 동일 종목은 10분간 재진입을 대기하고, 같은 종목에서 비용 후 2연패가 발생하면 1시간 동안 재검증합니다. 점수 기준을 통과한 후보 중 오늘 표본이 적은 종목을 우선합니다.",
-        "judge": "적은 표본 우선 · 2연패 시 동일 종목 1시간 재검증",
+        "title": "새 박스 30분 대기·종목당 2회",
+        "description": "청산 후 같은 종목은 최소 30분을 기다리고 완전히 새로운 15~30분 박스가 형성된 경우에만 재진입합니다. 종목별 일일 진입은 최대 2회로 제한합니다.",
+        "judge": "30분 후 새 박스 · 종목당 하루 최대 2회",
         "enabled": True,
     },
     {
@@ -494,7 +509,7 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
         "unlimitedPositions": sprint and unlimited,
         "hardStop": "hard-stop-loss" in enabled,
         "profitTarget": "profit-trailing" in enabled,
-        "timeExit": False,
+        "timeExit": "three-minute-exit" in enabled,
         "legacyTimeExitConfigured": "three-minute-exit" in enabled,
         "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
         "contextValidation": {
@@ -504,6 +519,25 @@ def strategy_execution_policy(config: dict[str, Any] | None = None) -> dict[str,
             "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
             "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
             "minimumLowerConfidenceBound": 0.0,
+        },
+        "entryModel": {
+            "barIntervalMinutes": 3,
+            "adaptiveBoxMinutes": [15, 30],
+            "universeTopTradingAmount": 30,
+            "marketGate": "SECTOR_STRONG_AND_MARKET_NOT_FALLING",
+            "entrySequence": "BREAKOUT_VOLUME_UP_RETEST_VOLUME_DOWN_CONFIRM_VOLUME_UP",
+        },
+        "riskModel": {
+            "perTradeAccountRiskRate": PAPER_PER_TRADE_ACCOUNT_RISK_RATE,
+            "totalPlannedRiskRate": PAPER_TOTAL_OPEN_RISK_RATE,
+            "maxOpenPositions": PAPER_MAX_OPEN_POSITIONS,
+            "maxSameSectorPositions": 1,
+        },
+        "exitModel": {
+            "fixedStopRate": PAPER_STOP_RATE,
+            "netRewardRisk": SHADOW_NET_REWARD_RISK,
+            "boxFailureExit": True,
+            "maximumHoldSeconds": BREAKOUT_MAX_HOLD_SECONDS,
         },
         "dailyRisk": PAPER_DAILY_LOSS_LOCK_ENABLED and "daily-risk-kill-switch" in enabled,
         "dailyLossLockEnabled": PAPER_DAILY_LOSS_LOCK_ENABLED,
@@ -531,7 +565,9 @@ def strategy_config() -> dict[str, Any]:
             "targetRate": clamp(config.get("targetRate"), 0.001, 0.05, PAPER_TARGET_RATE),
             "stopRate": PAPER_STOP_RATE,
             "maxDailyOrders": int(clamp(config.get("maxDailyOrders"), 1, 20, PAPER_MAX_DAILY_ORDERS)),
-            "maxOpenPositions": int(clamp(config.get("maxOpenPositions"), 1, 20, PAPER_MAX_OPEN_POSITIONS)),
+            # v8 uses the interview-approved three-position risk envelope.
+            # Stored legacy values must not silently widen it.
+            "maxOpenPositions": PAPER_MAX_OPEN_POSITIONS,
             "maxConsecutiveLosses": int(clamp(config.get("maxConsecutiveLosses"), 1, 10, PAPER_MAX_CONSECUTIVE_LOSSES)),
             "revision": max(0, int(config.get("revision") or 0)),
             "savedAt": config.get("savedAt"),
@@ -558,7 +594,8 @@ def strategy_config() -> dict[str, Any]:
                 strategy["enabled"] = False
             elif strategy.get("id") in (
                 "liquidity-momentum-filter", "score-entry-80",
-                "adaptive-capital-utilization", "three-minute-exit",
+                "adaptive-capital-utilization", "profit-trailing",
+                "three-minute-exit", "reentry-cooldown",
             ):
                 replacement = next(
                     item for item in DEFAULT_STRATEGIES if item.get("id") == strategy.get("id")
@@ -577,8 +614,7 @@ def save_strategy_config(payload: dict[str, Any]) -> dict[str, Any]:
         current["stopRate"] = PAPER_STOP_RATE
         if "maxDailyOrders" in payload:
             current["maxDailyOrders"] = int(clamp(payload.get("maxDailyOrders"), 1, 20, current["maxDailyOrders"]))
-        if "maxOpenPositions" in payload:
-            current["maxOpenPositions"] = int(clamp(payload.get("maxOpenPositions"), 1, 20, current["maxOpenPositions"]))
+        current["maxOpenPositions"] = PAPER_MAX_OPEN_POSITIONS
         if "maxConsecutiveLosses" in payload:
             current["maxConsecutiveLosses"] = int(clamp(payload.get("maxConsecutiveLosses"), 1, 10, current["maxConsecutiveLosses"]))
         if isinstance(payload.get("strategies"), list):
@@ -617,19 +653,19 @@ def strategy_ai_advice(strategy: dict[str, Any], analysis: dict[str, Any] | None
     if active_market == "CLOSED":
         return "현재 시장 휴장입니다. 다음 장에서는 기존 기준을 유지하고 결과만 관찰하세요."
     if sid == "liquidity-momentum-filter":
-        return f"후보 {len(results)}개 중 눌림 후 재상승 완료 {verdict_counts.get('정밀 분석', 0)}개입니다. 신호가 적어도 고점 추격으로 되돌아가면 안 됩니다."
+        return f"후보 {len(results)}개 중 박스 돌파·재확인 완료 {verdict_counts.get('정밀 분석', 0)}개입니다. 거래량 3단계와 박스 상단 지지가 모두 끝나기 전에는 진입하지 않습니다."
     if sid == "score-entry-80":
-        return "장중 추세가 강한 종목만 선별하세요. 100건 검증 전에는 80점 기준을 낮추지 않는 편이 안전합니다."
+        return "시장별 60건·5거래일과 비용 후 PF 1.30을 통과하기 전에는 메인 PAPER로 승격하지 않습니다."
     if sid == "hard-stop-loss":
         return f"현재 평균 손익 {percent(avg)}입니다. 손실선은 전략의 안전벨트라 완화하지 않는 게 좋습니다."
     if sid == "profit-trailing":
-        return "수익은 +1%부터 확인하고, 잔여 물량은 추적손절로 시장에 맡기는 흐름이 좋습니다."
+        return "부분익절 없이 시장별 비용을 뺀 순수익 2R에서 전량 청산해 손익 구조를 단순하게 유지합니다."
     if sid == "three-minute-exit":
-        return f"오늘 진입 {today_orders}건입니다. 진입 후 힘이 없으면 빨리 회수해 다음 후보로 넘기는 구조를 유지하세요."
+        return f"오늘 진입 {today_orders}건입니다. 박스 상단 아래 3분봉 마감 또는 최대 30분이면 전량 청산합니다."
     if sid == "daily-risk-kill-switch":
         return str(decision.get("action") or "일일 손실 예산을 넘기지 않는 것이 내일도 매매할 권리를 지킵니다.")
     if sid == "reentry-cooldown":
-        return f"보유 {open_positions}개입니다. 손절 후 즉시 재진입보다 10분 대기가 과매매를 줄입니다."
+        return f"보유 {open_positions}개입니다. 같은 종목은 30분 뒤 새 박스에서만, 하루 최대 2회 진입합니다."
     if sid == "us-day-domestic-review":
         return "미국 데이마켓은 신규 진입보다 한국장 당일 흐름과 일·주·월봉을 복기해 다음 거래 기준을 다듬는 시간으로 사용합니다."
     if sid == "overnight-extended-session":
@@ -1840,6 +1876,15 @@ def save_shadow_paper_state(state: dict[str, Any]) -> None:
     temporary.replace(SHADOW_PAPER_PATH)
 
 
+def shadow_sample_variant(item: dict[str, Any]) -> str:
+    explicit = str(item.get("experimentVariant") or "")
+    if explicit:
+        return explicit
+    if item.get("engineVersion") == PAPER_BASELINE_ENGINE_VERSION:
+        return SHADOW_V7_EXIT_VARIANT
+    return SHADOW_MAIN_EXIT_VARIANT
+
+
 def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
     state = state or load_shadow_paper_state()
     samples = [item for item in state.get("samples") or [] if isinstance(item, dict)]
@@ -1855,9 +1900,7 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
     ]
     current_strategy_closed = [
         item for item in current_engine_closed
-        if (
-            item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT
-        ) == SHADOW_MAIN_EXIT_VARIANT
+        if shadow_sample_variant(item) == SHADOW_MAIN_EXIT_VARIANT
     ]
     current_strategy_evidence = return_evidence(
         current_strategy_closed[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES
@@ -1882,12 +1925,28 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
         variant: return_evidence(
             [
                 item for item in current_engine_closed
-                if (item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT)
-                == variant
+                if shadow_sample_variant(item) == variant
             ][-PAPER_CONTEXT_HISTORY_LIMIT:],
             PAPER_CONTEXT_RECENT_SAMPLES,
         )
         for variant in SHADOW_EXIT_VARIANTS
+    }
+    baseline_closed = [
+        item for item in closed
+        if item.get("engineVersion") == PAPER_BASELINE_ENGINE_VERSION
+        and shadow_sample_variant(item) == SHADOW_V7_EXIT_VARIANT
+    ]
+    baseline_evidence = return_evidence(
+        baseline_closed[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES
+    )
+    baseline_by_market = {
+        market: return_evidence(
+            [item for item in baseline_closed if item.get("market") == market][
+                -PAPER_CONTEXT_HISTORY_LIMIT:
+            ],
+            PAPER_CONTEXT_RECENT_SAMPLES,
+        )
+        for market in ("KR", "US")
     }
     by_market = {}
     for market in ("KR", "US"):
@@ -1930,7 +1989,23 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
         "enabled": True,
         "mode": "SIGNAL_ONLY_NO_CAPITAL",
         "activeCount": len(opened),
+        "currentActiveCount": sum(
+            1 for item in opened
+            if item.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
+        ),
+        "baselineActiveCount": sum(
+            1 for item in opened
+            if item.get("engineVersion") == PAPER_BASELINE_ENGINE_VERSION
+        ),
         "todayCompletedCount": len(today_closed),
+        "currentTodayCompletedCount": sum(
+            1 for item in today_closed
+            if item.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
+        ),
+        "baselineTodayCompletedCount": sum(
+            1 for item in today_closed
+            if item.get("engineVersion") == PAPER_BASELINE_ENGINE_VERSION
+        ),
         "sampleCount": len(closed),
         "winRate": wins / len(closed) if closed else 0.0,
         "averageNetReturn": sum(net_returns) / len(net_returns) if net_returns else 0.0,
@@ -1948,6 +2023,30 @@ def shadow_paper_summary(state: dict[str, Any] | None = None) -> dict[str, Any]:
             "minimumWinRate": PAPER_CONTEXT_MIN_WIN_RATE,
             "minimumProfitFactor": PAPER_CONTEXT_MIN_PROFIT_FACTOR,
             "minimumLowerConfidenceBound90": 0.0,
+        },
+        "baselineStrategy": {
+            "engineVersion": PAPER_BASELINE_ENGINE_VERSION,
+            "exitVariant": SHADOW_V7_EXIT_VARIANT,
+            **baseline_evidence,
+            "byMarket": baseline_by_market,
+            "role": "SIGNAL_ONLY_COMPARISON",
+        },
+        "strategyComparison": {
+            "currentEngineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+            "baselineEngineVersion": PAPER_BASELINE_ENGINE_VERSION,
+            "averageNetReturnDelta": (
+                decimal(current_strategy_evidence.get("averageNetReturn"))
+                - decimal(baseline_evidence.get("averageNetReturn"))
+            ),
+            "winRateDelta": (
+                decimal(current_strategy_evidence.get("winRate"))
+                - decimal(baseline_evidence.get("winRate"))
+            ),
+            "profitFactorDelta": (
+                decimal(current_strategy_evidence.get("profitFactor"))
+                - decimal(baseline_evidence.get("profitFactor"))
+            ),
+            "separateLedgers": True,
         },
         "byMarket": by_market,
         "recentDays": recent_days,
@@ -2280,7 +2379,7 @@ def trading_decision(
     runtime = policy.get("parameters") or {}
     target_rate = decimal(runtime.get("targetRate") or config.get("targetRate"))
     stop_rate = decimal(runtime.get("dailyEntryLockRate") or config.get("stopRate"))
-    max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
+    max_open_positions = PAPER_MAX_OPEN_POSITIONS
     remaining_to_stop = average_return - stop_rate
     remaining_to_target = target_rate - average_return
     stop_progress = 0.0
@@ -2395,7 +2494,7 @@ def safety_rules(
     runtime = policy.get("parameters") or {}
     stop_rate = decimal(runtime.get("dailyEntryLockRate") or config.get("stopRate"))
     max_daily_orders = int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
-    max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
+    max_open_positions = PAPER_MAX_OPEN_POSITIONS
     max_losses = int(config.get("maxConsecutiveLosses") or PAPER_MAX_CONSECUTIVE_LOSSES)
     consecutive_losses = 0
     for value in reversed(position_returns):
@@ -2552,7 +2651,14 @@ def daily_account_risk(
     net_profit = realized + unrealized
     risk_rate = net_profit / day_start_capital
     open_risk_krw = sum(
-        decimal(trade.get("invested")) * abs(PAPER_STOP_RATE) for trade in opened
+        decimal(trade.get("invested"))
+        * (
+            abs(PAPER_STOP_RATE)
+            + decimal(
+                RESEARCH_ROUND_TRIP_COST.get(str(trade.get("market") or "KR"))
+            )
+        )
+        for trade in opened
     )
     return {
         "tradingDay": day,
@@ -2567,6 +2673,7 @@ def daily_account_risk(
         "openRiskKrw": open_risk_krw,
         "openRiskRate": open_risk_krw / day_start_capital,
         "maxOpenRiskRate": PAPER_TOTAL_OPEN_RISK_RATE,
+        "perTradeRiskRate": PAPER_PER_TRADE_ACCOUNT_RISK_RATE,
         "entryLockEnabled": PAPER_DAILY_LOSS_LOCK_ENABLED,
         "entryLockThresholdBreached": risk_rate <= PAPER_DAILY_ENTRY_LOCK_RATE,
         "entryLocked": PAPER_DAILY_LOSS_LOCK_ENABLED and risk_rate <= PAPER_DAILY_ENTRY_LOCK_RATE,
@@ -2942,13 +3049,69 @@ def instrument_risk_policy(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def standard_equity_policy(item: dict[str, Any], market: str | None = None) -> dict[str, Any]:
+    """Exclude funds, notes, leveraged products and low-priced instruments."""
+    risk = instrument_risk_policy(item)
+    symbol = str(item.get("symbol") or "").upper()
+    name = str(item.get("name") or "").upper()
+    product_type = " ".join(
+        str(item.get(key) or "").upper()
+        for key in ("productType", "securityType", "instrumentType", "assetType")
+    )
+    fund_tokens = (
+        "ETF", "ETN", "EXCHANGE TRADED FUND", "EXCHANGE TRADED NOTE",
+        "상장지수", "인덱스펀드",
+    )
+    korean_fund_prefixes = (
+        "KODEX ", "TIGER ", "ACE ", "RISE ", "SOL ", "KOSEF ",
+        "HANARO ", "TIMEFOLIO ", "PLUS ", "KBSTAR ", "ARIRANG ",
+    )
+    fund_like = any(token in product_type or token in name for token in fund_tokens)
+    fund_like = fund_like or any(name.startswith(prefix) for prefix in korean_fund_prefixes)
+    source_price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+    market_key = str(market or item.get("marketCountry") or item.get("market") or "").upper()
+    minimum_price = 5.0 if market_key == "US" else 5000.0
+    eligible = (
+        bool(symbol)
+        and not risk.get("leveraged")
+        and not fund_like
+        and source_price >= minimum_price
+    )
+    return {
+        "eligible": eligible,
+        "fundOrNote": fund_like,
+        "leveragedOrInverse": bool(risk.get("leveraged")),
+        "minimumPrice": minimum_price,
+        "sourcePrice": source_price,
+        "reason": (
+            "일반주·가격 기준 통과"
+            if eligible
+            else "ETF·ETN·레버리지·인버스 또는 초저가주 제외"
+        ),
+    }
+
+
+def candidate_sector(item: dict[str, Any]) -> str:
+    for key in ("sector", "sectorName", "industry", "industryName"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return "미분류"
+
+
 def shadow_exit_target_rate(
     market: str, variant: str, configured_target: Any = PAPER_TARGET_RATE
 ) -> float:
     base_target = max(PAPER_TARGET_RATE, decimal(configured_target))
+    cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+    if variant == SHADOW_MAIN_EXIT_VARIANT:
+        net_loss_rate = abs(PAPER_STOP_RATE) + cost_rate
+        # v8's exit is a fixed experiment variable: gross target is the move
+        # that leaves exactly 2R after market-specific round-trip costs.
+        # Legacy editable target text must not change this cohort.
+        return cost_rate + SHADOW_NET_REWARD_RISK * net_loss_rate
     if variant != SHADOW_FIXED_TARGET_VARIANT:
         return base_target
-    cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
     net_loss_rate = abs(PAPER_STOP_RATE) + cost_rate
     return max(
         base_target,
@@ -3069,6 +3232,340 @@ def distribution_value(values: list[float], fraction: float) -> float:
         return 0.0
     index = int(round((len(ordered) - 1) * clamp(fraction, 0.0, 1.0, 0.0)))
     return ordered[index]
+
+
+def adaptive_box_window(
+    bars: list[dict[str, Any]], market: str
+) -> dict[str, Any] | None:
+    """Choose a 15-30 minute consolidation that is tight relative to its bars."""
+    max_width = 0.015 if market == "US" else 0.012
+    for length in range(
+        min(BREAKOUT_MAX_BOX_BARS, len(bars)),
+        BREAKOUT_MIN_BOX_BARS - 1,
+        -1,
+    ):
+        window = bars[-length:]
+        highs = [decimal(bar.get("high")) for bar in window]
+        lows = [decimal(bar.get("low")) for bar in window]
+        closes = [decimal(bar.get("close")) for bar in window]
+        if not closes or min(closes) <= 0:
+            continue
+        upper = max(highs)
+        lower = min(lows)
+        middle = (upper + lower) / 2
+        width = (upper - lower) / middle if middle else 0.0
+        bar_ranges = [
+            (decimal(bar.get("high")) - decimal(bar.get("low")))
+            / decimal(bar.get("close"))
+            for bar in window
+            if decimal(bar.get("close")) > 0
+        ]
+        median_range = distribution_value(bar_ranges, 0.50)
+        drift = abs(closes[-1] - closes[0]) / closes[0] if closes[0] else 0.0
+        minimum_width = max(0.0015, median_range * 1.10)
+        if (
+            minimum_width <= width <= max_width
+            and drift <= max(0.001, width * 0.70)
+        ):
+            return {
+                "barCount": length,
+                "minutes": length * 3,
+                "high": upper,
+                "low": lower,
+                "widthRate": width,
+                "medianBarRangeRate": median_range,
+                "driftRate": drift,
+                "startedAt": window[0].get("startedAt"),
+                "completedAt": window[-1].get("startedAt"),
+            }
+    return None
+
+
+def breakout_market_sector_evidence(
+    results: list[dict[str, Any]], market: str
+) -> dict[str, dict[str, Any]]:
+    """Build a no-lookahead breadth proxy from the current top-30 universe."""
+    top = [
+        item for item in results
+        if int(item.get("rank") or 999) <= 30
+        and standard_equity_policy(item, market).get("eligible")
+    ]
+    rates = [decimal(item.get("dailyRate")) for item in top]
+    market_median = distribution_value(rates, 0.50)
+    advance_ratio = (
+        sum(1 for value in rates if value > 0) / len(rates) if rates else 0.0
+    )
+    market_allowed = (
+        advance_ratio >= BREAKOUT_MARKET_ADVANCE_MINIMUM
+        and market_median >= BREAKOUT_MARKET_MEDIAN_MINIMUM
+    )
+    sectors: dict[str, list[float]] = {}
+    for item in top:
+        sector = candidate_sector(item)
+        if sector != "미분류":
+            sectors.setdefault(sector, []).append(decimal(item.get("dailyRate")))
+    evidence: dict[str, dict[str, Any]] = {}
+    relative_minimum = 0.008 if market == "US" else 0.005
+    for item in results:
+        sector = candidate_sector(item)
+        sector_rates = sectors.get(sector, [])
+        sector_median = distribution_value(sector_rates, 0.50)
+        sector_advance = (
+            sum(1 for value in sector_rates if value > 0) / len(sector_rates)
+            if sector_rates else 0.0
+        )
+        if len(sector_rates) >= 2:
+            sector_allowed = sector_median > 0 and sector_advance >= 0.50
+            sector_source = "STOCK_METADATA"
+        else:
+            sector_allowed = (
+                decimal(item.get("dailyRate")) - market_median >= relative_minimum
+                and decimal(item.get("dailyRate")) > 0
+            )
+            sector_source = "RELATIVE_STRENGTH_FALLBACK"
+        evidence[str(item.get("symbol") or "")] = {
+            "allowed": market_allowed and sector_allowed,
+            "marketAllowed": market_allowed,
+            "marketAdvanceRatio": advance_ratio,
+            "marketMedianRate": market_median,
+            "sector": sector,
+            "sectorAllowed": sector_allowed,
+            "sectorAdvanceRatio": sector_advance,
+            "sectorMedianRate": sector_median,
+            "sectorSampleCount": len(sector_rates),
+            "sectorSource": sector_source,
+            "rule": "SECTOR_STRONG_AND_MARKET_NOT_FALLING",
+        }
+    return evidence
+
+
+def box_breakout_retest_snapshot(
+    bars: list[dict[str, Any]],
+    item: dict[str, Any],
+    market: str,
+    regime: dict[str, Any] | None = None,
+    last_signal_bar: Any = None,
+) -> dict[str, Any]:
+    """Evaluate box breakout, low-volume retest and confirmed resumption."""
+    regime = regime or {
+        "allowed": True,
+        "marketAllowed": True,
+        "sectorAllowed": True,
+        "rule": "TEST_OVERRIDE",
+    }
+    latest = bars[-1] if bars else None
+    base = {
+        "allowed": False,
+        "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+        "phase": "WARMING_UP",
+        "requiredCompletedBars": BREAKOUT_MIN_BOX_BARS + 3,
+        "completedBarCount": len(bars),
+        "latestCompletedBar": dict(latest) if latest else None,
+        "marketSectorEvidence": regime,
+        "productPolicy": standard_equity_policy(item, market),
+    }
+    if len(bars) < BREAKOUT_MIN_BOX_BARS + 3:
+        base["reason"] = (
+            f"3분봉 준비 {len(bars)}/{BREAKOUT_MIN_BOX_BARS + 3}개"
+        )
+        return base
+    breakout_bar, retest_bar, confirm_bar = bars[-3:]
+    box = adaptive_box_window(bars[:-3], market)
+    if not box:
+        base.update({"phase": "BOX_WAIT", "reason": "15~30분 적응형 박스 미완성"})
+        return base
+    box_high = decimal(box.get("high"))
+    buffer_rate = 0.0008 if market == "US" else 0.0005
+    retest_tolerance = 0.0025 if market == "US" else 0.0020
+    support_tolerance = 0.0008
+    box_turnovers = [
+        decimal(bar.get("turnover") or bar.get("volume"))
+        for bar in bars[-3 - int(box["barCount"]):-3]
+    ]
+    median_turnover = distribution_value(box_turnovers, 0.50)
+    breakout_turnover = decimal(
+        breakout_bar.get("turnover") or breakout_bar.get("volume")
+    )
+    retest_turnover = decimal(
+        retest_bar.get("turnover") or retest_bar.get("volume")
+    )
+    confirm_turnover = decimal(
+        confirm_bar.get("turnover") or confirm_bar.get("volume")
+    )
+    breakout_checks = {
+        "closeAboveBox": decimal(breakout_bar.get("close")) >= box_high * (1 + buffer_rate),
+        "volumeExpanded": (
+            median_turnover > 0
+            and breakout_turnover >= median_turnover * BREAKOUT_VOLUME_RATIO
+        ),
+    }
+    retest_checks = {
+        "testedBoxTop": decimal(retest_bar.get("low")) <= box_high * (1 + retest_tolerance),
+        "closedOnSupport": decimal(retest_bar.get("close")) >= box_high * (1 - support_tolerance),
+        "volumeContracted": (
+            breakout_turnover > 0
+            and retest_turnover <= breakout_turnover * BREAKOUT_RETEST_VOLUME_MAX_RATIO
+        ),
+    }
+    confirmation_checks = {
+        "higherClose": decimal(confirm_bar.get("close")) > decimal(retest_bar.get("close")),
+        "closedAboveBox": decimal(confirm_bar.get("close")) >= box_high * (1 + buffer_rate),
+        "volumeReturned": (
+            retest_turnover > 0
+            and confirm_turnover >= retest_turnover * BREAKOUT_CONFIRM_VOLUME_MIN_RATIO
+            and confirm_turnover >= median_turnover * 0.80
+        ),
+    }
+    product_allowed = bool(base["productPolicy"].get("eligible"))
+    pattern_allowed = (
+        all(breakout_checks.values())
+        and all(retest_checks.values())
+        and all(confirmation_checks.values())
+    )
+    signal_bar = confirm_bar.get("startedAt")
+    duplicate = signal_bar is not None and str(signal_bar) == str(last_signal_bar)
+    allowed = (
+        pattern_allowed
+        and bool(regime.get("allowed"))
+        and product_allowed
+        and not duplicate
+        and int(item.get("rank") or 999) <= 30
+    )
+    if not all(breakout_checks.values()):
+        phase, reason = "BREAKOUT_WAIT", "박스 돌파·거래량 1.5배 확인 전"
+    elif not all(retest_checks.values()):
+        phase, reason = "RETEST_WAIT", "박스 상단 지지·거래량 감소 확인 전"
+    elif not all(confirmation_checks.values()):
+        phase, reason = "CONFIRM_WAIT", "다음 3분봉 상승·거래량 재증가 확인 전"
+    elif not regime.get("allowed"):
+        phase, reason = "REGIME_BLOCKED", "업종 강세 또는 시장 하락 방어 조건 미달"
+    elif not product_allowed:
+        phase, reason = "PRODUCT_BLOCKED", base["productPolicy"].get("reason")
+    elif duplicate:
+        phase, reason = "ALREADY_EMITTED", "동일 확인봉 신호 처리 완료"
+    else:
+        phase, reason = "BREAKOUT_RETEST_CONFIRMED", "박스 돌파·지지·재상승 확인"
+    base.update(
+        {
+            "allowed": allowed,
+            "phase": phase,
+            "reason": reason,
+            "box": box,
+            "boxHigh": box_high,
+            "boxLow": decimal(box.get("low")),
+            "signalBarStartedAt": signal_bar,
+            "breakoutBar": dict(breakout_bar),
+            "retestBar": dict(retest_bar),
+            "confirmationBar": dict(confirm_bar),
+            "medianBoxTurnover": median_turnover,
+            "breakoutChecks": breakout_checks,
+            "retestChecks": retest_checks,
+            "confirmationChecks": confirmation_checks,
+        }
+    )
+    return base
+
+
+def apply_box_breakout_retest_confirmation(
+    results: list[dict[str, Any]],
+    market: str,
+    now: datetime | None = None,
+    history: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Aggregate 10-second ranking snapshots into completed three-minute bars."""
+    if not results:
+        return results
+    now_dt = now or datetime.now().astimezone()
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=KST)
+    timestamp = now_dt.timestamp()
+    bucket = int(timestamp // BREAKOUT_BAR_SECONDS) * BREAKOUT_BAR_SECONDS
+    local_day = now_dt.astimezone(US_EASTERN if market == "US" else KST).date().isoformat()
+    target = BREAKOUT_BAR_HISTORY if history is None else history
+    regime_by_symbol = breakout_market_sector_evidence(results, market)
+
+    def update() -> None:
+        active_keys: set[str] = set()
+        for item in results:
+            symbol = str(item.get("symbol") or "")
+            if not symbol:
+                continue
+            key = f"{market}:{symbol}"
+            active_keys.add(key)
+            price = decimal(item.get("sourcePrice") or item.get("lastPrice"))
+            cumulative_turnover = decimal(item.get("tradingAmount"))
+            state = target.setdefault(
+                key,
+                {
+                    "tradingDay": local_day,
+                    "bars": [],
+                    "current": None,
+                    "lastCumulativeTurnover": cumulative_turnover,
+                    "lastSignalBar": None,
+                },
+            )
+            if state.get("tradingDay") != local_day:
+                state.clear()
+                state.update(
+                    {
+                        "tradingDay": local_day,
+                        "bars": [],
+                        "current": None,
+                        "lastCumulativeTurnover": cumulative_turnover,
+                        "lastSignalBar": None,
+                    }
+                )
+            previous_cumulative = decimal(
+                state.get("lastCumulativeTurnover") or cumulative_turnover
+            )
+            turnover_delta = max(0.0, cumulative_turnover - previous_cumulative)
+            state["lastCumulativeTurnover"] = cumulative_turnover
+            current = state.get("current")
+            if not current or int(current.get("startedAt") or -1) != bucket:
+                if current and int(current.get("observations") or 0) >= 2:
+                    state.setdefault("bars", []).append(current)
+                    state["bars"] = state["bars"][-BREAKOUT_MAX_HISTORY_BARS:]
+                current = {
+                    "startedAt": bucket,
+                    "open": price,
+                    "high": price,
+                    "low": price,
+                    "close": price,
+                    "turnover": turnover_delta,
+                    "observations": 1,
+                }
+                state["current"] = current
+            else:
+                current["high"] = max(decimal(current.get("high")), price)
+                current["low"] = min(decimal(current.get("low")), price)
+                current["close"] = price
+                current["turnover"] = decimal(current.get("turnover")) + turnover_delta
+                current["observations"] = int(current.get("observations") or 0) + 1
+            evidence = box_breakout_retest_snapshot(
+                list(state.get("bars") or []),
+                item,
+                market,
+                regime_by_symbol.get(symbol),
+                state.get("lastSignalBar"),
+            )
+            if evidence.get("allowed"):
+                state["lastSignalBar"] = evidence.get("signalBarStartedAt")
+            item["entryPatternEvidence"] = evidence
+            item["relativeStrengthEvidence"] = evidence
+            item["marketBreadthEvidence"] = evidence.get("marketSectorEvidence")
+        stale = [
+            key for key, state in target.items()
+            if key not in active_keys and state.get("tradingDay") != local_day
+        ]
+        for key in stale:
+            target.pop(key, None)
+
+    if history is None:
+        with BREAKOUT_BAR_LOCK:
+            update()
+    else:
+        update()
+    return results
 
 
 def apply_pullback_resumption_confirmation(
@@ -3386,8 +3883,10 @@ def candidate_evidence_context(
         "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
         "market": market,
         "exitVariant": SHADOW_MAIN_EXIT_VARIANT,
+        "setup": "THREE_MINUTE_ADAPTIVE_BOX_BREAKOUT_RETEST",
         "timeBucket": market_time_bucket(market, now or datetime.now().astimezone()),
         "instrumentClass": risk.get("class"),
+        "sector": candidate_sector(item),
         "breadthRegime": breadth.get("regime") or "기록 없음",
         "dailyRateBucket": daily_rate_bucket(item.get("dailyRate")),
         "scoreBucket": score_bucket(item.get("score")),
@@ -3411,19 +3910,9 @@ def shadow_context_records(
             or sample_context.get("exitVariant")
             or SHADOW_MAIN_EXIT_VARIANT
         )
-        sample_time = sample_context.get("timeBucket") or market_time_bucket(
-            str(sample.get("market") or market), sample.get("openedAt")
-        )
-        sample_class = sample_context.get("instrumentClass") or instrument_risk_policy(sample).get("class")
-        sample_breadth = sample_context.get("breadthRegime") or "기록 없음"
-        sample_rate_bucket = sample_context.get("dailyRateBucket") or daily_rate_bucket(sample.get("dailyRate"))
         if (
             sample.get("market") == market
             and sample_variant == context["exitVariant"]
-            and sample_time == context["timeBucket"]
-            and sample_class == context["instrumentClass"]
-            and sample_breadth == context["breadthRegime"]
-            and sample_rate_bucket == context["dailyRateBucket"]
         ):
             matched.append(sample)
     matched.sort(key=lambda sample: str(sample.get("closedAt") or ""))
@@ -3474,10 +3963,9 @@ def contextual_shadow_entry_policy(
     ):
         allocation_scale = 0.0
         reason = (
-            f"새 전략 상황별 검증 {sample_count}/{PAPER_CONTEXT_MIN_SAMPLES}건 · "
+            f"{market} 새 전략 검증 {sample_count}/{PAPER_CONTEXT_MIN_SAMPLES}건 · "
             f"{trading_day_count}/{PAPER_CONTEXT_MIN_TRADING_DAYS}거래일 · "
-            f"{context['timeBucket']}·{context['breadthRegime']}·"
-            f"{context['instrumentClass']}·{context['dailyRateBucket']} 그림자 PAPER"
+            "시장별 독립 SHADOW PAPER"
         )
     else:
         allocation_scale = 0.0
@@ -3630,65 +4118,21 @@ def leveraged_shadow_entry_policy(
             "averageNetReturn": 0.0, "recentAverageNetReturn": 0.0,
             "allocationScale": 1.0, "reason": "일반 종목",
         }
-    shadow_state = state or load_shadow_paper_state()
-    samples = [
-        sample for sample in shadow_state.get("samples") or []
-        if isinstance(sample, dict)
-        and sample.get("status") == "CLOSED"
-        and sample.get("market") == market
-        and sample.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
-        and (
-            sample.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT
-        ) == SHADOW_MAIN_EXIT_VARIANT
-        and instrument_risk_policy(sample).get("leveraged")
-    ]
-    evidence = return_evidence(samples[-PAPER_CONTEXT_HISTORY_LIMIT:], PAPER_CONTEXT_RECENT_SAMPLES)
-    recent = evidence.get("recent") or {}
-    sample_count = int(evidence.get("sampleCount") or 0)
-    average = decimal(evidence.get("averageNetReturn"))
-    win_rate = decimal(evidence.get("winRate"))
-    profit_factor = decimal(evidence.get("profitFactor"))
-    trading_day_count = int(evidence.get("tradingDayCount") or 0)
-    lower_confidence_bound = decimal(evidence.get("lowerConfidenceBound90"))
-    break_even_win_rate = decimal(evidence.get("breakEvenWinRate"))
-    required_win_rate = max(PAPER_LEVERAGED_MIN_WIN_RATE, break_even_win_rate)
-    recent_count = int(recent.get("sampleCount") or 0)
-    recent_average = decimal(recent.get("averageNetReturn"))
-    recent_win_rate = decimal(recent.get("winRate"))
-    promoted = (
-        sample_count >= PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES
-        and trading_day_count >= PAPER_CONTEXT_MIN_TRADING_DAYS
-        and average > 0
-        and lower_confidence_bound > 0
-        and win_rate >= required_win_rate
-        and profit_factor >= PAPER_LEVERAGED_MIN_PROFIT_FACTOR
-        and recent_count >= PAPER_CONTEXT_RECENT_SAMPLES
-        and recent_average > 0
-        and recent_win_rate >= required_win_rate
-    )
     return {
-        "allowed": promoted,
-        "shadowOnly": not promoted,
-        "sampleCount": sample_count,
-        "averageNetReturn": average,
-        "tradingDayCount": trading_day_count,
-        "lowerConfidenceBound90": lower_confidence_bound,
-        "breakEvenWinRate": break_even_win_rate,
-        "winRate": win_rate,
-        "profitFactor": profit_factor,
-        "recentSampleCount": recent_count,
-        "recentAverageNetReturn": recent_average,
-        "recentWinRate": recent_win_rate,
-        "allocationScale": PAPER_LEVERAGED_ALLOCATION_SCALE,
-        "reason": (
-            f"레버리지 그림자 검증 통과 · {sample_count}건/{trading_day_count}일 · "
-            f"승률 {win_rate * 100:.1f}% · 90% 하한 "
-            f"{lower_confidence_bound * 100:+.3f}% · PF {profit_factor:.2f}"
-            if promoted else
-            f"레버리지 새 전략 검증 {sample_count}/{PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES}건 · "
-            f"{trading_day_count}/{PAPER_CONTEXT_MIN_TRADING_DAYS}거래일 · "
-            "손익분기 승률·90% 하한·PF 1.30 확인 전 메인 제외"
-        ),
+        "allowed": False,
+        "shadowOnly": True,
+        "sampleCount": 0,
+        "averageNetReturn": 0.0,
+        "tradingDayCount": 0,
+        "lowerConfidenceBound90": 0.0,
+        "breakEvenWinRate": 1.0,
+        "winRate": 0.0,
+        "profitFactor": 0.0,
+        "recentSampleCount": 0,
+        "recentAverageNetReturn": 0.0,
+        "recentWinRate": 0.0,
+        "allocationScale": 0.0,
+        "reason": "v8 일반주 전용 · 레버리지·인버스 제외",
     }
 
 
@@ -3976,15 +4420,20 @@ def close_paper_positions_if_needed(
         else:
             entry_ids = set(entry_policy.get("enabledIds") or fallback_ids)
         entry_parameters = entry_policy.get("parameters") if isinstance(entry_policy.get("parameters"), dict) else current_parameters
-        target_rate = decimal(entry_parameters.get("targetRate") or config.get("targetRate"))
+        target_rate = decimal(
+            order.get("targetRate")
+            or entry_parameters.get("targetRate")
+            or config.get("targetRate")
+        )
         # The exact -0.5% protective order also applies to legacy open positions.
         stop_rate = PAPER_STOP_RATE
         hard_stop_enabled = "hard-stop-loss" in entry_ids or isinstance(order.get("protectiveStopOrder"), dict)
         profit_target_enabled = "profit-trailing" in entry_ids
-        time_exit_enabled = (
+        legacy_time_exit_enabled = (
             "three-minute-exit" in entry_ids
             and order.get("engineVersion") != PAPER_STRATEGY_ENGINE_VERSION
         )
+        v8_position = order.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
         protective: dict[str, Any] = {}
         created = False
         if hard_stop_enabled:
@@ -4049,6 +4498,86 @@ def close_paper_positions_if_needed(
                     "slippageFromTriggerRate": observed_rate - protective_rate,
                 }
             )
+        elif (
+            not stop_only
+            and v8_position
+            and profit_target_enabled
+            and observed_rate >= target_rate
+        ):
+            exit_kind = "목표"
+            reason = (
+                f"시장별 비용 후 순수익 {SHADOW_NET_REWARD_RISK:.0f}R "
+                f"목표 {percent(target_rate)} 전량청산"
+            )
+            if protective.get("status") == "WORKING":
+                protective.update(
+                    {
+                        "status": "CANCELLED",
+                        "cancelledAt": now,
+                        "cancelReason": "2R 목표청산 완료",
+                    }
+                )
+        elif not stop_only and v8_position:
+            opened_at = parse_order_time(order.get("createdAt"))
+            hold_seconds = (
+                max(
+                    0,
+                    int(
+                        (datetime.now().astimezone() - opened_at).total_seconds()
+                    ),
+                )
+                if opened_at else 0
+            )
+            result = next(
+                (
+                    item for item in results
+                    if str(item.get("symbol") or "") == str(symbol)
+                ),
+                {},
+            )
+            evidence = (
+                result.get("entryPatternEvidence")
+                if isinstance(result.get("entryPatternEvidence"), dict)
+                else {}
+            )
+            latest_bar = (
+                evidence.get("latestCompletedBar")
+                if isinstance(evidence.get("latestCompletedBar"), dict)
+                else {}
+            )
+            entry_box_high = decimal(order.get("entryBoxHigh"))
+            latest_bar_started_at = latest_bar.get("startedAt")
+            failed_box = (
+                entry_box_high > 0
+                and latest_bar_started_at is not None
+                and str(latest_bar_started_at)
+                != str(order.get("entrySignalBarStartedAt"))
+                and decimal(latest_bar.get("close")) < entry_box_high
+            )
+            if failed_box:
+                exit_kind = "박스실패"
+                reason = "완성 3분봉이 진입 박스 상단 아래로 마감 · 전량청산"
+            elif hold_seconds >= BREAKOUT_MAX_HOLD_SECONDS:
+                exit_kind = "30분청산"
+                reason = "박스 지지는 유지했지만 30분 내 손절·2R 목표 미도달"
+            elif (
+                not current_policy.get("extendedSession")
+                and minutes_to_close is not None
+                and minutes_to_close <= PAPER_MARKET_CLOSE_EXIT_MINUTES
+            ):
+                exit_kind = "마감청산"
+                reason = (
+                    f"정규장 마감 {PAPER_MARKET_CLOSE_EXIT_MINUTES}분 전 · "
+                    "익일 보유 비활성"
+                )
+            if exit_kind and protective.get("status") == "WORKING":
+                protective.update(
+                    {
+                        "status": "CANCELLED",
+                        "cancelledAt": now,
+                        "cancelReason": f"{exit_kind} 완료",
+                    }
+                )
         elif not stop_only and profit_target_enabled and not partial_taken and observed_rate >= target_rate:
             original_quantity = decimal(order.get("quantity") or 1)
             remaining_quantity = decimal(order.get("remainingQuantity") or original_quantity)
@@ -4111,7 +4640,7 @@ def close_paper_positions_if_needed(
             reason = f"정규장 마감 {PAPER_MARKET_CLOSE_EXIT_MINUTES}분 전 · 익일 보유 비활성"
             if protective.get("status") == "WORKING":
                 protective.update({"status": "CANCELLED", "cancelledAt": now, "cancelReason": "마감청산 완료"})
-        elif not stop_only and time_exit_enabled:
+        elif not stop_only and legacy_time_exit_enabled:
             opened_at = parse_order_time(order.get("createdAt"))
             hold_seconds = max(0, int((datetime.now().astimezone() - opened_at).total_seconds())) if opened_at else 0
             time_limit = int(entry_parameters.get("timeExitSeconds") or 180)
@@ -4270,20 +4799,22 @@ def update_shadow_paper(
         }
         active = {
             (
+                str(item.get("engineVersion") or ""),
                 str(item.get("market") or ""),
                 str(item.get("symbol") or ""),
-                str(item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT),
+                shadow_sample_variant(item),
             ): item
             for item in samples if item.get("status") == "OPEN"
         }
         for key, item in list(active.items()):
-            if key[0] != market:
+            if key[1] != market:
                 continue
-            last = prices.get(key[1], 0.0)
+            last = prices.get(key[2], 0.0)
             entry = decimal(item.get("entryPrice"))
             if not last or not entry:
                 continue
-            exit_variant = key[2]
+            engine_version = key[0]
+            exit_variant = key[3]
             target_rate = decimal(
                 item.get("targetRate")
                 or shadow_exit_target_rate(
@@ -4296,7 +4827,8 @@ def update_shadow_paper(
             item["highWaterPrice"] = max(decimal(item.get("highWaterPrice") or entry), last)
             item["lowWaterPrice"] = min(decimal(item.get("lowWaterPrice") or entry), last)
             if (
-                exit_variant == SHADOW_MAIN_EXIT_VARIANT
+                engine_version == PAPER_BASELINE_ENGINE_VERSION
+                and exit_variant == SHADOW_V7_EXIT_VARIANT
                 and not item.get("partialTaken")
                 and observed_rate >= target_rate
             ):
@@ -4308,14 +4840,12 @@ def update_shadow_paper(
             if observed_rate <= PAPER_STOP_RATE:
                 exit_kind = "손실선"
                 gross_return = min(PAPER_STOP_RATE, observed_rate)
-            elif (
-                exit_variant == SHADOW_FIXED_TARGET_VARIANT
-                and observed_rate >= target_rate
-            ):
+            elif engine_version == PAPER_STRATEGY_ENGINE_VERSION and observed_rate >= target_rate:
                 exit_kind = "목표"
                 gross_return = observed_rate
             elif (
-                exit_variant == SHADOW_MAIN_EXIT_VARIANT
+                engine_version == PAPER_BASELINE_ENGINE_VERSION
+                and exit_variant == SHADOW_V7_EXIT_VARIANT
                 and item.get("partialTaken")
             ):
                 trailing_trigger = max(entry, decimal(item.get("highWaterPrice")) * (1 + PAPER_TRAILING_RATE))
@@ -4328,9 +4858,43 @@ def update_shadow_paper(
                     )
             opened_at = parse_order_time(item.get("openedAt"))
             held = max(0, int((now_dt - opened_at).total_seconds())) if opened_at else 0
+            result = next(
+                (
+                    candidate for candidate in results
+                    if str(candidate.get("symbol") or "") == key[2]
+                ),
+                {},
+            )
+            latest_bar = (
+                (result.get("entryPatternEvidence") or {}).get("latestCompletedBar")
+                if isinstance(result.get("entryPatternEvidence"), dict)
+                else None
+            )
+            entry_box_high = decimal(item.get("entryBoxHigh"))
+            latest_bar_started_at = (
+                latest_bar.get("startedAt") if isinstance(latest_bar, dict) else None
+            )
             if (
                 not exit_kind
-                and item.get("engineVersion") != PAPER_STRATEGY_ENGINE_VERSION
+                and engine_version == PAPER_STRATEGY_ENGINE_VERSION
+                and entry_box_high > 0
+                and latest_bar_started_at is not None
+                and str(latest_bar_started_at) != str(item.get("entrySignalBarStartedAt"))
+                and decimal(latest_bar.get("close")) < entry_box_high
+            ):
+                exit_kind = "박스실패"
+            if (
+                not exit_kind
+                and engine_version == PAPER_STRATEGY_ENGINE_VERSION
+                and held >= BREAKOUT_MAX_HOLD_SECONDS
+            ):
+                exit_kind = "30분청산"
+            if (
+                not exit_kind
+                and engine_version not in (
+                    PAPER_STRATEGY_ENGINE_VERSION,
+                    PAPER_BASELINE_ENGINE_VERSION,
+                )
                 and held >= int(runtime.get("timeExitSeconds") or 180)
                 and observed_rate < 0.001
             ):
@@ -4352,7 +4916,7 @@ def update_shadow_paper(
                     "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
                 })
 
-        recent_closed: dict[tuple[str, str, str], datetime] = {}
+        recent_closed: dict[tuple[str, str, str, str], datetime] = {}
         for item in samples:
             if item.get("status") != "CLOSED":
                 continue
@@ -4360,16 +4924,18 @@ def update_shadow_paper(
             if closed_at:
                 recent_closed[
                     (
+                        str(item.get("engineVersion") or ""),
                         str(item.get("market") or ""),
                         str(item.get("symbol") or ""),
-                        str(item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT),
+                        shadow_sample_variant(item),
                     )
                 ] = closed_at
         active_keys = {
             (
+                str(item.get("engineVersion") or ""),
                 str(item.get("market") or ""),
                 str(item.get("symbol") or ""),
-                str(item.get("experimentVariant") or SHADOW_MAIN_EXIT_VARIANT),
+                shadow_sample_variant(item),
             )
             for item in samples if item.get("status") == "OPEN"
         }
@@ -4379,35 +4945,79 @@ def update_shadow_paper(
         strategy_key = hashlib.sha1(strategy_key_source.encode("utf-8")).hexdigest()[:12]
         for result in results:
             symbol = str(result.get("symbol") or "")
-            if not symbol:
-                continue
-            if result.get("verdict") != "정밀 분석" or decimal(result.get("score")) < required_score:
+            if (
+                not symbol
+                or decimal(result.get("score")) < required_score
+                or decimal(result.get("lastPrice")) <= 0
+            ):
                 continue
             price = decimal(result.get("lastPrice"))
-            if price <= 0:
-                continue
-            entry_context = candidate_evidence_context(result, market, now_dt)
-            for exit_variant in SHADOW_EXIT_VARIANTS:
-                key = (market, symbol, exit_variant)
+            candidate_signals = []
+            current_evidence = (
+                result.get("entryPatternEvidence")
+                if isinstance(result.get("entryPatternEvidence"), dict)
+                else {}
+            )
+            if result.get("verdict") == "정밀 분석" and current_evidence.get("allowed"):
+                today_symbol_entries = sum(
+                    1 for item in samples
+                    if item.get("engineVersion") == PAPER_STRATEGY_ENGINE_VERSION
+                    and item.get("market") == market
+                    and item.get("symbol") == symbol
+                    and paper_trading_day(item.get("openedAt")) == paper_trading_day(now_text)
+                )
+                if today_symbol_entries < BREAKOUT_MAX_DAILY_SYMBOL_ENTRIES:
+                    candidate_signals.append(
+                        (
+                            PAPER_STRATEGY_ENGINE_VERSION,
+                            SHADOW_MAIN_EXIT_VARIANT,
+                            current_evidence,
+                            candidate_evidence_context(result, market, now_dt),
+                        )
+                    )
+            baseline_evidence = (
+                result.get("v7EntryPatternEvidence")
+                if isinstance(result.get("v7EntryPatternEvidence"), dict)
+                else {}
+            )
+            if baseline_evidence.get("allowed"):
+                candidate_signals.append(
+                    (
+                        PAPER_BASELINE_ENGINE_VERSION,
+                        SHADOW_V7_EXIT_VARIANT,
+                        baseline_evidence,
+                        {
+                            "engineVersion": PAPER_BASELINE_ENGINE_VERSION,
+                            "market": market,
+                            "exitVariant": SHADOW_V7_EXIT_VARIANT,
+                            "setup": "V7_PULLBACK_RESUMPTION_BASELINE",
+                            "timeBucket": market_time_bucket(market, now_dt),
+                        },
+                    )
+                )
+            for engine_version, exit_variant, pattern_evidence, entry_context in candidate_signals:
+                key = (engine_version, market, symbol, exit_variant)
                 if key in active_keys:
                     continue
                 last_closed = recent_closed.get(key)
+                cooldown = (
+                    SHADOW_PAPER_COOLDOWN_SECONDS
+                    if engine_version == PAPER_STRATEGY_ENGINE_VERSION
+                    else 600
+                )
                 if (
                     last_closed
                     and (now_dt - last_closed).total_seconds()
-                    < SHADOW_PAPER_COOLDOWN_SECONDS
+                    < cooldown
                 ):
                     continue
                 target_rate = shadow_exit_target_rate(
                     market, exit_variant, configured_target_rate
                 )
-                variant_context = {
-                    **entry_context,
-                    "exitVariant": exit_variant,
-                }
+                variant_context = {**entry_context, "exitVariant": exit_variant}
                 samples.append({
                     "id": (
-                        f"SHADOW-{market}-{symbol}-{exit_variant}-"
+                        f"SHADOW-{engine_version}-{market}-{symbol}-{exit_variant}-"
                         f"{int(time.time() * 1000)}"
                     ),
                     "mode": "SIGNAL_ONLY_NO_CAPITAL", "status": "OPEN",
@@ -4418,20 +5028,29 @@ def update_shadow_paper(
                     "dailyRate": result.get("dailyRate"),
                     "entryScore": result.get("score"), "baseEntryScore": result.get("baseScore"),
                     "scoreFeatures": result.get("scoreFeatures"), "scoreAudit": result.get("scoreAudit"),
-                    "entryPatternEvidence": result.get("entryPatternEvidence"),
-                    "relativeStrengthEvidence": result.get("relativeStrengthEvidence"),
+                    "entryPatternEvidence": pattern_evidence,
+                    "relativeStrengthEvidence": pattern_evidence,
                     "marketBreadthEvidence": result.get("marketBreadthEvidence"),
+                    "sector": candidate_sector(result),
                     "instrumentRisk": instrument_risk_policy(result),
-                    "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                    "engineVersion": engine_version,
                     "experimentVariant": exit_variant,
                     "targetRate": target_rate,
+                    "entryBoxHigh": (
+                        pattern_evidence.get("boxHigh")
+                        if engine_version == PAPER_STRATEGY_ENGINE_VERSION else None
+                    ),
+                    "entrySignalBarStartedAt": (
+                        pattern_evidence.get("signalBarStartedAt")
+                        if engine_version == PAPER_STRATEGY_ENGINE_VERSION else None
+                    ),
                     "entryContext": variant_context,
                     "exitPolicy": (
-                        "STOP_-0.5_FIXED_NET_RR_TARGET_CLOSE"
-                        if exit_variant == SHADOW_FIXED_TARGET_VARIANT
-                        else "STOP_-0.5_TARGET_PARTIAL_TRAILING_CLOSE"
+                        "STOP_-0.5_NET_2R_FULL_BOX_FAILURE_30M"
+                        if engine_version == PAPER_STRATEGY_ENGINE_VERSION
+                        else "V7_STOP_-0.5_TARGET_PARTIAL_TRAILING_CLOSE"
                     ),
-                    "strategyKey": f"{strategy_key}-{exit_variant}",
+                    "strategyKey": f"{strategy_key}-{engine_version}-{exit_variant}",
                     "strategyIds": list(policy.get("enabledIds") or []),
                     "strategyRevision": policy.get("revision"),
                     "learningWeight": SHADOW_PAPER_LEARNING_WEIGHT,
@@ -4504,9 +5123,18 @@ def paper_trade_locked(
         and len(todays_orders) >= int(config.get("maxDailyOrders") or PAPER_MAX_DAILY_ORDERS)
     ):
         return orders[-50:], summary
-    existing = {(item.get("market"), item.get("symbol")) for item in open_paper_positions(orders).values()}
+    open_position_orders = list(open_paper_positions(orders).values())
+    existing = {
+        (item.get("market"), item.get("symbol"))
+        for item in open_position_orders
+    }
+    open_sectors = {
+        str(item.get("sector") or "")
+        for item in open_position_orders
+        if str(item.get("sector") or "") not in ("", "미분류")
+    }
     capital = summary.get("capital") or {}
-    max_open_positions = int(config.get("maxOpenPositions") or PAPER_MAX_OPEN_POSITIONS)
+    max_open_positions = PAPER_MAX_OPEN_POSITIONS
     open_position_count = int(summary.get("openPositionCount") or 0)
     if not execution_policy.get("unlimitedPositions") and open_position_count >= max_open_positions:
         return orders[-50:], summary
@@ -4552,6 +5180,22 @@ def paper_trade_locked(
     for item in ranked_candidates:
         symbol = str(item.get("symbol") or "")
         symbol_sample_count = int(sample_counts.get(symbol, 0))
+        if symbol_sample_count >= BREAKOUT_MAX_DAILY_SYMBOL_ENTRIES:
+            learning_decisions.append(
+                {
+                    "symbol": symbol,
+                    "name": item.get("name") or symbol,
+                    "allowed": False,
+                    "capitalAllowed": False,
+                    "reason": (
+                        f"동일 종목 일일 {BREAKOUT_MAX_DAILY_SYMBOL_ENTRIES}회 "
+                        "진입 완료"
+                    ),
+                    "scope": "V8_REENTRY_LIMIT",
+                    "todaySymbolSamples": symbol_sample_count,
+                }
+            )
+            continue
         if symbol in exit_cooldown:
             learning_decisions.append(
                 {
@@ -4561,6 +5205,34 @@ def paper_trade_locked(
                     "capitalAllowed": False,
                     "reason": f"최근 청산 후 {cooldown_seconds}초 표본 균형 대기",
                     "scope": "SAMPLE_DIVERSITY",
+                    "todaySymbolSamples": symbol_sample_count,
+                }
+            )
+            continue
+        product_policy = standard_equity_policy(item, market)
+        if not product_policy.get("eligible"):
+            learning_decisions.append(
+                {
+                    "symbol": symbol,
+                    "name": item.get("name") or symbol,
+                    "allowed": False,
+                    "capitalAllowed": False,
+                    "reason": product_policy.get("reason"),
+                    "scope": "STANDARD_EQUITY_ONLY",
+                    "todaySymbolSamples": symbol_sample_count,
+                }
+            )
+            continue
+        sector = candidate_sector(item)
+        if sector != "미분류" and sector in open_sectors:
+            learning_decisions.append(
+                {
+                    "symbol": symbol,
+                    "name": item.get("name") or symbol,
+                    "allowed": False,
+                    "capitalAllowed": False,
+                    "reason": f"동일 업종 보유 중 · {sector}",
+                    "scope": "ONE_POSITION_PER_SECTOR",
                     "todaySymbolSamples": symbol_sample_count,
                 }
             )
@@ -4640,19 +5312,56 @@ def paper_trade_locked(
             execution_policy,
         )
         budget = decimal(capital_plan.get("plannedBudgetKrw"))
-        account_risk = summary.get("dailyAccountRisk") or {}
-        projected_open_risk = decimal(account_risk.get("openRiskKrw")) + budget * abs(PAPER_STOP_RATE)
-        max_open_risk = PAPER_STARTING_CAPITAL_KRW * PAPER_TOTAL_OPEN_RISK_RATE
+        working_capital = decimal(
+            capital_plan.get("workingCapitalKrw")
+            or capital.get("workingCapitalKrw")
+            or PAPER_STARTING_CAPITAL_KRW
+        )
+        estimated_loss_rate = (
+            abs(PAPER_STOP_RATE)
+            + decimal(RESEARCH_ROUND_TRIP_COST.get(market))
+        )
+        per_trade_risk_budget = (
+            working_capital * PAPER_PER_TRADE_ACCOUNT_RISK_RATE
+        )
+        if estimated_loss_rate > 0:
+            budget = min(budget, per_trade_risk_budget / estimated_loss_rate)
+            capital_plan["plannedBudgetKrw"] = budget
+        existing_open_risk = sum(
+            decimal(
+                open_order.get("allocatedKrw")
+                or (
+                    decimal(open_order.get("price"))
+                    * decimal(open_order.get("quantity"))
+                )
+            )
+            * (
+                abs(PAPER_STOP_RATE)
+                + decimal(
+                    RESEARCH_ROUND_TRIP_COST.get(
+                        str(open_order.get("market") or market)
+                    )
+                )
+            )
+            for open_order in open_position_orders
+        )
+        projected_open_risk = existing_open_risk + budget * estimated_loss_rate
+        max_open_risk = working_capital * PAPER_TOTAL_OPEN_RISK_RATE
         if projected_open_risk > max_open_risk + 0.000001:
             allowed_budget = max(
                 0.0,
-                (max_open_risk - decimal(account_risk.get("openRiskKrw"))) / abs(PAPER_STOP_RATE),
+                (max_open_risk - existing_open_risk) / estimated_loss_rate,
             )
             budget = min(budget, allowed_budget)
             capital_plan["plannedBudgetKrw"] = budget
             capital_plan["riskBudgetAdjusted"] = True
-            capital_plan["projectedOpenRiskKrw"] = decimal(account_risk.get("openRiskKrw")) + budget * abs(PAPER_STOP_RATE)
+            capital_plan["projectedOpenRiskKrw"] = (
+                existing_open_risk + budget * estimated_loss_rate
+            )
             capital_plan["maxOpenRiskKrw"] = max_open_risk
+        capital_plan["perTradeRiskRate"] = PAPER_PER_TRADE_ACCOUNT_RISK_RATE
+        capital_plan["estimatedLossRate"] = estimated_loss_rate
+        capital_plan["perTradeRiskBudgetKrw"] = per_trade_risk_budget
         decision["capitalAllowed"] = budget > 0
         decision["capitalPlan"] = capital_plan
         if budget <= 0:
@@ -4697,6 +5406,7 @@ def paper_trade_locked(
                 "session": session,
                 "symbol": candidate.get("symbol"),
                 "name": candidate.get("name"),
+                "sector": candidate_sector(candidate),
                 "side": "BUY",
                 "quantity": quantity,
                 "price": candidate.get("lastPrice"),
@@ -4739,6 +5449,23 @@ def paper_trade_locked(
                 "status": "FILLED",
                 "createdAt": created_at,
                 "engineVersion": PAPER_STRATEGY_ENGINE_VERSION,
+                "targetRate": shadow_exit_target_rate(
+                    market,
+                    SHADOW_MAIN_EXIT_VARIANT,
+                    runtime.get("targetRate") or PAPER_TARGET_RATE,
+                ),
+                "entryBoxHigh": (
+                    (candidate.get("entryPatternEvidence") or {}).get("boxHigh")
+                    if isinstance(candidate.get("entryPatternEvidence"), dict)
+                    else None
+                ),
+                "entrySignalBarStartedAt": (
+                    (candidate.get("entryPatternEvidence") or {}).get(
+                        "signalBarStartedAt"
+                    )
+                    if isinstance(candidate.get("entryPatternEvidence"), dict)
+                    else None
+                ),
                 "entryContext": (
                     candidate_policy.get("contextEvidence", {}).get("context")
                     if candidate_policy else None
@@ -4829,7 +5556,7 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
             "marketCountry": market,
             "duration": "realtime",
             "excludeInvestmentCaution": "true",
-            "count": "50",
+            "count": "30",
         }
     )
     ranked = toss_get(f"/api/v1/rankings?{query}", env).get("result") or {}
@@ -4838,7 +5565,10 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
     stocks = toss_get(
         f"/api/v1/stocks?{urllib.parse.urlencode({'symbols': ','.join(symbols)})}", env
     ).get("result") or []
-    names = {str(stock.get("symbol")): stock.get("name") for stock in stocks}
+    stock_profiles = {
+        str(stock.get("symbol")): stock
+        for stock in stocks if stock.get("symbol")
+    }
     exchange_rate = usd_krw_rate(env) if market == "US" else 1.0
     results = []
     for row in rows:
@@ -4871,11 +5601,27 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
         else:
             momentum_score = momentum_max * 0.14
         stability_score = stability_max if -0.03 < rate < 0.12 else stability_max * 0.32
+        profile_item = stock_profiles.get(str(row.get("symbol"))) or {}
+        sector = next(
+            (
+                str(profile_item.get(key) or "").strip()
+                for key in ("sectorName", "sector", "industryName", "industry")
+                if str(profile_item.get(key) or "").strip()
+            ),
+            "미분류",
+        )
         result = {
                 "rank": row.get("rank"),
                 "symbol": row.get("symbol"),
-                "name": names.get(str(row.get("symbol"))) or row.get("symbol"),
+                "name": profile_item.get("name") or row.get("symbol"),
                 "marketCountry": market,
+                "sector": sector,
+                "productType": (
+                    profile_item.get("productType")
+                    or profile_item.get("securityType")
+                    or profile_item.get("instrumentType")
+                    or profile_item.get("assetType")
+                ),
                 "currency": "KRW",
                 "sourceCurrency": source_currency,
                 "sourcePrice": source_price,
@@ -4890,7 +5636,24 @@ def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
                 },
             }
         results.append(apply_global_score_to_candidate(result, score_model))
-    apply_pullback_resumption_confirmation(results, market)
+    baseline_results = [dict(item) for item in results]
+    apply_pullback_resumption_confirmation(
+        baseline_results, market, history=V7_BASELINE_HISTORY
+    )
+    baseline_by_symbol = {}
+    for baseline_item in baseline_results:
+        evidence = (
+            dict(baseline_item.get("entryPatternEvidence"))
+            if isinstance(baseline_item.get("entryPatternEvidence"), dict)
+            else {}
+        )
+        evidence["engineVersion"] = PAPER_BASELINE_ENGINE_VERSION
+        baseline_by_symbol[str(baseline_item.get("symbol") or "")] = evidence
+    for item in results:
+        item["v7EntryPatternEvidence"] = baseline_by_symbol.get(
+            str(item.get("symbol") or "")
+        )
+    apply_box_breakout_retest_confirmation(results, market)
     for item in results:
         apply_global_score_to_candidate(item, score_model)
     return results
@@ -5064,108 +5827,77 @@ def intraday_regular_session_key(market: str, moment: datetime) -> str | None:
     return local.date().isoformat() if 540 <= minute < 930 else None
 
 
+def aggregate_three_minute_candles(
+    rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Aggregate one-minute historical bars to the same completed 3m shape as live."""
+    grouped: dict[int, dict[str, Any]] = {}
+    for raw in rows:
+        moment = parse_study_candle_time(raw.get("timestamp"))
+        if not moment:
+            continue
+        bucket = int(moment.timestamp() // BREAKOUT_BAR_SECONDS) * BREAKOUT_BAR_SECONDS
+        bar = grouped.get(bucket)
+        if not bar:
+            grouped[bucket] = {
+                "startedAt": bucket,
+                "timestamp": raw.get("timestamp"),
+                "open": decimal(raw.get("open")),
+                "high": decimal(raw.get("high")),
+                "low": decimal(raw.get("low")),
+                "close": decimal(raw.get("close")),
+                "volume": max(0.0, decimal(raw.get("volume"))),
+                "turnover": max(0.0, decimal(raw.get("volume"))),
+                "observations": 1,
+            }
+            continue
+        bar["high"] = max(decimal(bar.get("high")), decimal(raw.get("high")))
+        bar["low"] = min(decimal(bar.get("low")), decimal(raw.get("low")))
+        bar["close"] = decimal(raw.get("close"))
+        bar["volume"] = decimal(bar.get("volume")) + max(
+            0.0, decimal(raw.get("volume"))
+        )
+        bar["turnover"] = bar["volume"]
+        bar["observations"] = int(bar.get("observations") or 0) + 1
+    return [grouped[key] for key in sorted(grouped)]
+
+
 def intraday_entry_snapshot(
     rows: list[dict[str, Any]], index: int, market: str, session_open: float
 ) -> dict[str, Any]:
-    """Evaluate a non-lookahead pullback resumption using only known bars.
-
-    Historical minute candles do not contain the full cross-sectional ranking
-    snapshots used by the live relative-strength state machine. Liquidity rank
-    is therefore evaluated separately by the caller, while this function
-    reproduces the price path: established trend, controlled pullback, then a
-    fresh recovery with returning volume.
-    """
-    if index < 20 or index >= len(rows):
-        return {"allowed": False, "reason": "정규장 20분 확인 전"}
-    current = rows[index]
-    previous = rows[index - 20:index]
-    entry = decimal(current.get("close"))
-    if entry <= 0 or session_open <= 0:
-        return {"allowed": False, "reason": "가격 확인 실패"}
-    closes = [decimal(item.get("close")) for item in previous]
-    volumes = [max(0.0, decimal(item.get("volume"))) for item in previous]
-    sma5 = sum(closes[-5:]) / 5
-    sma20 = sum(closes) / len(closes)
-    vwap_rows = previous + [current]
-    total_volume = sum(max(0.0, decimal(item.get("volume"))) for item in vwap_rows)
-    vwap = (
-        sum(
-            decimal(item.get("close")) * max(0.0, decimal(item.get("volume")))
-            for item in vwap_rows
-        ) / total_volume
-        if total_volume else sum(decimal(item.get("close")) for item in vwap_rows) / len(vwap_rows)
-    )
-    prior_volume = sum(volumes) / len(volumes) if volumes else 0.0
-    volume_ratio = decimal(current.get("volume")) / prior_volume if prior_volume else 0.0
-    short_momentum = entry / closes[-5] - 1 if closes[-5] else 0.0
-    daily_rate = entry / session_open - 1
-    rules = PULLBACK_MARKET_RULES.get(market, PULLBACK_MARKET_RULES["KR"])
-    minimum_pullback = decimal(rules.get("minimumPullback"))
-    maximum_pullback = decimal(rules.get("maximumPullback"))
-    minimum_recovery = decimal(rules.get("minimumRecovery"))
-    path = previous[-12:]
-    peak_offset, peak_bar = max(
-        enumerate(path), key=lambda pair: decimal(pair[1].get("high"))
-    )
-    peak_price = decimal(peak_bar.get("high"))
-    bars_after_peak = path[peak_offset + 1:]
-    trough_bar = min(
-        bars_after_peak, key=lambda item: decimal(item.get("low"))
-    ) if bars_after_peak else None
-    trough_price = decimal(trough_bar.get("low")) if trough_bar else peak_price
-    pullback_depth = (peak_price - trough_price) / peak_price if peak_price else 0.0
-    recovery_rate = (entry - trough_price) / trough_price if trough_price else 0.0
-    trough_volume = decimal(trough_bar.get("volume")) if trough_bar else 0.0
-    turnover_returning = decimal(current.get("volume")) > trough_volume
-    price_below_peak = entry < peak_price
-    fresh_recovery = entry > decimal(rows[index - 1].get("close"))
-    bar_high = decimal(current.get("high"))
-    bar_low = decimal(current.get("low"))
-    close_position = (entry - bar_low) / (bar_high - bar_low) if bar_high > bar_low else 0.5
-    momentum_min, momentum_max = candidate_momentum_range(market)
-    short_min = 0.002 if market == "US" else 0.0015
-    volume_min = 1.30 if market == "US" else 1.20
-    checks = {
-        "controlledDailyMomentum": momentum_min <= daily_rate < momentum_max,
-        "trendAligned": sma5 > sma20 and entry > vwap,
-        "fiveMinuteMomentum": short_min <= short_momentum <= 0.025,
-        "controlledPullback": (
-            trough_bar is not None
-            and minimum_pullback <= pullback_depth <= maximum_pullback
-        ),
-        "freshRecovery": (
-            fresh_recovery
-            and recovery_rate >= minimum_recovery
-            and price_below_peak
-        ),
-        "relativeVolume": volume_ratio >= volume_min,
-        "turnoverReturning": turnover_returning,
-        "strongClose": close_position >= 0.70,
+    """Evaluate v8 from completed 3m bars without using future candles."""
+    if index < BREAKOUT_MIN_BOX_BARS + 2 or index >= len(rows):
+        return {"allowed": False, "reason": "3분봉 박스·돌파·재확인 준비 전"}
+    entry = decimal(rows[index].get("close"))
+    item = {
+        "symbol": "BACKTEST",
+        "name": "Backtest",
+        "rank": 1,
+        "marketCountry": market,
+        "sourcePrice": entry,
+        "lastPrice": entry,
     }
-    return {
-        "allowed": all(checks.values()),
-        "checks": checks,
-        "dailyRate": daily_rate,
-        "shortMomentum": short_momentum,
-        "volumeRatio": volume_ratio,
-        "pullbackDepth": pullback_depth,
-        "minimumPullback": minimum_pullback,
-        "maximumPullback": maximum_pullback,
-        "recoveryRate": recovery_rate,
-        "minimumRecovery": minimum_recovery,
-        "turnoverReturning": turnover_returning,
-        "sma5": sma5,
-        "sma20": sma20,
-        "vwap": vwap,
-        "closePosition": close_position,
-        "reason": "눌림 후 재상승 확인" if all(checks.values()) else "눌림 재상승 조건 미달",
-    }
+    evidence = box_breakout_retest_snapshot(
+        rows[: index + 1],
+        item,
+        market,
+        {
+            "allowed": True,
+            "marketAllowed": True,
+            "sectorAllowed": True,
+            "rule": "HISTORICAL_SINGLE_SYMBOL_PROXY",
+        },
+    )
+    evidence["dailyRate"] = (
+        entry / session_open - 1 if session_open > 0 else 0.0
+    )
+    return evidence
 
 
 def simulate_intraday_strategy(
     candles: list[dict[str, Any]], market: str, symbol: str, name: str, rank: int
 ) -> list[dict[str, Any]]:
-    """Conservative minute-bar replay of the cost-aware pullback strategy."""
+    """Conservative 3m replay of the box-breakout-retest v8 strategy."""
     grouped: dict[str, list[dict[str, Any]]] = {}
     for candle in candles:
         moment = parse_study_candle_time(candle.get("timestamp"))
@@ -5179,15 +5911,24 @@ def simulate_intraday_strategy(
     cost_rate = decimal(RESEARCH_ROUND_TRIP_COST.get(market))
     for trading_day, rows in sorted(grouped.items()):
         rows.sort(key=lambda item: str(item.get("timestamp") or ""))
-        if len(rows) < 22:
+        rows = aggregate_three_minute_candles(rows)
+        if len(rows) < BREAKOUT_MIN_BOX_BARS + 4:
             continue
         session_open = decimal(rows[0].get("open"))
         if session_open < minimum_price:
             continue
-        risk = instrument_risk_policy({"symbol": symbol, "name": name})
-        if risk.get("leveraged"):
+        product = standard_equity_policy(
+            {
+                "symbol": symbol,
+                "name": name,
+                "sourcePrice": session_open,
+                "marketCountry": market,
+            },
+            market,
+        )
+        if not product.get("eligible"):
             continue
-        index = 20
+        index = BREAKOUT_MIN_BOX_BARS + 2
         while index < len(rows) - 1:
             entry_candle = rows[index]
             entry = decimal(entry_candle.get("close"))
@@ -5201,20 +5942,16 @@ def simulate_intraday_strategy(
                 continue
             daily_rate = decimal(signal.get("dailyRate"))
             score = historical_candidate_score(market, rank, daily_rate)
-            if score < 83:
-                index += 1
-                continue
-            score = max(0.0, score - decimal(risk.get("scorePenalty")))
-            if score < 83:
-                index += 1
-                continue
             candidate = {"symbol": symbol, "name": name, "score": score, "dailyRate": daily_rate}
             context = candidate_evidence_context(candidate, market, moment)
             stop_price = entry * (1 + PAPER_STOP_RATE)
-            target_price = entry * (1 + PAPER_TARGET_RATE)
+            target_rate = shadow_exit_target_rate(
+                market, SHADOW_MAIN_EXIT_VARIANT, PAPER_TARGET_RATE
+            )
+            target_price = entry * (1 + target_rate)
+            entry_box_high = decimal(signal.get("boxHigh"))
             high_water = entry
-            partial_taken = False
-            partial_return = 0.0
+            low_water = entry
             exit_index = len(rows) - 1
             exit_price = decimal(rows[-1].get("close"))
             exit_kind = "마감청산"
@@ -5225,38 +5962,33 @@ def simulate_intraday_strategy(
                 bar_high = decimal(bar.get("high"))
                 bar_low = decimal(bar.get("low"))
                 bar_close = decimal(bar.get("close"))
-                if not partial_taken:
-                    # Minute bars do not reveal intrabar order. When stop and target
-                    # both appear, assume the stop happened first.
-                    if bar_low <= stop_price:
-                        exit_price = min(stop_price, bar_open or stop_price)
-                        gross_return = (exit_price / entry) - 1
-                        exit_kind, exit_index = "손실선", future_index
-                        break
-                    if bar_high >= target_price:
-                        partial_taken = True
-                        partial_return = PAPER_TARGET_RATE
-                        high_water = max(high_water, target_price)
-                else:
-                    trailing_trigger = max(entry, high_water * (1 + PAPER_TRAILING_RATE))
-                    if bar_low <= trailing_trigger:
-                        exit_price = min(trailing_trigger, bar_open or trailing_trigger)
-                        remainder_return = (exit_price / entry) - 1
-                        gross_return = (
-                            partial_return * PAPER_PARTIAL_TAKE_PROFIT_RATE
-                            + remainder_return * (1 - PAPER_PARTIAL_TAKE_PROFIT_RATE)
-                        )
-                        exit_kind, exit_index = "추적손절", future_index
-                        break
+                # Three-minute bars do not reveal intrabar order. If stop and
+                # target coexist in one bar, conservatively assume stop first.
+                if bar_low <= stop_price:
+                    exit_price = min(stop_price, bar_open or stop_price)
+                    gross_return = (exit_price / entry) - 1
+                    exit_kind, exit_index = "손실선", future_index
+                    break
+                if bar_high >= target_price:
+                    exit_price = max(target_price, min(bar_open or target_price, bar_high))
+                    gross_return = (exit_price / entry) - 1
+                    exit_kind, exit_index = "목표", future_index
+                    break
+                if entry_box_high > 0 and bar_close < entry_box_high:
+                    exit_price = bar_close
+                    gross_return = (exit_price / entry) - 1
+                    exit_kind, exit_index = "박스실패", future_index
+                    break
+                if (future_index - index) * 3 >= 30:
+                    exit_price = bar_close
+                    gross_return = (exit_price / entry) - 1
+                    exit_kind, exit_index = "30분청산", future_index
+                    break
                 high_water = max(high_water, bar_high)
+                low_water = min(low_water, bar_low)
                 exit_price = bar_close
                 if future_index == len(rows) - 1:
-                    remainder_return = (exit_price / entry) - 1
-                    gross_return = (
-                        partial_return * PAPER_PARTIAL_TAKE_PROFIT_RATE
-                        + remainder_return * (1 - PAPER_PARTIAL_TAKE_PROFIT_RATE)
-                        if partial_taken else remainder_return
-                    )
+                    gross_return = (exit_price / entry) - 1
             opened_at = str(entry_candle.get("timestamp") or "")
             closed_at = str(rows[exit_index].get("timestamp") or "")
             trade_id = hashlib.sha1(
@@ -5270,6 +6002,9 @@ def simulate_intraday_strategy(
                 "exitPrice": exit_price, "entryScore": score, "dailyRate": daily_rate,
                 "entryContext": context, "exitKind": exit_kind,
                 "entrySignal": signal,
+                "targetRate": target_rate,
+                "maximumFavorableExcursionRate": (high_water - entry) / entry,
+                "maximumAdverseExcursionRate": (low_water - entry) / entry,
                 "grossReturnRate": gross_return, "estimatedCostRate": cost_rate,
                 "netReturnRate": gross_return - cost_rate,
                 "invested": 1.0, "estimatedCost": cost_rate,
@@ -5394,9 +6129,10 @@ def run_intraday_backtest_cycle(
         "selectionBias": "CURRENT_LIQUIDITY_UNIVERSE",
         "intrabarPolicy": "STOP_FIRST_WHEN_TARGET_AND_STOP_SHARE_MINUTE",
         "note": (
-            "VWAP·단기추세·통제 눌림·재상승·상대거래량을 확인하는 보수형 v3. "
-            "과거 시점의 횡단면 순위가 없어 현재 유동성 순위를 선도주 대용치로 사용하며 "
-            "실시간 SHADOW 검증을 대체하지 않음"
+            "1분봉을 3분봉으로 재구성해 15~30분 적응형 박스, 거래량 동반 돌파, "
+            "저거래량 되돌림, 상단 지지와 다음 봉 재상승을 확인하는 보수형 v4. "
+            "과거 업종·시장 횡단면은 복원할 수 없어 현재 유동성 순위를 사용하며 "
+            "실시간 시장별 SHADOW 60건·5일 검증을 대체하지 않음"
         ),
     }
     with LEARNING_LOCK:
@@ -7426,28 +8162,34 @@ def apply_global_score_to_candidate(item: dict[str, Any], model: dict[str, Any])
         if isinstance(item.get("relativeStrengthEvidence"), dict)
         else None
     )
-    gate_checks = {
-        "minimumPrice": source_price >= minimum_price,
-        "controlledMomentum": momentum_min <= rate < momentum_max,
-    }
+    gate_checks = {"minimumPrice": source_price >= minimum_price}
     if entry_pattern_evidence is not None:
-        gate_checks["pullbackResumptionConfirmed"] = bool(
+        gate_checks["standardEquity"] = bool(
+            standard_equity_policy(item, market).get("eligible")
+        )
+        gate_checks["boxBreakoutRetestConfirmed"] = bool(
             entry_pattern_evidence.get("allowed")
         )
+    else:
+        gate_checks["controlledMomentum"] = momentum_min <= rate < momentum_max
     gates_passed = all(gate_checks.values())
     if not gate_checks["minimumPrice"]:
         verdict, reason = "진입 불가", f"{market or '공통'} 최소가격 기준 미달"
-    elif not gate_checks["controlledMomentum"]:
+    elif not gate_checks.get("standardEquity", True):
+        verdict, reason = "진입 불가", "ETF·ETN·레버리지·인버스 또는 초저가주 제외"
+    elif not gate_checks.get("controlledMomentum", True):
         verdict, reason = (
             "진입 불가",
             f"통제 추세 범위 {momentum_min * 100:.1f}~{momentum_max * 100:.1f}% 밖 · "
             f"{market or '공통'} 전략 평가 {score:.1f}점",
         )
-    elif not gate_checks.get("pullbackResumptionConfirmed", True):
+    elif not gate_checks.get("boxBreakoutRetestConfirmed", True):
         verdict, reason = (
             "관찰",
-            f"{entry_pattern_evidence.get('reason') or '눌림 후 재상승 확인 전'} · "
-            f"시장 대비 {decimal(entry_pattern_evidence.get('relativeStrength')) * 100:+.2f}%p",
+            str(
+                entry_pattern_evidence.get("reason")
+                or "박스 돌파·상단 지지·재상승 확인 전"
+            ),
         )
     elif score >= threshold:
         verdict, reason = "정밀 분석", f"{market or '공통'} 전략 {threshold}점 통과 · {score:.1f}점"

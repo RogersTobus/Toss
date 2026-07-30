@@ -279,10 +279,9 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
             "US",
             {"samples": samples},
         )
-        self.assertTrue(promoted["allowed"])
-        self.assertEqual(
-            promoted["sampleCount"], server.PAPER_LEVERAGED_PROMOTION_MIN_SAMPLES
-        )
+        self.assertFalse(promoted["allowed"])
+        self.assertTrue(promoted["shadowOnly"])
+        self.assertEqual(promoted["reason"], "v8 일반주 전용 · 레버리지·인버스 제외")
 
         for sample in samples[-4:]:
             sample["netReturnRate"] = -0.02
@@ -308,8 +307,8 @@ class AdaptiveGlobalScoreTests(unittest.TestCase):
                 "name": "일반 종목", "engineVersion": server.PAPER_STRATEGY_ENGINE_VERSION,
                 "entryContext": context,
                 "closedAt": (
-                    f"2026-07-{20 + index // 15:02d}"
-                    f"T{index % 15:02d}:00:00+0000"
+                    f"2026-07-{20 + index // 12:02d}"
+                    f"T{index % 12:02d}:00:00+0000"
                 ),
                 "netReturnRate": 0.006 if index % 2 == 0 else -0.003,
             })

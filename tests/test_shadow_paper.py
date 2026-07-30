@@ -18,9 +18,25 @@ class ShadowPaperTests(unittest.TestCase):
         self.directory.cleanup()
 
     def candidate(self, price=100.0):
-        return {"symbol": "TEST", "name": "테스트", "lastPrice": price,
-                "score": 90, "baseScore": 90, "verdict": "정밀 분석",
-                "scoreFeatures": {"liquidity": 1, "momentum": 1, "stability": 1}}
+        return {
+            "symbol": "TEST",
+            "name": "테스트",
+            "lastPrice": price,
+            "sourcePrice": price,
+            "rank": 1,
+            "marketCountry": "KR",
+            "score": 90,
+            "baseScore": 90,
+            "verdict": "정밀 분석",
+            "scoreFeatures": {"liquidity": 1, "momentum": 1, "stability": 1},
+            "entryPatternEvidence": {
+                "allowed": True,
+                "engineVersion": server.PAPER_STRATEGY_ENGINE_VERSION,
+                "boxHigh": 99.8,
+                "signalBarStartedAt": 1000,
+                "latestCompletedBar": {"startedAt": 1000, "close": price},
+            },
+        }
 
     @patch("server.market_minutes_to_close", return_value=120)
     def test_unlimited_signal_sample_is_separate_from_capital(self, _close):
@@ -59,29 +75,52 @@ class ShadowPaperTests(unittest.TestCase):
         self.assertEqual(summary["activeCount"], 0)
 
     @patch("server.market_minutes_to_close", return_value=120)
-    def test_fixed_net_reward_variant_runs_beside_partial_trailing(self, _close):
-        server.update_shadow_paper([self.candidate()], "KR", "KR 정규장")
-        server.update_shadow_paper([self.candidate(101.1)], "KR", "KR 정규장")
-        samples = server.load_shadow_paper_state()["samples"]
-        main = next(
-            item for item in samples
-            if item["experimentVariant"] == server.SHADOW_MAIN_EXIT_VARIANT
-        )
-        fixed = next(
-            item for item in samples
-            if item["experimentVariant"] == server.SHADOW_FIXED_TARGET_VARIANT
-        )
-        self.assertTrue(main["partialTaken"])
-        self.assertEqual(fixed["status"], "OPEN")
-        self.assertGreater(fixed["targetRate"], server.PAPER_TARGET_RATE)
+    def test_v8_net_two_r_runs_beside_v7_baseline(self, _close):
+        candidate = self.candidate()
+        candidate["v7EntryPatternEvidence"] = {"allowed": True}
+        server.update_shadow_paper([candidate], "KR", "KR 정규장")
 
-        server.update_shadow_paper([self.candidate(101.4)], "KR", "KR 정규장")
-        fixed = next(
-            item for item in server.load_shadow_paper_state()["samples"]
-            if item["experimentVariant"] == server.SHADOW_FIXED_TARGET_VARIANT
+        candidate = self.candidate(101.1)
+        candidate["v7EntryPatternEvidence"] = {"allowed": True}
+        server.update_shadow_paper([candidate], "KR", "KR 정규장")
+        samples = server.load_shadow_paper_state()["samples"]
+        current = next(
+            item for item in samples
+            if item["engineVersion"] == server.PAPER_STRATEGY_ENGINE_VERSION
         )
-        self.assertEqual(fixed["status"], "CLOSED")
-        self.assertEqual(fixed["exitKind"], "목표")
+        baseline = next(
+            item for item in samples
+            if item["engineVersion"] == server.PAPER_BASELINE_ENGINE_VERSION
+        )
+        self.assertEqual(current["status"], "OPEN")
+        self.assertTrue(baseline["partialTaken"])
+        self.assertGreater(current["targetRate"], server.PAPER_TARGET_RATE)
+
+        candidate = self.candidate(102.0)
+        candidate["v7EntryPatternEvidence"] = {"allowed": True}
+        server.update_shadow_paper([candidate], "KR", "KR 정규장")
+        current = next(
+            item for item in server.load_shadow_paper_state()["samples"]
+            if item["engineVersion"] == server.PAPER_STRATEGY_ENGINE_VERSION
+        )
+        self.assertEqual(current["status"], "CLOSED")
+        self.assertEqual(current["exitKind"], "목표")
+
+    def test_v8_two_r_target_ignores_legacy_editable_target(self):
+        expected = (
+            server.RESEARCH_ROUND_TRIP_COST["KR"]
+            + server.SHADOW_NET_REWARD_RISK
+            * (
+                abs(server.PAPER_STOP_RATE)
+                + server.RESEARCH_ROUND_TRIP_COST["KR"]
+            )
+        )
+        self.assertAlmostEqual(
+            server.shadow_exit_target_rate(
+                "KR", server.SHADOW_MAIN_EXIT_VARIANT, 0.05
+            ),
+            expected,
+        )
 
     def test_stale_cross_market_position_is_closed_at_last_observed_price(self):
         state = server.new_shadow_paper_state()

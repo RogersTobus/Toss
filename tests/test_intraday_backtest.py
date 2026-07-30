@@ -17,18 +17,30 @@ class IntradayBacktestTests(unittest.TestCase):
             })
         return rows
 
-    def qualifying_prefix(self):
+    def expand_three_minute_bars(self, bars):
         rows = []
-        for index in range(17):
-            close = 100 + (index * 0.05)
-            rows.append((close - 0.03, close + 0.05, close - 0.05, close, 1000))
-        rows.extend([
-            (100.80, 101.35, 100.75, 101.25, 1500),
-            (101.20, 101.22, 100.75, 100.82, 700),
-            (100.82, 101.02, 100.80, 100.98, 900),
-            (100.98, 101.32, 100.96, 101.28, 1800),
-        ])
+        for open_price, high, low, close, volume in bars:
+            first_close = open_price + ((close - open_price) / 3)
+            second_close = open_price + ((close - open_price) * 2 / 3)
+            rows.extend([
+                (open_price, high, low, first_close, volume / 3),
+                (first_close, high, low, second_close, volume / 3),
+                (second_close, high, low, close, volume / 3),
+            ])
         return rows
+
+    def qualifying_prefix(self):
+        bars = [
+            (100.00, 100.20, 99.80, 100.00, 3000),
+            (100.00, 100.15, 99.85, 100.05, 3000),
+            (100.05, 100.18, 99.82, 99.98, 3000),
+            (99.98, 100.16, 99.84, 100.03, 3000),
+            (100.03, 100.17, 99.83, 100.01, 3000),
+            (100.01, 100.80, 100.00, 100.60, 4800),
+            (100.60, 100.65, 100.15, 100.30, 2400),
+            (100.30, 100.85, 100.25, 100.75, 3300),
+        ]
+        return self.expand_three_minute_bars(bars)
 
     def test_breakout_without_pullback_is_rejected(self):
         prices = []
@@ -52,8 +64,12 @@ class IntradayBacktestTests(unittest.TestCase):
         self.assertEqual(trades, [])
 
     def test_same_minute_target_and_stop_assumes_stop_first(self):
-        both = [(101.3, 102.5, 100.5, 102, 1400)]
-        tail = [(102, 102.1, 101.8, 102, 1000)] * 4
+        both = self.expand_three_minute_bars(
+            [(100.75, 103.20, 100.00, 102.00, 4200)]
+        )
+        tail = self.expand_three_minute_bars(
+            [(102.00, 102.10, 101.80, 102.00, 3000)]
+        )
         trades = server.simulate_intraday_strategy(
             self.candles(self.qualifying_prefix() + both + tail),
             "US", "TEST", "Test", 1,
@@ -62,19 +78,19 @@ class IntradayBacktestTests(unittest.TestCase):
         self.assertEqual(trades[0]["exitKind"], "손실선")
         self.assertLessEqual(trades[0]["grossReturnRate"], server.PAPER_STOP_RATE)
 
-    def test_target_then_trailing_combines_both_halves(self):
-        target = [(101.3, 102.5, 101.1, 102.4, 1400)]
-        trailing = [
-            (102.4, 103.0, 102.2, 102.7, 1200),
-            (102.7, 102.8, 102.4, 102.5, 1100),
-        ]
-        tail = [(102.5, 102.6, 102.4, 102.5, 1000)] * 4
+    def test_net_two_r_target_exits_full_position(self):
+        target = self.expand_three_minute_bars(
+            [(100.75, 103.20, 100.50, 103.00, 4200)]
+        )
+        tail = self.expand_three_minute_bars(
+            [(103.00, 103.10, 102.90, 103.00, 3000)]
+        )
         trades = server.simulate_intraday_strategy(
-            self.candles(self.qualifying_prefix() + target + trailing + tail),
+            self.candles(self.qualifying_prefix() + target + tail),
             "US", "TEST", "Test", 1,
         )
         self.assertTrue(trades)
-        self.assertEqual(trades[0]["exitKind"], "추적손절")
+        self.assertEqual(trades[0]["exitKind"], "목표")
         self.assertGreater(trades[0]["grossReturnRate"], 0)
 
     def test_us_session_uses_exchange_date_across_korean_midnight(self):

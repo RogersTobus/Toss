@@ -128,6 +128,9 @@ class RelativeStrengthConfirmationTests(unittest.TestCase):
     def test_score_cannot_bypass_pullback_resumption_confirmation(self):
         candidate = {
             "marketCountry": "KR",
+            "symbol": "005930",
+            "name": "삼성전자",
+            "rank": 1,
             "sourcePrice": 10000,
             "dailyRate": 0.03,
             "scoreComponents": {"liquidity": 40, "momentum": 35, "stability": 25},

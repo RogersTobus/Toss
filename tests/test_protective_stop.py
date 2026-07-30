@@ -162,7 +162,12 @@ class ProtectiveStopTests(unittest.TestCase):
                 "market": "US",
                 "symbol": "OLD",
                 "exitKind": "손실선",
-                "createdAt": (now - timedelta(seconds=61)).strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "createdAt": (
+                    now
+                    - timedelta(
+                        seconds=server.PAPER_STOP_REENTRY_COOLDOWN_SECONDS + 1
+                    )
+                ).strftime("%Y-%m-%dT%H:%M:%S%z"),
             },
         ]
         blocked = server.stop_reentry_cooldown_symbols(orders, "US", now)
