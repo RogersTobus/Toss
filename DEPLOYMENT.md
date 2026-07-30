@@ -17,8 +17,16 @@ Useful commands:
 ```bash
 sudo systemctl status toss.service
 sudo systemctl status toss-autodeploy.timer
+sudo systemctl status toss-research.timer
 sudo journalctl -u toss.service -f
 sudo journalctl -u toss-autodeploy.service -f
+sudo journalctl -u toss-research.service -f
 ```
 
 The `.env` file stays only on the server and is not committed to Git.
+
+The research timer starts a separate oneshot process every ten minutes. It has
+a 384 MB memory ceiling and a 45% CPU quota, pauses during KR/US regular
+trading, and runs intraday replay and daily/weekly/monthly research
+sequentially. The dashboard reads `research_worker_state.json` for its
+heartbeat and progress; the state file is intentionally not committed.

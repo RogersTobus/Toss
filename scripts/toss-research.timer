@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Toss Orbit research in bounded ten-minute cycles
+
+[Timer]
+OnBootSec=120
+OnUnitInactiveSec=600
+AccuracySec=30
+Persistent=true
+Unit=toss-research.service
+
+[Install]
+WantedBy=timers.target

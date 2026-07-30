@@ -1,0 +1,20 @@
+[Unit]
+Description=Toss Orbit bounded research worker
+After=network-online.target toss.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Toss
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/ubuntu/Toss/research_worker.py
+Nice=10
+CPUQuota=45%
+MemoryMax=384M
+OOMPolicy=stop
+TimeoutStartSec=540
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=full
+

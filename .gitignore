@@ -19,3 +19,6 @@ strategy_config.json
 journal_state.json
 learning_state.json
 macro_context.json
+research_worker_state.json
+.research_worker.lock
+.learning_state.lock

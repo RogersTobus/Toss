@@ -6,6 +6,8 @@ BRANCH="${BRANCH:-main}"
 SERVICE_NAME="${SERVICE_NAME:-toss.service}"
 AUTODEPLOY_SERVICE="${AUTODEPLOY_SERVICE:-toss-autodeploy.service}"
 AUTODEPLOY_TIMER="${AUTODEPLOY_TIMER:-toss-autodeploy.timer}"
+RESEARCH_SERVICE="${RESEARCH_SERVICE:-toss-research.service}"
+RESEARCH_TIMER="${RESEARCH_TIMER:-toss-research.timer}"
 
 log() {
   printf '[%s] %s\n' "$(date -Is)" "$*"
@@ -16,6 +18,50 @@ run_systemctl() {
     systemctl "$@"
   else
     sudo systemctl "$@"
+  fi
+}
+
+refresh_systemd_units() {
+  if [ ! -f "$APP_DIR/scripts/toss.service" ] \
+    || [ ! -f "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" ] \
+    || [ ! -f "$APP_DIR/scripts/$AUTODEPLOY_TIMER" ]; then
+    return
+  fi
+
+  local needs_refresh="false"
+  cmp -s "$APP_DIR/scripts/toss.service" /etc/systemd/system/toss.service || needs_refresh="true"
+  cmp -s "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" "/etc/systemd/system/$AUTODEPLOY_SERVICE" || needs_refresh="true"
+  cmp -s "$APP_DIR/scripts/$AUTODEPLOY_TIMER" "/etc/systemd/system/$AUTODEPLOY_TIMER" || needs_refresh="true"
+  if [ -f "$APP_DIR/scripts/$RESEARCH_SERVICE" ] && [ -f "$APP_DIR/scripts/$RESEARCH_TIMER" ]; then
+    cmp -s "$APP_DIR/scripts/$RESEARCH_SERVICE" "/etc/systemd/system/$RESEARCH_SERVICE" || needs_refresh="true"
+    cmp -s "$APP_DIR/scripts/$RESEARCH_TIMER" "/etc/systemd/system/$RESEARCH_TIMER" || needs_refresh="true"
+  fi
+  if [ "$needs_refresh" != "true" ]; then
+    return
+  fi
+
+  log "Refreshing systemd unit files."
+  if [ "$(id -u)" -eq 0 ]; then
+    cp "$APP_DIR/scripts/toss.service" /etc/systemd/system/toss.service
+    cp "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" "/etc/systemd/system/$AUTODEPLOY_SERVICE"
+    cp "$APP_DIR/scripts/$AUTODEPLOY_TIMER" "/etc/systemd/system/$AUTODEPLOY_TIMER"
+    if [ -f "$APP_DIR/scripts/$RESEARCH_SERVICE" ] && [ -f "$APP_DIR/scripts/$RESEARCH_TIMER" ]; then
+      cp "$APP_DIR/scripts/$RESEARCH_SERVICE" "/etc/systemd/system/$RESEARCH_SERVICE"
+      cp "$APP_DIR/scripts/$RESEARCH_TIMER" "/etc/systemd/system/$RESEARCH_TIMER"
+    fi
+  else
+    sudo cp "$APP_DIR/scripts/toss.service" /etc/systemd/system/toss.service
+    sudo cp "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" "/etc/systemd/system/$AUTODEPLOY_SERVICE"
+    sudo cp "$APP_DIR/scripts/$AUTODEPLOY_TIMER" "/etc/systemd/system/$AUTODEPLOY_TIMER"
+    if [ -f "$APP_DIR/scripts/$RESEARCH_SERVICE" ] && [ -f "$APP_DIR/scripts/$RESEARCH_TIMER" ]; then
+      sudo cp "$APP_DIR/scripts/$RESEARCH_SERVICE" "/etc/systemd/system/$RESEARCH_SERVICE"
+      sudo cp "$APP_DIR/scripts/$RESEARCH_TIMER" "/etc/systemd/system/$RESEARCH_TIMER"
+    fi
+  fi
+  run_systemctl daemon-reload
+  run_systemctl enable "$AUTODEPLOY_TIMER"
+  if [ -f "$APP_DIR/scripts/$RESEARCH_TIMER" ]; then
+    run_systemctl enable --now "$RESEARCH_TIMER"
   fi
 }
 
@@ -56,6 +102,10 @@ fi
 
 cd "$APP_DIR"
 
+# This runs before the equality check so newly added worker units are installed
+# on the first auto-deploy tick after the code itself has arrived.
+refresh_systemd_units
+
 log "Checking GitHub updates in $APP_DIR on branch $BRANCH"
 git fetch origin "$BRANCH"
 
@@ -85,21 +135,7 @@ if ! git merge-base --is-ancestor "$LOCAL_COMMIT" "$REMOTE_COMMIT"; then
 fi
 
 git pull --ff-only origin "$BRANCH"
-
-if [ -f "$APP_DIR/scripts/toss.service" ] && [ -f "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" ] && [ -f "$APP_DIR/scripts/$AUTODEPLOY_TIMER" ]; then
-  log "Refreshing systemd unit files."
-  if [ "$(id -u)" -eq 0 ]; then
-    cp "$APP_DIR/scripts/toss.service" /etc/systemd/system/toss.service
-    cp "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" "/etc/systemd/system/$AUTODEPLOY_SERVICE"
-    cp "$APP_DIR/scripts/$AUTODEPLOY_TIMER" "/etc/systemd/system/$AUTODEPLOY_TIMER"
-  else
-    sudo cp "$APP_DIR/scripts/toss.service" /etc/systemd/system/toss.service
-    sudo cp "$APP_DIR/scripts/$AUTODEPLOY_SERVICE" "/etc/systemd/system/$AUTODEPLOY_SERVICE"
-    sudo cp "$APP_DIR/scripts/$AUTODEPLOY_TIMER" "/etc/systemd/system/$AUTODEPLOY_TIMER"
-  fi
-  run_systemctl daemon-reload
-  run_systemctl enable "$AUTODEPLOY_TIMER"
-fi
+refresh_systemd_units
 
 run_systemctl restart "$SERVICE_NAME"
 run_systemctl restart "$AUTODEPLOY_TIMER"

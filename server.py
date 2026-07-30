@@ -20,6 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +35,8 @@ SHADOW_PAPER_PATH = ROOT / "shadow_paper_state.json"
 REPORT_PATH = ROOT / "report_state.json"
 JOURNAL_PATH = ROOT / "journal_state.json"
 LEARNING_PATH = ROOT / "learning_state.json"
+LEARNING_FILE_LOCK_PATH = ROOT / ".learning_state.lock"
+RESEARCH_WORKER_STATE_PATH = ROOT / "research_worker_state.json"
 STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
 DEPLOY_STATE_PATH = ROOT / ".deploy" / "last_sync.json"
 MACRO_CONTEXT_PATH = ROOT / "macro_context.json"
@@ -44,7 +47,8 @@ KAKAO_MEMO_URL = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
 KAKAO_AUTH_URL = "https://kauth.kakao.com/oauth/authorize"
 TOKEN_LOCK = threading.Lock()
 TOSS_RATE_LOCK = threading.Lock()
-LEARNING_LOCK = threading.Lock()
+LEARNING_LOCK = threading.RLock()
+LEARNING_LOCK_LOCAL = threading.local()
 PAPER_LOCK = threading.RLock()
 SHADOW_PAPER_LOCK = threading.RLock()
 STRATEGY_LOCK = threading.RLock()
@@ -187,7 +191,7 @@ INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
 INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
 INTRADAY_BACKTEST_POLL_SECONDS = 900
 INTRADAY_BACKTEST_VERSION = "three-minute-box-retest-v4"
-INTRADAY_BACKTEST_AUTO_ENABLED = True
+INTRADAY_BACKTEST_AUTO_ENABLED = False
 STUDY_AGGREGATION_VERSION = 4
 RESEARCH_UNIVERSE_PATH = ROOT / "research_universe.json"
 RESEARCH_MIN_VALIDATION_SAMPLES = 100
@@ -5548,7 +5552,7 @@ def usd_krw_rate(env: dict[str, str]) -> float:
 
 
 def scan_market(env: dict[str, str], market: str) -> list[dict[str, Any]]:
-    with LEARNING_LOCK:
+    with learning_state_lock():
         score_model = normalize_global_score_model(load_learning_state_unlocked().get("globalScoreModel"))
     query = urllib.parse.urlencode(
         {
@@ -6057,7 +6061,7 @@ def run_intraday_backtest_cycle(
     env: dict[str, str], markets: tuple[str, ...] = ("KR", "US")
 ) -> dict[str, Any]:
     started = now_kst()
-    with LEARNING_LOCK:
+    with learning_state_lock():
         state = load_learning_state_unlocked()
         previous = dict(state.get("intradayBacktest") or {})
     previous_version = str(previous.get("version") or "")
@@ -6135,7 +6139,7 @@ def run_intraday_backtest_cycle(
             "실시간 시장별 SHADOW 60건·5일 검증을 대체하지 않음"
         ),
     }
-    with LEARNING_LOCK:
+    with learning_state_lock():
         state = load_learning_state_unlocked()
         state["intradayBacktest"] = result
         state["updatedAt"] = result["completedAt"]
@@ -6611,7 +6615,7 @@ def approve_candidate_strategy(candidate_id: str) -> dict[str, Any]:
     candidate_id = clean_text(candidate_id, "", 80)
     if not candidate_id:
         raise TossApiError(400, "candidate-id-missing", "승인할 후보 전략 ID가 없습니다.")
-    with LEARNING_LOCK:
+    with learning_state_lock():
         state = load_learning_state_unlocked()
         registry = state.setdefault("candidateStrategyRegistry", {})
         candidate = (registry.get("candidates") or {}).get(candidate_id)
@@ -6911,7 +6915,7 @@ def run_multi_timeframe_study(
     analyses: list[dict[str, Any]] = []
     errors: list[str] = []
     universe_count = 0
-    with LEARNING_LOCK:
+    with learning_state_lock():
         state = load_learning_state_unlocked()
         previous_study = state.get(state_key) if isinstance(state.get(state_key), dict) else {}
         universe_cursors = dict(previous_study.get("universeCursors") or {})
@@ -6994,7 +6998,7 @@ def run_multi_timeframe_study(
         analysis["patterns"] = patterns[:8]
     symbol_studies = build_symbol_study_catalog(analyses)
     summary["completeSymbolCount"] = sum(1 for item in symbol_studies if item.get("complete"))
-    with LEARNING_LOCK:
+    with learning_state_lock():
         state = load_learning_state_unlocked()
         state.setdefault("globalScoreModel", default_global_score_model())
         influence = {
@@ -7285,7 +7289,7 @@ def off_market_study_loop() -> None:
                     RESEARCH_WORKER_LOCK.release()
         except Exception as exc:
             try:
-                with LEARNING_LOCK:
+                with learning_state_lock():
                     state = load_learning_state_unlocked()
                     study = dict(state.get("offlineStudy") or {})
                     study.update(
@@ -7318,7 +7322,7 @@ def intraday_backtest_loop() -> None:
                     RESEARCH_WORKER_LOCK.release()
         except Exception as exc:
             try:
-                with LEARNING_LOCK:
+                with learning_state_lock():
                     state = load_learning_state_unlocked()
                     study = dict(state.get("intradayBacktest") or {})
                     study.update({
@@ -7346,7 +7350,7 @@ def domestic_day_review_loop() -> None:
                 and not any(market == "KR" for market, _ in active)
             )
             today = now_kst().strftime("%Y-%m-%d")
-            with LEARNING_LOCK:
+            with learning_state_lock():
                 state = load_learning_state_unlocked()
                 previous = state.get("domesticDayReview") or {}
                 last_run_date = str(previous.get("lastRunDate") or "")
@@ -7358,7 +7362,7 @@ def domestic_day_review_loop() -> None:
                 run_domestic_day_review(env)
         except Exception as exc:
             try:
-                with LEARNING_LOCK:
+                with learning_state_lock():
                     state = load_learning_state_unlocked()
                     study = dict(state.get("domesticDayReview") or {})
                     study.update(
@@ -7642,6 +7646,7 @@ def health_status() -> dict[str, Any]:
             "retiredPositionCount": int(paper_state.get("retiredPositionCount") or 0),
             "historyPreserved": True,
         },
+        "researchWorker": research_worker_snapshot(),
         "macroContext": {
             **{key: value for key, value in macro.items() if key != "items"},
             "items": (macro.get("items") or [])[:8],
@@ -8339,6 +8344,63 @@ def default_learning_state() -> dict[str, Any]:
     }
 
 
+@contextmanager
+def learning_state_lock(timeout_seconds: float = 30.0):
+    """Serialize learning-state read/modify/write cycles across processes."""
+    with LEARNING_LOCK:
+        depth = int(getattr(LEARNING_LOCK_LOCAL, "depth", 0))
+        if depth:
+            LEARNING_LOCK_LOCAL.depth = depth + 1
+            try:
+                yield
+            finally:
+                LEARNING_LOCK_LOCAL.depth = depth
+            return
+
+        LEARNING_FILE_LOCK_PATH.touch(exist_ok=True)
+        handle = LEARNING_FILE_LOCK_PATH.open("r+b")
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b"\0")
+            handle.flush()
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        locked = False
+        try:
+            while not locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                except (BlockingIOError, OSError):
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("learning state lock timed out")
+                    time.sleep(0.05)
+            LEARNING_LOCK_LOCAL.depth = 1
+            yield
+        finally:
+            LEARNING_LOCK_LOCAL.depth = 0
+            if locked:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+
+
 def load_learning_state_unlocked() -> dict[str, Any]:
     if not LEARNING_PATH.exists():
         return default_learning_state()
@@ -8371,6 +8433,37 @@ def save_learning_state_unlocked(state: dict[str, Any]) -> None:
     temporary.replace(LEARNING_PATH)
 
 
+def research_worker_snapshot() -> dict[str, Any]:
+    default = {
+        "status": "not_started",
+        "phase": "waiting",
+        "runCount": 0,
+        "totalAnalyzedSymbolCount": 0,
+        "totalIntradayAnalyzedSymbolCount": 0,
+        "lastError": None,
+        "separateProcess": True,
+        "memoryLimitMb": 384,
+        "scheduleSeconds": 600,
+    }
+    try:
+        raw = json.loads(RESEARCH_WORKER_STATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    snapshot = {**default, **raw}
+    heartbeat = parse_order_time(snapshot.get("heartbeatAt"))
+    age_seconds = None
+    if heartbeat:
+        age_seconds = max(0, int((now_kst() - heartbeat.astimezone(KST)).total_seconds()))
+    snapshot["heartbeatAgeSeconds"] = age_seconds
+    if snapshot.get("status") == "running" and (age_seconds is None or age_seconds > 180):
+        snapshot["status"] = "stale"
+        snapshot["lastError"] = snapshot.get("lastError") or "연구 프로세스 하트비트가 3분 이상 멈췄습니다."
+    snapshot["healthy"] = snapshot.get("status") in ("running", "completed", "partial", "skipped")
+    return snapshot
+
+
 def compact_intraday_backtest_record(value: Any) -> tuple[dict[str, Any], bool]:
     """Keep replay summaries while bounding the raw ledger held by the API process."""
     study = dict(value or {}) if isinstance(value, dict) else {}
@@ -8391,7 +8484,7 @@ def compact_intraday_backtest_record(value: Any) -> tuple[dict[str, Any], bool]:
 
 def compact_intraday_backtest_state_once() -> dict[str, Any]:
     """Remove stale replay rows before background loops begin on the small VPS."""
-    with LEARNING_LOCK:
+    with learning_state_lock():
         state = load_learning_state_unlocked()
         compacted, changed = compact_intraday_backtest_record(state.get("intradayBacktest"))
         if changed:
@@ -8540,7 +8633,7 @@ def sync_learning_brain(
     ledger = paper_trade_ledger(orders, results_by_symbol)
     orders_by_id = {str(item.get("id") or ""): item for item in orders if item.get("id")}
     stop_rate = decimal(strategy_config().get("stopRate") or PAPER_STOP_RATE)
-    with LEARNING_LOCK:
+    with learning_state_lock():
         state = load_learning_state_unlocked()
         processed = set(str(item) for item in state.get("processedTrades") or [])
         score_processed = set(str(item) for item in state.get("scoreModelProcessedTrades") or [])
@@ -8804,6 +8897,7 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
         "domesticDayReviewHistory": domestic_history,
         "offlineStudy": offline_study,
         "intradayBacktest": intraday_backtest,
+        "researchWorker": research_worker_snapshot(),
         "offlineStudyHistory": offline_history,
         "candidateStrategies": candidate_strategies,
         "symbols": symbols[:100],
