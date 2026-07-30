@@ -138,6 +138,9 @@ git pull --ff-only origin "$BRANCH"
 refresh_systemd_units
 
 run_systemctl restart "$SERVICE_NAME"
+if [ -f "/etc/systemd/system/$RESEARCH_SERVICE" ]; then
+  run_systemctl restart --no-block "$RESEARCH_SERVICE"
+fi
 run_systemctl restart "$AUTODEPLOY_TIMER"
 
 write_deploy_stamp "deployed" "true" "$REMOTE_COMMIT" "$REMOTE_COMMIT" "updated from GitHub"

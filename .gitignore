@@ -20,5 +20,7 @@ journal_state.json
 learning_state.json
 macro_context.json
 research_worker_state.json
+research_learning_state.json
 .research_worker.lock
 .learning_state.lock
+.research_learning_state.lock

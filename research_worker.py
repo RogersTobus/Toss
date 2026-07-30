@@ -130,6 +130,20 @@ class WorkerState:
             self.thread.join(timeout=2)
 
 
+@contextmanager
+def research_storage():
+    """Point research functions at their small sidecar state for this process."""
+    original_path = server.LEARNING_PATH
+    original_lock_path = server.LEARNING_FILE_LOCK_PATH
+    server.LEARNING_PATH = server.RESEARCH_LEARNING_PATH
+    server.LEARNING_FILE_LOCK_PATH = server.RESEARCH_LEARNING_FILE_LOCK_PATH
+    try:
+        yield
+    finally:
+        server.LEARNING_PATH = original_path
+        server.LEARNING_FILE_LOCK_PATH = original_lock_path
+
+
 def select_research_markets(sessions: list[tuple[str, str]]) -> tuple[str, ...]:
     """Keep heavy replay away from regular trading and use US day for KR review."""
     if server.regular_market_is_active(sessions):
@@ -149,7 +163,7 @@ def peak_memory_mb() -> float | None:
         return None
 
 
-def run_research_cycle() -> dict[str, Any]:
+def _run_research_cycle() -> dict[str, Any]:
     state = WorkerState()
     started = server.now_kst()
     run_count = int(state.payload.get("runCount") or 0) + 1
@@ -262,6 +276,11 @@ def run_research_cycle() -> dict[str, Any]:
         )
     finally:
         state.stop_heartbeat()
+
+
+def run_research_cycle() -> dict[str, Any]:
+    with research_storage():
+        return _run_research_cycle()
 
 
 def main() -> int:

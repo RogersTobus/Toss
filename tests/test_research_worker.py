@@ -29,6 +29,7 @@ class ResearchWorkerTests(unittest.TestCase):
     def test_cycle_runs_replays_sequentially_and_accumulates_progress(self):
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "research_worker_state.json"
+            original_learning_path = server.LEARNING_PATH
             patches = (
                 mock.patch.object(research_worker, "STATE_PATH", state_path),
                 mock.patch.object(server, "load_env", return_value={}),
@@ -68,6 +69,7 @@ class ResearchWorkerTests(unittest.TestCase):
             self.assertEqual(study.call_count, 2)
             self.assertEqual(replay.call_args.args[1], ("KR", "US"))
             self.assertEqual(study.call_args.args[1], ("KR", "US"))
+            self.assertEqual(server.LEARNING_PATH, original_learning_path)
 
     def test_health_snapshot_marks_stale_running_worker(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -92,6 +94,26 @@ class ResearchWorkerTests(unittest.TestCase):
         self.assertFalse(server.INTRADAY_BACKTEST_AUTO_ENABLED)
         self.assertFalse(server.OFF_MARKET_STUDY_AUTO_ENABLED)
         self.assertFalse(server.DOMESTIC_DAY_REVIEW_AUTO_ENABLED)
+
+    def test_dashboard_prefers_separate_research_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            research_path = Path(directory) / "research_learning_state.json"
+            research = server.default_learning_state()
+            research["offlineStudy"] = {
+                "status": "completed",
+                "analyzedSymbolCount": 16,
+            }
+            research["intradayBacktest"] = {
+                "status": "completed",
+                "tradeCount": 7,
+            }
+            research_path.write_text(json.dumps(research), encoding="utf-8")
+            live = server.default_learning_state()
+            live["offlineStudy"] = {"status": "running", "analyzedSymbolCount": 1}
+            with mock.patch.object(server, "RESEARCH_LEARNING_PATH", research_path):
+                payload = server.learning_brain_payload(live)
+            self.assertEqual(payload["offlineStudy"]["analyzedSymbolCount"], 16)
+            self.assertEqual(payload["intradayBacktest"]["tradeCount"], 7)
 
 
 if __name__ == "__main__":

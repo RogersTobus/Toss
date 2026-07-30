@@ -837,6 +837,7 @@ Claude는 “이번에는 구조를 정리해야 한다”고 명확히 설명�
 - 한국·미국 정규장 중에는 연구를 건너뛴다. 미국 데이마켓에는 한국 종목만 복기하며, 전체 휴장에는 한국·미국을 연구한다.
 - 한 프로세스 안에서도 분봉 재생과 종목별 일·주·월봉 분석은 반드시 순차 실행한다. 서로 겹쳐 메모리 피크가 커지지 않게 한다.
 - `research_worker_state.json`에 15초 하트비트, 실행 횟수, 이번/누적 분석 종목 수, 오류, 최대 메모리, 다음 실행 시각을 저장한다. 대시보드는 체결 표본 수와 실제 분석 종목 수를 분리해 표시한다.
-- `learning_state.json`의 모든 read-modify-write 구간은 프로세스 간 파일 잠금을 사용한다. 메인 매매와 연구 프로세스가 동시에 결과를 저장해도 학습 상태가 덮어써지지 않게 한다.
+- 실거래 오답노트는 `learning_state.json`, 무거운 차트·분봉 연구는 `research_learning_state.json`으로 물리 분리한다. 최초 서버 재시작 때 기존 연구 진행률과 v8 분봉 기준선을 한 번 이관하고, 이후 연구 프로세스는 작은 전용 상태만 읽고 쓴다.
+- 두 학습 파일의 read-modify-write 구간은 각각 프로세스 간 파일 잠금을 사용한다. 메인 매매와 연구 프로세스가 동시에 결과를 저장해도 상태가 덮어써지지 않게 한다.
 - 연구 결과는 후보 전략 근거로만 저장하며 v8 PAPER 전략에 자동 승격하지 않는다. PAPER 전용, 고정 손절 -0.5%, 최대 3포지션, 거래당 계좌위험 0.25%, 총 미청산위험 0.75%는 변경하지 않았다.
-- 전체 테스트는 107개다. 배포 후 `/api/health`의 `researchWorker`, 연구 화면의 하트비트, `sudo systemctl status toss-research.timer`, `sudo journalctl -u toss-research.service`를 함께 확인한다.
+- 전체 테스트는 108개다. 배포 후 `/api/health`의 `researchWorker`, 연구 화면의 하트비트, `sudo systemctl status toss-research.timer`, `sudo journalctl -u toss-research.service`를 함께 확인한다.

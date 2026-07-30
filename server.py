@@ -36,6 +36,8 @@ REPORT_PATH = ROOT / "report_state.json"
 JOURNAL_PATH = ROOT / "journal_state.json"
 LEARNING_PATH = ROOT / "learning_state.json"
 LEARNING_FILE_LOCK_PATH = ROOT / ".learning_state.lock"
+RESEARCH_LEARNING_PATH = ROOT / "research_learning_state.json"
+RESEARCH_LEARNING_FILE_LOCK_PATH = ROOT / ".research_learning_state.lock"
 RESEARCH_WORKER_STATE_PATH = ROOT / "research_worker_state.json"
 STRATEGY_CONFIG_PATH = ROOT / "strategy_config.json"
 DEPLOY_STATE_PATH = ROOT / ".deploy" / "last_sync.json"
@@ -6615,8 +6617,14 @@ def approve_candidate_strategy(candidate_id: str) -> dict[str, Any]:
     candidate_id = clean_text(candidate_id, "", 80)
     if not candidate_id:
         raise TossApiError(400, "candidate-id-missing", "승인할 후보 전략 ID가 없습니다.")
-    with learning_state_lock():
-        state = load_learning_state_unlocked()
+    state_path = RESEARCH_LEARNING_PATH if RESEARCH_LEARNING_PATH.exists() else LEARNING_PATH
+    lock_path = (
+        RESEARCH_LEARNING_FILE_LOCK_PATH
+        if state_path == RESEARCH_LEARNING_PATH
+        else LEARNING_FILE_LOCK_PATH
+    )
+    with learning_state_lock(lock_path=lock_path):
+        state = load_learning_state_unlocked(state_path)
         registry = state.setdefault("candidateStrategyRegistry", {})
         candidate = (registry.get("candidates") or {}).get(candidate_id)
         if not candidate:
@@ -6630,7 +6638,7 @@ def approve_candidate_strategy(candidate_id: str) -> dict[str, Any]:
         registry["lastApprovedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         registry["lastApprovedCandidateId"] = candidate_id
         state["updatedAt"] = registry["lastApprovedAt"]
-        save_learning_state_unlocked(state)
+        save_learning_state_unlocked(state, state_path)
         return candidate_strategy_registry_view(registry)
 
 
@@ -8345,7 +8353,10 @@ def default_learning_state() -> dict[str, Any]:
 
 
 @contextmanager
-def learning_state_lock(timeout_seconds: float = 30.0):
+def learning_state_lock(
+    timeout_seconds: float = 30.0,
+    lock_path: Path | None = None,
+):
     """Serialize learning-state read/modify/write cycles across processes."""
     with LEARNING_LOCK:
         depth = int(getattr(LEARNING_LOCK_LOCAL, "depth", 0))
@@ -8357,8 +8368,9 @@ def learning_state_lock(timeout_seconds: float = 30.0):
                 LEARNING_LOCK_LOCAL.depth = depth
             return
 
-        LEARNING_FILE_LOCK_PATH.touch(exist_ok=True)
-        handle = LEARNING_FILE_LOCK_PATH.open("r+b")
+        selected_lock_path = lock_path or LEARNING_FILE_LOCK_PATH
+        selected_lock_path.touch(exist_ok=True)
+        handle = selected_lock_path.open("r+b")
         if handle.seek(0, os.SEEK_END) == 0:
             handle.write(b"\0")
             handle.flush()
@@ -8401,11 +8413,12 @@ def learning_state_lock(timeout_seconds: float = 30.0):
             handle.close()
 
 
-def load_learning_state_unlocked() -> dict[str, Any]:
-    if not LEARNING_PATH.exists():
+def load_learning_state_unlocked(path: Path | None = None) -> dict[str, Any]:
+    selected_path = path or LEARNING_PATH
+    if not selected_path.exists():
         return default_learning_state()
     try:
-        raw = json.loads(LEARNING_PATH.read_text(encoding="utf-8"))
+        raw = json.loads(selected_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return default_learning_state()
     if not isinstance(raw, dict):
@@ -8427,10 +8440,51 @@ def load_learning_state_unlocked() -> dict[str, Any]:
     }
 
 
-def save_learning_state_unlocked(state: dict[str, Any]) -> None:
-    temporary = LEARNING_PATH.with_suffix(".tmp")
+def save_learning_state_unlocked(
+    state: dict[str, Any],
+    path: Path | None = None,
+) -> None:
+    selected_path = path or LEARNING_PATH
+    temporary = selected_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(LEARNING_PATH)
+    temporary.replace(selected_path)
+
+
+RESEARCH_LEARNING_KEYS = (
+    "domesticDayReview",
+    "domesticDayReviewHistory",
+    "offlineStudy",
+    "offlineStudyHistory",
+    "intradayBacktest",
+    "candidateStrategyRegistry",
+)
+
+
+def research_learning_state_snapshot() -> dict[str, Any]:
+    if not RESEARCH_LEARNING_PATH.exists():
+        return {}
+    return load_learning_state_unlocked(RESEARCH_LEARNING_PATH)
+
+
+def seed_research_learning_state_once() -> dict[str, Any]:
+    """Move bulky chart/replay state out of the live trading brain once."""
+    if RESEARCH_LEARNING_PATH.exists():
+        return {"created": False, "reason": "already-exists"}
+    with learning_state_lock():
+        live_state = load_learning_state_unlocked()
+        seed = default_learning_state()
+        for key in RESEARCH_LEARNING_KEYS:
+            seed[key] = live_state.get(key, seed.get(key))
+        seed["updatedAt"] = live_state.get("updatedAt")
+    with learning_state_lock(lock_path=RESEARCH_LEARNING_FILE_LOCK_PATH):
+        if RESEARCH_LEARNING_PATH.exists():
+            return {"created": False, "reason": "created-by-another-process"}
+        save_learning_state_unlocked(seed, RESEARCH_LEARNING_PATH)
+    return {
+        "created": True,
+        "intradayVersion": (seed.get("intradayBacktest") or {}).get("version"),
+        "offlineCursorCount": len((seed.get("offlineStudy") or {}).get("universeCursors") or {}),
+    }
 
 
 def research_worker_snapshot() -> dict[str, Any]:
@@ -8457,7 +8511,19 @@ def research_worker_snapshot() -> dict[str, Any]:
     if heartbeat:
         age_seconds = max(0, int((now_kst() - heartbeat.astimezone(KST)).total_seconds()))
     snapshot["heartbeatAgeSeconds"] = age_seconds
-    if snapshot.get("status") == "running" and (age_seconds is None or age_seconds > 180):
+    pid = int(snapshot.get("pid") or 0)
+    process_alive = None
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+            process_alive = True
+        except (OSError, ProcessLookupError):
+            process_alive = False
+    snapshot["processAlive"] = process_alive
+    if snapshot.get("status") == "running" and process_alive is False:
+        snapshot["status"] = "error"
+        snapshot["lastError"] = snapshot.get("lastError") or "연구 프로세스가 완료 기록 없이 종료됐습니다."
+    elif snapshot.get("status") == "running" and (age_seconds is None or age_seconds > 180):
         snapshot["status"] = "stale"
         snapshot["lastError"] = snapshot.get("lastError") or "연구 프로세스 하트비트가 3분 이상 멈췄습니다."
     snapshot["healthy"] = snapshot.get("status") in ("running", "completed", "partial", "skipped")
@@ -8855,29 +8921,51 @@ def learning_brain_payload(state: dict[str, Any]) -> dict[str, Any]:
     global_model = normalize_global_score_model(state.get("globalScoreModel"))
     global_view = json.loads(json.dumps(global_model, ensure_ascii=False))
     global_view["revisions"] = list(reversed(global_model.get("revisions") or []))[:40]
+    research_state = research_learning_state_snapshot()
     def compact_study(raw: Any) -> dict[str, Any]:
         study = json.loads(json.dumps(raw, ensure_ascii=False)) if isinstance(raw, dict) else {}
         study.pop("analyses", None)
         study["symbolStudies"] = list(study.get("symbolStudies") or [])[:20]
         return study
 
-    domestic_review = compact_study(state.get("domesticDayReview"))
-    offline_study = compact_study(state.get("offlineStudy"))
+    domestic_review = compact_study(
+        research_state.get("domesticDayReview") or state.get("domesticDayReview")
+    )
+    offline_study = compact_study(
+        research_state.get("offlineStudy") or state.get("offlineStudy")
+    )
     # Avoid serializing and duplicating the raw replay ledger on every dashboard
     # poll; that was enough to exhaust the small VPS while the worker ran.
-    raw_intraday_backtest = state.get("intradayBacktest") or {}
+    raw_intraday_backtest = (
+        research_state.get("intradayBacktest") or state.get("intradayBacktest") or {}
+    )
     intraday_backtest = {
         key: value for key, value in raw_intraday_backtest.items() if key != "trades"
     } if isinstance(raw_intraday_backtest, dict) else {}
     domestic_history = [
         compact_study(item)
-        for item in list(reversed(state.get("domesticDayReviewHistory") or []))[:10]
+        for item in list(
+            reversed(
+                research_state.get("domesticDayReviewHistory")
+                or state.get("domesticDayReviewHistory")
+                or []
+            )
+        )[:10]
     ]
     offline_history = [
         compact_study(item)
-        for item in list(reversed(state.get("offlineStudyHistory") or []))[:10]
+        for item in list(
+            reversed(
+                research_state.get("offlineStudyHistory")
+                or state.get("offlineStudyHistory")
+                or []
+            )
+        )[:10]
     ]
-    candidate_strategies = candidate_strategy_registry_view(state.get("candidateStrategyRegistry"))
+    candidate_strategies = candidate_strategy_registry_view(
+        research_state.get("candidateStrategyRegistry")
+        or state.get("candidateStrategyRegistry")
+    )
     return {
         "updatedAt": state.get("updatedAt"),
         "summary": {
@@ -9756,6 +9844,13 @@ if __name__ == "__main__":
             "Intraday replay compaction: "
             f"{replay_compaction.get('removed', 0)} legacy rows removed · "
             f"{replay_compaction.get('version') or 'unknown'} summary preserved"
+        )
+    research_seed = seed_research_learning_state_once()
+    if research_seed.get("created"):
+        print(
+            "Research state separated: "
+            f"{research_seed.get('intradayVersion') or 'no replay'} · "
+            f"{research_seed.get('offlineCursorCount', 0)} market cursors preserved"
         )
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
     threading.Thread(target=position_risk_loop, daemon=True, name="position-risk-loop").start()
