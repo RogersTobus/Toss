@@ -102,6 +102,7 @@ class ResearchWorkerTests(unittest.TestCase):
         self.assertIn("CPUQuota=45%", unit)
         self.assertIn("MemoryHigh=384M", unit)
         self.assertIn("research_supervisor.py", unit)
+        self.assertIn("ExecStartPre=/bin/sleep 10", unit)
         self.assertIn("MemoryMax=650M", unit)
         self.assertIn("OOMPolicy=continue", unit)
 
@@ -140,9 +141,24 @@ class ResearchWorkerTests(unittest.TestCase):
                 "metrics": {"tradeCount": 500, "winRate": 0.52},
                 "trades": [{"id": index} for index in range(500)],
             }
-            state["candidateStrategyRegistry"] = {
-                "candidates": {"alpha": {"observationCount": 120}}
-            }
+            candidates = {}
+            for index in range(55):
+                candidate_id = f"alpha-{index}"
+                candidates[candidate_id] = {
+                    "id": candidate_id,
+                    "market": "KR",
+                    "timeframe": "1d",
+                    "status": "DISCOVERY",
+                    "observationCount": index,
+                    "evidenceBySymbol": {
+                        f"symbol-{symbol}": {
+                            "count": symbol,
+                            "studyId": f"study-{symbol:03d}",
+                        }
+                        for symbol in range(75)
+                    },
+                }
+            state["candidateStrategyRegistry"] = {"candidates": candidates}
             research_path.write_text(json.dumps(state), encoding="utf-8")
             with (
                 mock.patch.object(server, "RESEARCH_LEARNING_PATH", research_path),
@@ -160,12 +176,40 @@ class ResearchWorkerTests(unittest.TestCase):
             self.assertEqual(len(compacted["offlineStudy"]["symbolStudies"]), 24)
             self.assertEqual(len(compacted["intradayBacktest"]["trades"]), 200)
             self.assertEqual(compacted["intradayBacktest"]["metrics"]["winRate"], 0.52)
+            retained_candidates = compacted["candidateStrategyRegistry"]["candidates"]
+            self.assertEqual(len(retained_candidates), 40)
             self.assertEqual(
-                compacted["candidateStrategyRegistry"]["candidates"]["alpha"][
-                    "observationCount"
-                ],
-                120,
+                max(item["observationCount"] for item in retained_candidates.values()),
+                54,
             )
+            self.assertTrue(
+                all(
+                    len(item["evidenceBySymbol"]) <= 60
+                    for item in retained_candidates.values()
+                )
+            )
+
+    def test_candidate_compaction_preserves_approved_candidate(self):
+        candidates = {
+            f"candidate-{index}": {
+                "id": f"candidate-{index}",
+                "market": "US",
+                "timeframe": "1w",
+                "status": "DISCOVERY",
+                "observationCount": index,
+                "evidenceBySymbol": {},
+            }
+            for index in range(50)
+        }
+        registry, result = server.compact_candidate_strategy_registry(
+            {
+                "approvedCandidateIds": ["candidate-0"],
+                "candidates": candidates,
+            }
+        )
+        self.assertIn("candidate-0", registry["candidates"])
+        self.assertEqual(len(registry["candidates"]), 41)
+        self.assertEqual(result["removedCandidates"], 9)
 
 
 if __name__ == "__main__":

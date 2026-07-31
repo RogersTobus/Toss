@@ -193,6 +193,8 @@ INTRADAY_BACKTEST_HISTORY_LIMIT = 1200
 RESEARCH_INTRADAY_RAW_TRADE_LIMIT = 200
 RESEARCH_RAW_ANALYSIS_LIMIT = 24
 RESEARCH_SYMBOL_STUDY_LIMIT = 24
+RESEARCH_CANDIDATES_PER_MARKET_TIMEFRAME = 40
+RESEARCH_EVIDENCE_SYMBOL_LIMIT = 60
 INTRADAY_BACKTEST_START_DELAY_SECONDS = 180
 INTRADAY_BACKTEST_POLL_SECONDS = 900
 INTRADAY_BACKTEST_VERSION = "three-minute-box-retest-v4"
@@ -6441,6 +6443,99 @@ def summarize_study_patterns(analyses: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def candidate_storage_rank(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    status_rank = {
+        "READY_TO_COMPARE": 4,
+        "VALIDATING": 3,
+        "DIVERSIFYING": 2,
+        "DISCOVERY": 1,
+    }
+    return (
+        bool(candidate.get("promotionEligible")),
+        status_rank.get(str(candidate.get("status") or ""), 0),
+        int(candidate.get("gatePassCount") or 0),
+        int(candidate.get("symbolCount") or 0),
+        int(candidate.get("observationCount") or 0),
+        decimal(candidate.get("netAverageReturn")),
+    )
+
+
+def compact_candidate_strategy_registry(
+    raw_registry: Any,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Retain the strongest cross-symbol evidence without unbounded JSON growth."""
+    registry = dict(raw_registry) if isinstance(raw_registry, dict) else {}
+    raw_candidates = (
+        dict(registry.get("candidates") or {})
+        if isinstance(registry.get("candidates"), dict)
+        else {}
+    )
+    approved = {str(item) for item in (registry.get("approvedCandidateIds") or [])}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    by_id: dict[str, dict[str, Any]] = {}
+    for candidate_id, value in raw_candidates.items():
+        if not isinstance(value, dict):
+            continue
+        candidate = dict(value)
+        candidate["id"] = str(candidate.get("id") or candidate_id)
+        by_id[candidate["id"]] = candidate
+        group = (
+            str(candidate.get("market") or "UNKNOWN"),
+            str(candidate.get("timeframe") or "UNKNOWN"),
+        )
+        grouped.setdefault(group, []).append(candidate)
+
+    retained_ids = set(approved)
+    for candidates in grouped.values():
+        candidates.sort(key=candidate_storage_rank, reverse=True)
+        retained_ids.update(
+            str(item.get("id") or "")
+            for item in candidates[:RESEARCH_CANDIDATES_PER_MARKET_TIMEFRAME]
+        )
+
+    retained: dict[str, dict[str, Any]] = {}
+    removed_evidence = 0
+    for candidate_id in retained_ids:
+        candidate = by_id.get(candidate_id)
+        if not candidate:
+            continue
+        evidence = (
+            dict(candidate.get("evidenceBySymbol") or {})
+            if isinstance(candidate.get("evidenceBySymbol"), dict)
+            else {}
+        )
+        if len(evidence) > RESEARCH_EVIDENCE_SYMBOL_LIMIT:
+            evidence_rows = list(evidence.items())
+            evidence_rows.sort(
+                key=lambda pair: (
+                    str((pair[1] or {}).get("studyId") or ""),
+                    int((pair[1] or {}).get("count") or 0),
+                ),
+                reverse=True,
+            )
+            removed_evidence += len(evidence) - RESEARCH_EVIDENCE_SYMBOL_LIMIT
+            evidence = dict(evidence_rows[:RESEARCH_EVIDENCE_SYMBOL_LIMIT])
+        candidate["evidenceBySymbol"] = evidence
+        retained[candidate_id] = candidate
+
+    removed_candidates = max(0, len(raw_candidates) - len(retained))
+    registry["candidates"] = retained
+    registry["storagePolicy"] = {
+        "candidatesPerMarketTimeframe": RESEARCH_CANDIDATES_PER_MARKET_TIMEFRAME,
+        "evidenceSymbolsPerCandidate": RESEARCH_EVIDENCE_SYMBOL_LIMIT,
+    }
+    registry["compactedCandidateCount"] = int(
+        registry.get("compactedCandidateCount") or 0
+    ) + removed_candidates
+    registry["compactedEvidenceCount"] = int(
+        registry.get("compactedEvidenceCount") or 0
+    ) + removed_evidence
+    return registry, {
+        "removedCandidates": removed_candidates,
+        "removedEvidence": removed_evidence,
+    }
+
+
 def update_candidate_strategy_registry(
     raw_registry: Any,
     analyses: list[dict[str, Any]],
@@ -6551,7 +6646,8 @@ def update_candidate_strategy_registry(
             "candidates": candidates,
         }
     )
-    return registry
+    compacted, _ = compact_candidate_strategy_registry(registry)
+    return compacted
 
 
 def candidate_strategy_registry_view(raw_registry: Any) -> dict[str, Any]:
@@ -8500,6 +8596,8 @@ def compact_research_learning_state_once() -> dict[str, Any]:
         before_bytes = 0
     removed_analyses = 0
     removed_trades = 0
+    removed_candidates = 0
+    removed_evidence = 0
     with learning_state_lock(lock_path=RESEARCH_LEARNING_FILE_LOCK_PATH):
         state = load_learning_state_unlocked(RESEARCH_LEARNING_PATH)
         changed = False
@@ -8529,6 +8627,14 @@ def compact_research_learning_state_once() -> dict[str, Any]:
             replay["rawTradesCompactedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             changed = True
         state["intradayBacktest"] = replay
+        compact_registry, registry_result = compact_candidate_strategy_registry(
+            state.get("candidateStrategyRegistry")
+        )
+        if registry_result["removedCandidates"] or registry_result["removedEvidence"]:
+            state["candidateStrategyRegistry"] = compact_registry
+            removed_candidates = registry_result["removedCandidates"]
+            removed_evidence = registry_result["removedEvidence"]
+            changed = True
         if changed:
             state["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
             save_learning_state_unlocked(state, RESEARCH_LEARNING_PATH)
@@ -8540,6 +8646,8 @@ def compact_research_learning_state_once() -> dict[str, Any]:
         "changed": changed,
         "removedAnalyses": removed_analyses,
         "removedTrades": removed_trades,
+        "removedCandidates": removed_candidates,
+        "removedEvidence": removed_evidence,
         "beforeBytes": before_bytes,
         "afterBytes": after_bytes,
     }
@@ -9923,6 +10031,7 @@ if __name__ == "__main__":
             "Research state compaction: "
             f"{research_compaction.get('removedAnalyses', 0)} detailed analyses · "
             f"{research_compaction.get('removedTrades', 0)} raw trades removed · "
+            f"{research_compaction.get('removedCandidates', 0)} weak candidates removed · "
             f"{research_compaction.get('afterBytes', 0) / 1048576:.2f}MB retained"
         )
     threading.Thread(target=analysis_loop, daemon=True, name="analysis-loop").start()
